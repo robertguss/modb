@@ -1,7 +1,7 @@
 # Keeping sensitive data from agents and model providers
 
 Type: research
-Status: claimed
+Status: resolved
 
 ## Question
 
@@ -18,3 +18,13 @@ Go deepest on:
 - whether any system declares sensitivity in the data's types and enforces it on everything that leaves the database.
 
 Say plainly where Robert's starting belief, that no database anonymises sensitive data, is wrong and where it holds.
+
+## Answer
+
+Findings: [research/20-keeping-sensitive-data-from-agents.md](../research/20-keeping-sensitive-data-from-agents.md).
+
+- Masking, pseudonymising, de-identifying and anonymising differ. The EU treats pseudonyms as personal data (EDPB 2025), softened for recipients who cannot re-identify (CJEU *SRB*, September 2025). HIPAA and FERPA recognise only de-identification, and HIPAA bars stand-in codes derived from the person except under Expert Determination.
+- Sending PHI to a model provider needs a BAA, de-identification or a limited data set. FERPA needs the vendor under the school's direct control, or a "reasonable person" de-identification judgment.
+- Dynamic masking (SQL Server, Oracle, Snowflake, PostgreSQL Anonymizer) is documented by its vendors as not stopping ad hoc queries, which is what agents write. Static masked copies (Neon, Xata) are stronger but miss free text and untagged columns.
+- LLM agents re-identify masked text in most measured cases (85.3% after entity masking in AgentDoxx, 2026). Only differential privacy holds up across many combined queries, at the cost of answering totals only.
+- No shipping database types sensitivity and enforces it on every exit. Snowflake tag propagation and the IFDB research system come closest. The starting belief holds for automatic anonymity under arbitrary queries and is wrong that databases ship nothing.
