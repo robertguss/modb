@@ -1,6 +1,6 @@
 # Overview
 
-The current synthesis of research files 00 to 09, 20 and 21. It states what the sources say, marks inference, and recommends nothing.
+The current synthesis of research files 00 to 09, 20 and 21. It states what the sources say, marks inference, and recommends nothing. [The ten families compared](comparisons/families.md) puts every family in one table with the ideas worth borrowing and the ideas that cannot be combined.
 
 ## The families and what separates them
 

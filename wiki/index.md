@@ -136,3 +136,7 @@ Every page in the wiki, with one line on each. Start with the [overview](overvie
 - [Write-once pieces merged in the background](ideas/immutable-pieces-with-background-merge.md): Data is written as pieces that are never edited (parts, segments, files).
 - [Writes held for approval (gap)](ideas/writes-held-for-approval.md): An agent's write waits until a person, or a rule a person approved, lets it through.
 - [Writes that carry their assumptions](ideas/writes-that-carry-their-assumptions.md): Each write states what the writer believed when it made the change, such as "room 5 is free at 10:00" or "this value is still 7".
+
+## Comparisons (1)
+
+- [The ten families compared](comparisons/families.md): One table of all ten families, the ideas worth borrowing ranked by the gaps they help close, the ideas that cannot be combined, the gaps no family fills, and the limits of the evidence.

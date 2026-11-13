@@ -68,6 +68,7 @@ End with one table (system, strength, what pays for it, weakness), a short "Idea
 - [Keeping sensitive data from agents and model providers](issues/20-keeping-sensitive-data-from-agents.md): databases do ship masking and masked copies, but masking does not survive ad hoc queries and agents re-identify masked text in most measured cases; only differential privacy holds when many queries are combined, and it answers totals only; no shipping database declares sensitivity in its types and enforces it on every exit.
 - [Security of a database that agents use](issues/21-security-of-a-database-agents-use.md): a shared database holds the whole lethal trifecta by itself, and only the database can label rows by writer, trust and reader; limiting what an agent can do works while detecting injected instructions does not; every 2025 to 2026 bypass broke a text filter, not a credential's own limits.
 - [Compile the research into the wiki](issues/19-compile-the-research-into-the-wiki.md): 126 pages (53 systems, 63 ideas, 10 families) with an overview, an index and a log; 18 disagreements between sources are recorded on their pages and listed in the ticket.
+- [One comparison across all families](issues/10-one-comparison-across-families.md): [wiki/comparisons/families.md](wiki/comparisons/families.md) sets the ten families side by side, lists the ideas worth borrowing with their costs, the ideas that cannot be combined, and nine gaps no family fills.
 
 ## Not yet specified
 

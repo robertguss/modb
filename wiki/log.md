@@ -51,3 +51,10 @@ Left open:
 - A heuristic scan found about 160 paragraphs with no inline citation. Those checked sit under a lead line or parent bullet that cites ("From research 02:", "same page"); not every one was checked.
 - Claims the sources could not confirm stay unconfirmed: whether the EDPB revised its pseudonymisation guidelines after *SRB*, whether MongoBleed was exploited, the Datadog write-up's date, how far Snowflake tag propagation reaches, and the other items in each file's "What I could not confirm".
 - What TEE.fail broke cannot be settled from the research files alone.
+
+## [2026-11-13] query | One comparison across all families
+
+Ticket [10](../issues/10-one-comparison-across-families.md). Read the overview, the index, all ten family pages and all 63 idea pages.
+
+- New page: [comparisons/families](comparisons/families.md): one table of the ten families; 50 borrowable ideas ranked by how many of the overview's nine gaps each helps close (the ranking is inference); 15 pairs or groups that cannot be combined; the nine gaps plus two from idea pages; and what the wiki cannot settle.
+- Updated: [index](index.md) (new Comparisons group), [overview](overview.md) (link to the comparison).
