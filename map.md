@@ -58,6 +58,7 @@ End with one table (system, strength, what pays for it, weakness), a short "Idea
 
 - [Agents and databases today](issues/09-agents-and-databases-today.md): copies and long-open work are well served; approval and permissions sit beside the database; nobody records why a change was made or reconciles agents with each other by meaning; and there is real evidence against coordination-first.
 - [Relational and transactional databases](issues/01-relational-and-transactional.md): full isolation is always paid for with blocking, retries or clock waits; isolation level names cannot be trusted without a test tool; and a client that thinks inside an open transaction harms every engine.
+- [Analytical and specialised stores](issues/02-analytical-and-specialised.md): every attempt to rejoin analytics and transactions keeps two copies of the data; these stores write unchangeable pieces and combine them later, so a client can fail to read its own write; worth borrowing are indexes built from one log and a read that says whether it includes your own write.
 
 ## Not yet specified
 
