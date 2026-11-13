@@ -1,13 +1,13 @@
 # Relational and transactional databases
 
-Research run on 2026-11-13 by a subagent using Exa. It goes deeper than [00-landscape-overview.md](00-landscape-overview.md) on one family, and deepest on transactions. Inferences are marked as mine.
+Research run on 2026-11-13 by a subagent using Exa. It deepens [00-landscape-overview.md](00-landscape-overview.md) on one family, most of all on transactions. My inferences are marked.
 
 ## 1. What they are for, and where they came from
 
 A relational database stores data as tables and answers questions in a declarative language (SQL). A **transaction** is a group of reads and writes that succeeds or fails as a whole.
 
 - **The problem.** Codd's 1970 paper starts from "data independence": programs should keep working when the way data is stored changes ([Codd, CACM 1970](https://dl.acm.org/doi/pdf/10.1145/362384.362685)).
-- **System R (IBM, 1970s)** proved the model could be built with full function. It produced SQL, and its locking design started with **predicate locks** (locking a condition such as "employees in Evanston", even when no row matches). That proved too hard, and it ended with locks at several granularities ([History and Evaluation of System R, 1981](https://web.stanford.edu/class/cs245/readings/system-r-history-evaluation.pdf)). It already offered three isolation levels, and recovery combined a log with "shadow pages", which cost the most performance.
+- **System R (IBM, 1970s)** produced SQL and three isolation levels. Its locking began with **predicate locks** (locking a condition, such as "employees in Evanston", even when no row matches), which proved too hard ([System R history, 1981](https://web.stanford.edu/class/cs245/readings/system-r-history-evaluation.pdf)).
 - **Ingres to PostgreSQL.** POSTGRES began at Berkeley in 1986 under the leader of Ingres. SQL was added in 1994 (Postgres95), and it was renamed PostgreSQL in 1996 ([PG history](https://www.postgresql.org/docs/current/history.html)).
 - **Oracle, MySQL (InnoDB) and SQLite** are the other row stores in wide use. **Spanner** (2012) and **CockroachDB** spread the same model over many machines ([Spanner, OSDI 2012](https://www.usenix.org/system/files/conference/osdi12/osdi12-final-16.pdf)).
 
@@ -18,7 +18,7 @@ There are two ways to stop concurrent transactions from interfering.
 - **Locking (two-phase locking).** A transaction takes locks as it reads and writes and holds them until it ends. Readers block writers and writers block readers. This was System R's design.
 - **Multi-version concurrency control (MVCC).** Each write makes a new version of the row. Each reader sees a **snapshot**: the committed state at one moment. Readers never wait for writers. PostgreSQL, Oracle and InnoDB all use it ([PG MVCC](https://www.postgresql.org/docs/current/mvcc-intro.html); [Oracle concepts](https://docs.oracle.com/en/database/oracle/oracle-database/18/cncpt/data-concurrency-and-consistency.html); [InnoDB consistent read](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)).
 
-Old versions have to live somewhere until nobody can see them. Where each system keeps them decides most of how it fails (section 4).
+Old versions have to live somewhere until nobody can see them. Where each system keeps them decides how long transactions fail (section 3).
 
 | System | Where old versions live | Who cleans up |
 |---|---|---|
@@ -33,7 +33,7 @@ Old versions have to live somewhere until nobody can see them. Where each system
 
 An **isolation level** says which effects of concurrent transactions one transaction may see. SQL names four levels by the anomalies (wrong results) each forbids. The 1995 critique showed these definitions are ambiguous and miss **snapshot isolation** (SI) altogether ([Berenson et al.](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf)).
 
-- SI forbids most anomalies but allows **write skew**. Two transactions each read x and y, each check that x + y stays positive, and each write a different one of the two. Both commit, and the rule is broken. The paper calls this "a generic and important type of concurrency" failure.
+- SI forbids most anomalies but allows **write skew**. Two transactions each read x and y, each check that x + y stays positive, and each write a different one of the two. Both commit, and the rule is broken.
 
 What each system's names actually mean:
 
@@ -45,26 +45,26 @@ What each system's names actually mean:
 | CockroachDB | Serializable | Not offered | Serializable; read committed is opt-in ([docs](https://docs.cockroachlabs.com/docs/stable/read-committed)) |
 | Spanner | Serializable | Snapshot with optimistic locking ([docs](https://docs.cloud.google.com/spanner/docs/use-repeatable-read-isolation)) | Serializable, with external consistency |
 
-Sources for PostgreSQL: [isolation docs](https://www.postgresql.org/docs/current/transaction-iso.html). For InnoDB: [isolation docs](https://dev.mysql.com/doc/refman/26.10/en/innodb-transaction-isolation-levels.html).
+Defaults: [PostgreSQL](https://www.postgresql.org/docs/current/transaction-iso.html), [InnoDB](https://dev.mysql.com/doc/refman/26.10/en/innodb-transaction-isolation-levels.html).
 
 Jepsen tested these claims against running systems.
 
 - **MySQL 8.0.34.** Repeatable read allows lost updates: "MySQL Repeatable Read transactions cannot safely read a value and then write it." The usual pattern of load, change and save "may find that MySQL silently discards those committed changes". AWS RDS MySQL "routinely" broke serializability ([Jepsen, 2023-12-19](https://jepsen.io/analyses/mysql-8.0.34)).
 - **PostgreSQL 12.3.** Serializable let write skew through because of a bug in conflict detection. A fix followed ([Jepsen, 2020-06-12](https://jepsen.io/analyses/postgresql-12.3)).
 
-The lesson: what an isolation level is called is a weak promise. Only a test that checks the guarantee tells you what it is.
+The name of an isolation level is a weak promise; only a checker shows the guarantee.
 
 ### Locking against snapshots: what pays for serializability
 
 - **PostgreSQL SSI** (Serializable Snapshot Isolation) runs transactions under SI. It tracks read-then-write dependencies between concurrent transactions and aborts one when an anomaly is *possible* ([Ports and Grittner, VLDB 2012](http://vldb.org/pvldb/vol5/p1850_danrkports_vldb2012.pdf)).
   - The price: false aborts, and every serializable transaction must be retried on SQLSTATE `40001` ([PG docs](https://www.postgresql.org/docs/current/mvcc-serialization-failure-handling.html)).
 - **InnoDB** prevents **phantoms** (rows that appear when the same query is run again) with **next-key locks**: a lock on an index record plus the gap before it. Other sessions cannot insert into the range scanned ([InnoDB locking](https://dev.mysql.com/doc/refman/26.10/en/innodb-locking.html)).
-  - The price: inserts block, and deadlocks become more likely.
+  - The price: other sessions' inserts into that range wait.
 - **Spanner** locks in read-write transactions and avoids deadlock with **wound-wait**. An older transaction aborts ("wounds") a younger one that holds a lock it needs; a younger one waits ([concurrency control](https://docs.cloud.google.com/spanner/docs/concurrency-control)).
   - Read-only transactions take no locks and never abort.
   - The price is the clock. Each commit waits out TrueTime's uncertainty bound, "generally less than 10ms", kept small by GPS and atomic clocks. That buys **external consistency**: if T1 commits before T2 starts, T1's timestamp is smaller (OSDI paper).
-- **Spanner's repeatable read** was announced in preview in 2025 and is now listed as generally available ([release notes](https://docs.cloud.google.com/spanner/docs/release-notes)). It defers locks to commit and does not check reads. Google says to switch only "after you have audited your transactions to ensure they are safe from write-skew" ([Google, vendor](https://medium.com/google-cloud/spanner-repeatable-read-isolation-14262ee60709)).
-- **CockroachDB** defaults to serializable and pushes retries onto the client ([retry reference](https://docs.cockroachlabs.com/docs/stable/transaction-retry-error-reference)). Read committed exists so that clients do not have to write retry loops.
+- **Spanner's repeatable read** was announced in preview in 2025 and is now listed as generally available ([release notes](https://docs.cloud.google.com/spanner/docs/release-notes)). It defers locks to commit and does not check reads. Google says to switch only "after you have audited your transactions to ensure they are safe from write-skew" ([Google Cloud community post, vendor](https://medium.com/google-cloud/spanner-repeatable-read-isolation-14262ee60709)).
+- **CockroachDB** defaults to serializable and pushes retries onto the client ([retry reference](https://docs.cockroachlabs.com/docs/stable/transaction-retry-error-reference)). Its read committed level exists so clients need no retry loops ([docs](https://docs.cockroachlabs.com/docs/stable/read-committed)).
 
 The pattern across all of them: serializability is paid for with **blocking** (locks), **aborts** (optimistic checks), or **clock waits** (Spanner). The weaker levels move that cost into application bugs.
 
@@ -80,7 +80,7 @@ None of the engines treats this as a normal case. Each fails in its own way.
 - **Oracle** does the reverse: undo is overwritten in a circle. The *long reader* fails with ORA-01555 "snapshot too old" when the undo it needs is gone ([Oracle undo](https://docs.oracle.com/cd/B19306_01/server.102/b14231/undo.htm)).
 - **SQLite.** An open reader stops a checkpoint from resetting the write-ahead log (WAL), so the WAL file keeps growing ("checkpoint starvation"). There is only ever one writer ([wal.html](https://sqlite.org/wal.html)).
 - **Spanner** may abort a read-write transaction that has issued no read for 10 seconds "so that they don't hold on to locks indefinitely". Clients send `SELECT 1` to keep it alive ([transactions](https://docs.cloud.google.com/spanner/docs/transactions)).
-- **CockroachDB.** A long transaction whose reads are overwritten is forced to "refresh" and may fail with a retry error (retry reference). Old versions are kept only for a set garbage-collection window.
+- **CockroachDB.** A long transaction whose reads are overwritten is forced to "refresh" and may fail with a retry error (retry reference).
 
 ### Changing the schema of a live database
 
@@ -101,23 +101,23 @@ DDL (data definition language: `CREATE`, `ALTER`, `DROP`) changes the shape of t
 
 - **Names hide anomalies.** Oracle's "serializable" is SI, and MySQL's repeatable read loses updates (above).
 - **Old versions pile up.** Each engine's cleanup is stopped, or its readers broken, by the oldest open snapshot.
-- **Bugs survive decades of use.** SQLite's WAL-reset bug could corrupt a database when two connections wrote or checkpointed "at the same instant". It is "likely present" in every version from 3.7.0 (2010) to 3.51.2 and was fixed in 3.51.3 (2026-03-13) ([wal.html §11](https://sqlite.org/wal.html)). It was found by a developer, and an independent reproducer came only in August 2026.
-- **Retries are left to the client.** Every serializable engine returns an error and expects the application to replay the whole transaction.
+- **Bugs survive decades of use.** SQLite's WAL-reset bug could corrupt a database when two connections wrote or checkpointed "at the same instant". It is "likely present" in every version from 3.7.0 (2010) to 3.51.2 and was fixed in 3.51.3 (2026-03-13) ([wal.html §11](https://sqlite.org/wal.html)). A reproducer without special test code came only in August 2026.
+- **Retries are left outside the database.** Serializable engines return an error; the application or its client library replays the transaction.
 
 ## 5. What an AI agent would struggle with
 
 My inference, drawing on the sources above.
 
-1. **Thinking inside a transaction.** An agent that opens a transaction, then calls a model for 30 seconds before writing, is exactly the long transaction that every engine above punishes. It stalls VACUUM or purge, gets aborted for being idle by Spanner, or blocks a migration queue.
+1. **Thinking inside a transaction.** An agent that opens a transaction, then calls a model for 30 seconds before writing, is the long transaction every engine above punishes: it stalls VACUUM or purge, is aborted as idle by Spanner, or blocks a migration.
 2. **Retrying correctly.** After a `40001` error the agent must replay the *whole* transaction, re-reading data. A retry wrapped around only the last statement is wrong. If the agent's reasoning depended on what it read, the retry has to re-run the reasoning too.
 3. **Knowing what the level really guarantees.** An agent trusting the name "repeatable read" on MySQL will lose updates. The guarantee lives in Jepsen reports, not in the schema.
-4. **Migrations.** The safe pattern, a short `lock_timeout` plus retries and the expand/contract steps, is folklore spread across blogs. The database does not enforce it.
+4. **Migrations.** The safe pattern (a short `lock_timeout`, then retry) lives in blogs, not in the database.
 
 ## Summary table
 
 | System | Strength | What pays for it | Weakness |
 |---|---|---|---|
-| System R | Declarative queries, isolation levels, log-based recovery | Shadow-page cost; predicate locks dropped as too hard | Locking: readers and writers block each other |
+| System R | Declarative queries; isolation levels | Predicate locks dropped as too hard | Locking: readers and writers block each other |
 | PostgreSQL | True serializability via SSI; transactional DDL | Aborts and false positives; exclusive DDL locks | One long transaction stops VACUUM in every table |
 | Oracle | Readers never block; undo-based snapshots | Circular undo that gets overwritten | ORA-01555 on long readers; "serializable" allows write skew |
 | MySQL/InnoDB | No phantoms at the default level; instant ADD COLUMN | Gap locks block inserts; metadata locks | Repeatable read loses updates; DDL commits the open transaction |

@@ -57,6 +57,7 @@ End with one table (system, strength, what pays for it, weakness), a short "Idea
 ## Decisions so far
 
 - [Agents and databases today](issues/09-agents-and-databases-today.md): copies and long-open work are well served; approval and permissions sit beside the database; nobody records why a change was made or reconciles agents with each other by meaning; and there is real evidence against coordination-first.
+- [Relational and transactional databases](issues/01-relational-and-transactional.md): full isolation is always paid for with blocking, retries or clock waits; isolation level names cannot be trusted without a test tool; and a client that thinks inside an open transaction harms every engine.
 
 ## Not yet specified
 
