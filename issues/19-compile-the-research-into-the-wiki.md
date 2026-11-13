@@ -1,7 +1,7 @@
 # Compile the research into the wiki
 
 Type: task
-Status: open
+Status: claimed
 Blocked by: [Relational and transactional databases](01-relational-and-transactional.md), [Analytical and specialised stores](02-analytical-and-specialised.md), [Key-value, document and distributed stores](03-key-value-document-distributed.md), [Models that lost or stayed niche](04-models-that-lost-or-stayed-niche.md), [Databases that keep history](05-databases-that-keep-history.md), [Divergent copies and merging](06-divergent-copies-and-merging.md), [Code inside the database, and databases inside a language](07-code-inside-the-database.md), [Correctness-first databases](08-correctness-first-databases.md)
 
 ## Question
