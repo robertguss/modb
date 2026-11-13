@@ -30,13 +30,15 @@ Mentioned in the research without a page:
 - **Fast branching or fast reads, not both.** BranchBench found "a fundamental tension": systems built for fast branching read up to 5 to 4000 times slower as branches deepen; systems built for fast reads branch 25 to 1500 times slower. "No current system supports the representative workloads at scale" (https://arxiv.org/abs/2604.17180).
 - **Overlap shows up only at merge time.** Each writer gets a branch ([06](../../research/06-divergent-copies-and-merging.md)).
 - **Merge is structural.** Dolt matches rows by primary key and cells; lakeFS compares whole files. "No conflict" means only that no cell (or file) changed on both sides ([06](../../research/06-divergent-copies-and-merging.md)). See [Merging by meaning](../ideas/merging-by-meaning.md).
-- **The products agents use most do not merge.** Neon and Xata have no way back except overwrite or migrations. Of the branching tools agents use, only Dolt and Chronos document merging data back ([06](../../research/06-divergent-copies-and-merging.md), [09](../../research/09-agents-and-databases-today.md)).
+- **The products agents use most do not merge.** Neon and Xata have no way back except overwrite or migrations. Research 09 marks this as its own reading of Neon's docs, and research 06 is itself unsure about Xata; see the disagreement on [Cheap branches that share storage](../ideas/copy-on-write-branches.md). Of the branching tools agents use, only Dolt and Chronos document merging data back ([06](../../research/06-divergent-copies-and-merging.md), [09](../../research/09-agents-and-databases-today.md)).
 - **A branch does not record intent.** Choosing between base, ours and theirs needs both sides' intent ([06](../../research/06-divergent-copies-and-merging.md)).
 - **Branches reconcile with the main copy, not with each other.** The Berkeley paper asks for forks that "reconcile not just with the mainline, but with each other" (https://arxiv.org/html/2509.00997v2). See [Many branches that reconcile with each other](../ideas/branches-that-reconcile-with-each-other.md).
+- **A branch can be a masked copy.** Neon and Xata make anonymized branches for agents and developers; the copy is stale and protected only by hand-written rules ([20](../../research/20-keeping-sensitive-data-from-agents.md)). See [masked copies](../ideas/masked-copies.md).
 - **Approval sits beside the database.** See [Writes held for approval](../ideas/writes-held-for-approval.md).
 
 ## Sources
 
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
 - [research/06-divergent-copies-and-merging.md](../../research/06-divergent-copies-and-merging.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)

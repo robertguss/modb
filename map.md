@@ -14,7 +14,7 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 ## Notes
 
-**Tracker and wiki.** [AGENTS.md](AGENTS.md) holds the conventions for tickets, for `research/` and for the wiki. Research findings are sources; the wiki compiled from them is what a decision ticket reads. Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
+**Tracker and wiki.** [AGENTS.md](AGENTS.md) holds the conventions for tickets, for `research/` and for the wiki. Research findings are sources; the wiki compiled from them is what a decision ticket reads. Start at [wiki/overview.md](wiki/overview.md) and [wiki/index.md](wiki/index.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
 **Why this effort exists.** Robert wants an ambitious program that drives what Mo gains next, as an experiment in designing a language alongside a demanding project. The purpose is learning and his own use. Adoption by others and comparison of Mo with other languages are not measures.
 
@@ -67,6 +67,7 @@ End with one table (system, strength, what pays for it, weakness), a short "Idea
 - [Divergent copies and merging](issues/06-divergent-copies-and-merging.md): a merge can decide alone only for rules where any two valid copies always combine into a valid one; merges see what each side wrote, never what it read or assumed, so they can be right cell by cell and wrong in meaning; nothing provides multi-world isolation yet, and branching speed trades against read speed.
 - [Keeping sensitive data from agents and model providers](issues/20-keeping-sensitive-data-from-agents.md): databases do ship masking and masked copies, but masking does not survive ad hoc queries and agents re-identify masked text in most measured cases; only differential privacy holds when many queries are combined, and it answers totals only; no shipping database declares sensitivity in its types and enforces it on every exit.
 - [Security of a database that agents use](issues/21-security-of-a-database-agents-use.md): a shared database holds the whole lethal trifecta by itself, and only the database can label rows by writer, trust and reader; limiting what an agent can do works while detecting injected instructions does not; every 2025 to 2026 bypass broke a text filter, not a credential's own limits.
+- [Compile the research into the wiki](issues/19-compile-the-research-into-the-wiki.md): 126 pages (53 systems, 63 ideas, 10 families) with an overview, an index and a log; 18 disagreements between sources are recorded on their pages and listed in the ticket.
 
 ## Not yet specified
 

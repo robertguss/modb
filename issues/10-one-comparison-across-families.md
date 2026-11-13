@@ -1,7 +1,7 @@
 # One comparison across all families
 
 Type: research
-Status: open
+Status: claimed
 Blocked by: [Compile the research into the wiki](19-compile-the-research-into-the-wiki.md)
 
 ## Question

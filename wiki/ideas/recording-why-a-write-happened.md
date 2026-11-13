@@ -10,6 +10,8 @@ Each write would carry, as checked data, its reason, the requester, and the appr
 
 History stores record what changed and when. Without the why (the intent, the triggering request, or the agent's reasoning), provenance is left to logs outside the database (inference, [00](../../research/00-landscape-overview.md)). An agent choosing between two sides of a merge needs both sides' intent, which a branch does not record ([06](../../research/06-divergent-copies-and-merging.md)).
 
+Research 21 adds a security reason: an append-only audit tied to agent and task makes theft and unexplained changes traceable, but only if the audited actor cannot edit it ([21](../../research/21-security-of-a-database-agents-use.md)). See [history and audit the agent cannot erase](history-and-audit-the-agent-cannot-erase.md).
+
 ## What it costs
 
 The researcher's inference: designing a schema for intent and making every writer supply it ([05](../../research/05-databases-that-keep-history.md)).
@@ -36,6 +38,7 @@ None records a chain of authority, none rejects a write without a reason, and no
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
 - [research/05-databases-that-keep-history.md](../../research/05-databases-that-keep-history.md)
 - [research/06-divergent-copies-and-merging.md](../../research/06-divergent-copies-and-merging.md)
+- [research/21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)
 - https://docs.datomic.com/transactions/transaction-data-reference.html
 - https://cjohansen.no/annotating-datomic-transactions/

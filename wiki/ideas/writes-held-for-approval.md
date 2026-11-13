@@ -17,6 +17,7 @@ The documented agent failures came from broad credentials, no approval step, and
 
 - **A reachable approver, and a write that waits.** PgBeam parks each write until approved (https://pgbeam.com/docs/approvals).
 - **A step outside the database.** PgBeam is a proxy; Neon's approval is in its MCP server. No engine found runs approval rules inside its own transactions (inference, medium confidence, [09](../../research/09-agents-and-databases-today.md)).
+- **Approval bound to the change, not its description.** Snowflake's Cortex Code agent treated `cat` as safe to run without approval but did not check commands hidden in process substitution; a malicious README could then use the agent's cached Snowflake tokens to read and drop tables. Fixed 2026-02-28 (https://www.promptarmor.com/resources/snowflake-ai-escapes-sandbox-and-executes-malware). Approval decided by reading command text can be dodged; it should bind to a computed change ("these 40 rows"), at the cost of human time and latency (inference, [21](../../research/21-security-of-a-database-agents-use.md)). Research 21 found no measurement of how much approval reduces harm from agents.
 - **Checks that see the right data.** lakeFS's `pre-merge` hook "runs on the source branch" (https://docs.lakefs.io/guides/hooks/); whether it sees the merged result is not confirmed ([06](../../research/06-divergent-copies-and-merging.md)).
 
 ## Systems that use it
@@ -32,6 +33,8 @@ The documented agent failures came from broad credentials, no approval step, and
 
 - [research/06-divergent-copies-and-merging.md](../../research/06-divergent-copies-and-merging.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)
+- [research/21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
+- https://www.promptarmor.com/resources/snowflake-ai-escapes-sandbox-and-executes-malware
 - https://pgbeam.com/docs/approvals
 - https://github.com/neondatabase/mcp-server-neon/
 - https://www.dolthub.com/blog/2025-08-25-agents-need-clones/

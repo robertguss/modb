@@ -21,11 +21,14 @@ SQLite is an embedded SQL database: a library inside the application, with no se
 - **100% MC/DC coverage** from the TH3 harness. MC/DC means each condition in each branch is shown to change the outcome on its own; it is an avionics standard. *Paid for by* TH3 being proprietary and huge: about 248.5 million test runs before a release ([TH3](https://www.sqlite.org/th3.html)).
 - **Crash and I/O-error loops.** Crash tests use an in-memory file system that snapshots after N writes, damages the files as a power loss would, then checks the database; the loop moves N forward each time ([testing](https://www.sqlite.org/testing.html)). *Paid for by* all I/O going through one replaceable interface, the VFS.
 
+- **Built for hostile input.** SQLite says it "should never crash, overflow a buffer, leak memory … even when presented with maliciously malformed SQL inputs or database files" ([security](https://www.sqlite.org/security.html)). *Paid for by* heavy fuzzing ([research 21](../../research/21-security-of-a-database-agents-use.md)).
+
 ## Weaknesses
 
 - **Checkpoint starvation.** An open reader stops a checkpoint from resetting the WAL, so the WAL file keeps growing ([wal.html](https://sqlite.org/wal.html)).
 - **A corruption bug lived for 16 years.** The WAL-reset bug could corrupt a database when two connections wrote or checkpointed "at the same instant". It is "likely present" in every version from 3.7.0 (2010) to 3.51.2 and was fixed in 3.51.3 (2026-03-13). A reproducer without special test code came only in August 2026 ([wal.html §11](https://sqlite.org/wal.html)).
 - **Concurrent writers wait.** Agents get busy errors when several write at once ([research 08](../../research/08-correctness-first-databases.md)).
+- **Bugs are still found.** Google says its Big Sleep agent found CVE-2025-6965, "known only to threat actors", before it was used (vendor claim, resting on Google alone, [Google](https://cloud.google.com/blog/products/identity-security/cloud-ciso-perspectives-our-big-sleep-agent-makes-big-leap)).
 - **No concurrent writes in mainline.** `BEGIN CONCURRENT` lives on an unmerged branch ([doc](https://sqlite.org/src/doc/begin-concurrent/doc/begin_concurrent.md)).
 
 ## Overlapping work
@@ -37,11 +40,12 @@ SQLite is an embedded SQL database: a library inside the application, with no se
 
 - **Busy errors** when several agents write at once ([research 08](../../research/08-correctness-first-databases.md)).
 - **Thinking inside a transaction.** An open reader starves checkpoints (inference, [research 01](../../research/01-relational-and-transactional.md)).
-- **Unsafe tooling.** Trend Micro found SQL injection in Anthropic's reference SQLite MCP server that allowed stored prompt injection. The repository was archived with no patch after being forked more than 5,000 times (2025-06-24) ([Trend Micro](https://www.trendmicro.com/en/research/25/f/why-a-classic-mcp-server-vulnerability-can-undermine-your-entire-ai-agent.html)).
+- **Unsafe tooling.** Trend Micro found SQL injection in Anthropic's reference SQLite MCP server that allowed stored [prompt injection](../ideas/lethal-trifecta-in-a-shared-database.md). The repository was archived with no patch after being forked more than 5,000 times (2025-06-24) ([Trend Micro](https://www.trendmicro.com/en/research/25/f/why-a-classic-mcp-server-vulnerability-can-undermine-your-entire-ai-agent.html)).
 
 ## Worth borrowing
 
 - **The moving crash point.** Cost: every write must be a countable step ([research 08](../../research/08-correctness-first-databases.md)).
+- **The authoriser as the shape of an agent grant.** For untrusted SQL, SQLite advises a defensive mode, far lower limits (expression depth 10 instead of 1,000; no attached databases), and an authoriser callback that rejects any statement outside an allowed set ([security](https://www.sqlite.org/security.html)). Cost: the grant language must be small enough for an agent to read and a person to approve ([research 21](../../research/21-security-of-a-database-agents-use.md)). See [a per-statement check inside the engine](../ideas/statement-authoriser.md).
 - **Serializability through a single writer.** Cost: one writer at a time ([research 01](../../research/01-relational-and-transactional.md)).
 
 ## Disagreements
@@ -55,4 +59,5 @@ SQLite is an embedded SQL database: a library inside the application, with no se
 - [research/01-relational-and-transactional.md](../../research/01-relational-and-transactional.md)
 - [research/08-correctness-first-databases.md](../../research/08-correctness-first-databases.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)
+- [research/21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
 - Primary links are given inline above.

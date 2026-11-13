@@ -23,6 +23,7 @@ JSON-like documents. Data used together is embedded together. "An operation on a
 - **Unsafe defaults in the past.** Jepsen found that 4.2.6 transactions violated snapshot isolation under default settings. They "appeared to lose acknowledged writes" because transactions ignored safer client settings and fell back to `w: 1` (https://jepsen.io/analyses/mongodb-4.2.6). Since 5.0 the default write concern is `majority` (vendor PDF, https://webassets.mongodb.com/mongodb_whats_new_5.0.pdf). See [Replying only after a write is durable](../ideas/reply-only-after-durable-write.md).
 - **On a partition:** one primary per replica set. With `majority`, writes on the minority side fail; with weaker settings, they can be rolled back later ([03](../../research/03-key-value-document-distributed.md)).
 - **Spec and code did not match.** MongoDB tried to check that real server traces matched its TLA+ specification. "This whole experiment failed. Our traces never matched our specification." Generating tests from the spec did work for a smaller algorithm ([08](../../research/08-correctness-first-databases.md), https://vldb.org/pvldb/vol13/p1346-davis.pdf, https://www.mongodb.com/company/blog/engineering/conformance-checking-at-mongodb-testing-our-code-matches-our-tla-specs). See [Checking designs with formal models](../ideas/formal-design-models.md).
+- **MongoBleed (CVE-2025-14847, December 2025).** Mismatched length fields in zlib-compressed headers let "an unauthenticated client" read uninitialised heap memory, in versions 3.6 to 8.2 (https://nvd.nist.gov/vuln/detail/CVE-2025-14847). Whether it was exploited in the wild is not confirmed ([21](../../research/21-security-of-a-database-agents-use.md)). See [a memory-safe engine that parses nothing before login](../ideas/memory-safe-engine.md).
 - A one-minute default limit on transaction runtime was seen only in a secondary source ([03](../../research/03-key-value-document-distributed.md), not confirmed).
 
 ## Overlapping work
@@ -42,6 +43,8 @@ The guarantee is a setting passed with each call, and the old defaults were unsa
 - [00-landscape-overview.md](../../research/00-landscape-overview.md)
 - [03-key-value-document-distributed.md](../../research/03-key-value-document-distributed.md)
 - [08-correctness-first-databases.md](../../research/08-correctness-first-databases.md)
+- [21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
+- https://nvd.nist.gov/vuln/detail/CVE-2025-14847
 - https://www.mongodb.com/docs/manual/data-modeling/
 - https://www.mongodb.com/docs/manual/core/write-operations-atomicity/
 - https://www.mongodb.com/docs/v7.0/reference/operator/aggregation/lookup/

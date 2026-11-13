@@ -44,10 +44,12 @@ Mentioned in the sources without a page of their own:
 - **The oldest open snapshot blocks cleanup or breaks readers.** None of the engines treats a minute-long transaction as normal; each fails in its own way ([research 01](../../research/01-relational-and-transactional.md)). See [long transactions and time limits](../ideas/transaction-time-limits.md). Research 01 found no study of agents holding transactions open; research 08 and 09 cite a 2026 workshop paper saying they do ([SAO workshop](https://bauplanlabs.github.io/SAO-workshop/papers/9.pdf)).
 - **Schema changes fight running transactions.** Exclusive locks (PostgreSQL), implicit commits (MySQL, Oracle) or non-atomic stages (F1, CockroachDB) ([research 01](../../research/01-relational-and-transactional.md)). See [staged schema changes](../ideas/staged-schema-changes.md).
 - **Retries are left outside the database.** Serializable engines return an error, and the application replays the transaction ([research 01](../../research/01-relational-and-transactional.md)).
+- **Hiding data is bolted onto open queries.** SQL Server, Oracle and PostgreSQL ship [masking](../ideas/dynamic-masking.md) and [row security](../ideas/row-and-column-security.md), but the vendors say masking does not stop a user who can write ad hoc queries, and PostgreSQL's constraint checks bypass row security ([research 20](../../research/20-keeping-sensitive-data-from-agents.md)).
 - **Bugs survive decades of use.** SQLite's WAL-reset corruption bug lived from 2010 to 2026 ([wal.html](https://sqlite.org/wal.html)). Jepsen keeps finding that documentation promises more than the system gives ([research 08](../../research/08-correctness-first-databases.md)).
 
 ## Sources
 
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
 - [research/01-relational-and-transactional.md](../../research/01-relational-and-transactional.md)
 - [research/05-databases-that-keep-history.md](../../research/05-databases-that-keep-history.md)

@@ -30,6 +30,7 @@ Oracle Database is a commercial relational row store. It keeps old row images in
 - **History and schema changes collide.** Some schema changes fail with ORA-55610 unless the history archive is detached and reattached ([flashback](https://docs.oracle.com/en/database/oracle/oracle-database/26/adfns/flashback.html)).
 - **Undo SQL is approximate.** It "is not the exact opposite" in every case ([reference](https://docs.oracle.com/en/database/oracle/oracle-database/26/refrn/FLASHBACK_TRANSACTION_QUERY.html)).
 - **Who made a change is weakly recorded.** The logon user is usually a shared application account ([research 05](../../research/05-databases-that-keep-history.md)).
+- **Redaction can be probed.** Oracle Data Redaction puts no limit on "the WHERE clause", which can be used "in an iterative fashion to infer the actual data"; SYSDBA is exempt ([redaction security](https://docs.oracle.com/en/database/oracle/oracle-database/19/asoag/security-considerations-for-using-oracle-data-redaction.html)). See [masking query results by role](../ideas/dynamic-masking.md).
 
 ## Overlapping work
 
@@ -40,6 +41,7 @@ Oracle Database is a commercial relational row store. It keeps old row images in
 Inference from research 01, which reasons about all the relational engines together.
 
 - **Trusting a level's name.** An agent that asks for "serializable" gets snapshot isolation and can commit write skew.
+- **Probing redacted columns.** An agent writes ad hoc SQL, exactly the reader redaction says it does not stop (inference, [research 20](../../research/20-keeping-sensitive-data-from-agents.md)).
 - **Thinking inside a long read.** An agent that holds a snapshot while it calls a model risks ORA-01555 when the undo is overwritten.
 
 ## Worth borrowing
@@ -55,4 +57,5 @@ Inference from research 01, which reasons about all the relational engines toget
 - [research/01-relational-and-transactional.md](../../research/01-relational-and-transactional.md)
 - [research/02-analytical-and-specialised.md](../../research/02-analytical-and-specialised.md)
 - [research/05-databases-that-keep-history.md](../../research/05-databases-that-keep-history.md)
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
 - Primary links are given inline above.

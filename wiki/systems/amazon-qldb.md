@@ -27,7 +27,7 @@ Conflicts raised `OccConflictException` for the application to retry (https://ql
 
 ## Worth borrowing
 
-A hash chain over the log, with redaction that keeps hashes. Tamper-evidence for little cost (researcher's inference, [05](../../research/05-databases-that-keep-history.md)).
+A hash chain over the log, with redaction that keeps hashes. Tamper-evidence for little cost (researcher's inference, [05](../../research/05-databases-that-keep-history.md)). Research 21 makes the same point for agents: an audit log helps only if the audited actor cannot edit it ([21](../../research/21-security-of-a-database-agents-use.md)). See [history and audit the agent cannot erase](../ideas/history-and-audit-the-agent-cannot-erase.md).
 
 ## Disagreements
 
@@ -37,6 +37,7 @@ A hash chain over the log, with redaction that keeps hashes. Tamper-evidence for
 
 - [research/05-databases-that-keep-history.md](../../research/05-databases-that-keep-history.md)
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
+- [research/21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
 - https://docs.aws.amazon.com/qldb/latest/developerguide/verification.html
 - https://docs.aws.amazon.com/qldb/latest/developerguide/working.metadata.by-clause.html
 - https://docs.aws.amazon.com/qldb/latest/developerguide/ql-reference.select.html

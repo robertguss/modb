@@ -35,6 +35,8 @@ PostgreSQL is an open-source relational database: tables queried with SQL, and t
 - **Managed copies can break snapshot isolation.** Amazon RDS for PostgreSQL clusters showed "Long Fork" even when healthy ([Jepsen, 2025-04-29](https://jepsen.io/analyses/amazon-rds-for-postgresql-17.4)).
 - **History and overlapping writes still collide.** `UPDATE/DELETE FOR PORTION OF` was reverted from PostgreSQL 19 on 2026-09-15 ([commit message](https://www.postgresql.org/message-id/E1x6QRv-00000000QOV-0oQc%40gemulon.postgresql.org)). A contributor's write-up gives the reason: updating part of a period splits a row in two, and a second writer waiting on that row wakes to find it shrunk and silently updates nothing ([tapoueh](https://tapoueh.org/blog/2026/09/getting-ready-for-postgresql-19/)). Research 05 notes the reason comes from that blog, not the commit.
 - **Triggers are hard to reason about.** They fire "in alphabetical order by trigger name"; cascades have "no direct limitation", and avoiding infinite recursion "is the trigger programmer's responsibility" ([PG triggers](https://www.postgresql.org/docs/current/trigger-definition.html)). See [stored procedures and triggers](../ideas/stored-procedures-and-triggers.md).
+- **Row security has side channels.** Unique and foreign-key checks "always bypass row security", which the docs call a "covert channel" ([row security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)), and `LEAKPROOF` functions may run before the policy for speed ([CREATE FUNCTION](https://www.postgresql.org/docs/current/sql-createfunction.html)). See [row and column security](../ideas/row-and-column-security.md).
+- **Quoting bug used in real attacks.** libpq's escaping functions missed quotes in text with invalid encoding (CVE-2025-1094) ([advisory](https://www.postgresql.org/support/security/CVE-2025-1094/)); Rapid7 tied it to real attacks via BeyondTrust ([Rapid7](https://www.rapid7.com/blog/post/2025/02/13/cve-2025-1094-postgresql-psql-sql-injection-fixed/)).
 - **Not confirmed.** PostgreSQL 19 is not out; GA was moved to 2026-11-19 ([datapace, secondary](https://datapace.ai/blog/postgresql-19-release-date)). The draft notes list `REPACK (CONCURRENTLY)`, which rebuilds a table without an exclusive lock, but research 01 did not confirm it survived beta 4.
 
 ## Overlapping work
@@ -51,11 +53,12 @@ Research 01 marks this as its own inference.
 - **Retrying correctly.** After `40001` the agent must replay the *whole* transaction and re-read data. If its reasoning depended on what it read, the retry must re-run the reasoning too.
 - **Migrations.** The safe pattern (short `lock_timeout`, then retry) lives in blogs, not in the database.
 - **Hidden effects.** A trigger is invisible at the call site, so an agent writing one row cannot see what else will change ([research 07](../../research/07-code-inside-the-database.md)).
-- **Permissions it cannot read.** Row-level security is enforced but the agent cannot inspect it; MCP servers show schemas, not policies (inference, [research 09](../../research/09-agents-and-databases-today.md)). In the July 2025 Supabase MCP leak, an agent holding the all-powerful `service_role` key followed instructions planted in a support ticket and copied a token table into that ticket ([General Analysis](https://generalanalysis.com/blog/supabase-mcp-blog)).
+- **Permissions it cannot read.** Row-level security is enforced but the agent cannot inspect it; MCP servers show schemas, not policies (inference, [research 09](../../research/09-agents-and-databases-today.md)). Anthropic's reference Postgres MCP server ran agent SQL in a read-only transaction but accepted several statements at once, so `COMMIT;` followed by a write escaped it ([Datadog](https://securitylabs.datadoghq.com/articles/mcp-vulnerability-case-study-SQL-injection-in-the-postgresql-mcp-server/); publication date not confirmed, [research 21](../../research/21-security-of-a-database-agents-use.md)). See [a per-statement check inside the engine](../ideas/statement-authoriser.md). In the July 2025 Supabase MCP leak, an agent holding the all-powerful `service_role` key followed instructions planted in a support ticket and copied a token table into that ticket ([General Analysis](https://generalanalysis.com/blog/supabase-mcp-blog)).
 
 ## Worth borrowing
 
 - **A hard limit on how long a transaction stays open** (`transaction_timeout`). Cost: long work must be split or moved outside the transaction, for example to a branch ([research 01](../../research/01-relational-and-transactional.md)).
+- **Masking rules in the schema.** The [PostgreSQL Anonymizer](postgresql-anonymizer.md) extension declares masking rules as security labels and applies them dynamically or to copies ([research 20](../../research/20-keeping-sensitive-data-from-agents.md)). Cost: hand-written rules, and dynamic masking does not stop ad hoc queries. [IFDB](ifdb.md), a 2013 research fork, went further with labels on every row.
 - **Valid time beside system time**, as in the version 18 keys, for after-the-fact corrections. Cost: an "as of when?" on every query and care with writes that split periods ([research 05](../../research/05-databases-that-keep-history.md)). See [valid time and system time](../ideas/valid-time-and-system-time.md).
 
 ## Disagreements
@@ -70,4 +73,6 @@ Research 01 marks this as its own inference.
 - [research/07-code-inside-the-database.md](../../research/07-code-inside-the-database.md)
 - [research/08-correctness-first-databases.md](../../research/08-correctness-first-databases.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
+- [research/21-security-of-a-database-agents-use.md](../../research/21-security-of-a-database-agents-use.md)
 - Primary links are given inline above.

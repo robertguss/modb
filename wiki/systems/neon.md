@@ -17,6 +17,8 @@ Postgres databases that can be branched instantly, so a change can be tried on a
 - **Instant copy-on-write branches.** Paid for by having no merge at all ([06](../../research/06-divergent-copies-and-merging.md)), and by shared storage that slows reads on deep branch chains (https://arxiv.org/abs/2604.17180).
 - **Used heavily by agents.** Neon said over 80% of its databases are created by AI agents (vendor claim, https://neon.com/blog/neon-and-databricks; 2025-05-14, https://www.databricks.com/company/newsroom/press-releases/databricks-agrees-acquire-neon-help-developers-deliver-ai-systems). A later Databricks post says agents create 80% of databases and 97% of branches (vendor claim, about 2026-01-27, https://www.databricks.com/blog/enterprise-ai-agent-trends-top-use-cases-governance-evaluations-and-more). The Berkeley paper reports that at Neon, agents created 20× more branches and did 50× more rollbacks than humans (https://arxiv.org/html/2509.00997v2).
 
+- **Anonymized branches.** Neon makes a branch and runs [PostgreSQL Anonymizer](postgresql-anonymizer.md) static masking on it, with rules per branch (https://neon.com/docs/workflows/data-anonymization). Paid for by a stale copy protected only as well as hand-written rules; untagged and free-text columns pass through ([20](../../research/20-keeping-sensitive-data-from-agents.md)). See [masked copies](../ideas/masked-copies.md).
+
 ## Weaknesses
 
 - **No way back except overwrite or migrations.** "Reset from parent" is "a complete overwrite ... not a refresh or a merge" (https://neon.com/docs/guides/reset-from-parent). See the disagreement below.
@@ -43,6 +45,8 @@ Each agent gets its own branch. Because branches do not merge, overlapping work 
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
 - [research/06-divergent-copies-and-merging.md](../../research/06-divergent-copies-and-merging.md)
 - [research/09-agents-and-databases-today.md](../../research/09-agents-and-databases-today.md)
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
+- https://neon.com/docs/workflows/data-anonymization
 - https://neon.com/docs/manage/branches
 - https://neon.com/docs/guides/schema-diff
 - https://neon.com/docs/guides/reset-from-parent

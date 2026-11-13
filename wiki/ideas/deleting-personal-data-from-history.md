@@ -25,6 +25,8 @@ Each system pays differently:
 
 The researcher's suggestion (inference): keep personal data outside the history from day one, with history holding references. Excision, crypto-shredding and the EDPB all point there. The cost is two stores and a join ([05](../../research/05-databases-that-keep-history.md)).
 
+Replacing names with stand-ins does not get a store out of this. In the EU, pseudonymised data stays personal data in the sender's hands, even when the key is held elsewhere or erased (https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf, [20](../../research/20-keeping-sensitive-data-from-agents.md)). See [consistent pseudonyms](consistent-pseudonyms.md) and [what the law accepts as de-identified](legal-de-identification.md).
+
 ## Systems that use it
 
 [Datomic](../systems/datomic.md), [XTDB](../systems/xtdb.md), [KurrentDB](../systems/kurrentdb.md), [Apache Kafka](../systems/kafka.md), [Amazon QLDB](../systems/amazon-qldb.md), [SQL:2011 temporal tables](../systems/sql-temporal-tables.md), [Snowflake](../systems/snowflake.md).
@@ -41,6 +43,8 @@ A record that is both immutable and holds personal data in any form, clear, encr
 
 - [research/05-databases-that-keep-history.md](../../research/05-databases-that-keep-history.md)
 - [research/00-landscape-overview.md](../../research/00-landscape-overview.md)
+- [research/20-keeping-sensitive-data-from-agents.md](../../research/20-keeping-sensitive-data-from-agents.md)
+- https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf
 - https://docs.datomic.com/operation/excision.html
 - https://docs.datomic.com/schema/schema-reference.html
 - https://vvvvalvalval.github.io/posts/2018-05-01-making-a-datomic-system-gdpr-compliant.html
