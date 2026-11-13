@@ -6,6 +6,6 @@ Blocked by: [Relational and transactional databases](01-relational-and-transacti
 
 ## Question
 
-AFK. Ingest `research/00` to `research/09` into the wiki, one file at a time, by the Ingest workflow in `AGENTS.md`: a page for every system and idea, the family pages, `wiki/overview.md`, the index and the log. Then run one Lint pass.
+AFK. Ingest `research/00` to `research/09`, then `research/20` and `research/21` once they exist, into the wiki, one file at a time, by the Ingest workflow in `AGENTS.md`: a page for every system and idea, the family pages, `wiki/overview.md`, the index and the log. Then run one Lint pass.
 
 The answer records how many pages exist, and every disagreement between sources that the ingest found.
