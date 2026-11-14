@@ -16,6 +16,10 @@ _Avoid_: Concurrency, concurrent
 Keeping overlapping work correct and accountable: conflicts, history, undo and guarded writes.
 _Avoid_: Concurrency control
 
+**Accountable write**:
+A write that states who made it, under which grant, for which task and why, and that the database checks against the rules a person approved.
+_Avoid_: Audited write, logged write
+
 **Guarded write**:
 A write the database rejects or holds because it would break a rule a person approved.
 _Avoid_: Validation, constraint
