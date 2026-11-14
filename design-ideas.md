@@ -282,7 +282,7 @@ Explored on 2026-11-14 at Robert's request, after the storage underneath. Nothin
 Replaying is not new. [Bayou](wiki/systems/bayou.md) did it in 1995 and [Zero](wiki/systems/zero.md) does it today. What the other ideas in this file add to it:
 
 - **Each call checks itself again.** A write function already refuses when its conditions do not hold. Replayed on the newer state, it reads the newer state. When two agents approve the same form, the second replay is refused with a typed reason the agent can act on. Bayou needed a hand-written check on every write; here the function is the check.
-- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second. Open since 2026-11-14: for a world with more than one call this cannot be right as stated, because a transfer written as two calls breaks "the total stays the same" in between ([predictions](models/replay-predictions.md)).
+- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second. For a world with more than one call this has a price: a transfer written as two calls breaks "the total stays the same" in between and never lands. Claude first wrote that the rule "cannot be right as stated". The second model corrected that: checked after every call and landed whole, it got nothing wrong, and the transfer has to be one approved function ([what the second model found](#what-the-second-model-found)).
 - **The database already knows what the agent read.** Every question the agent asked was a read program the database ran, so the world's record holds each program and its answer. At replay the database runs them again. A different answer means the agent decided on something that is no longer true. [Writes that carry their assumptions](wiki/ideas/writes-that-carry-their-assumptions.md) found that agents rarely state what they assumed. Here they do not have to.
 - **Giving up is free.** Dropping a world is dropping a root.
 - **Two worlds reconcile the same way.** Replaying one world's calls onto another world is the same step. The main line is only the world everyone agrees is real, and its log is the final order.
@@ -458,7 +458,7 @@ On 2026-11-14 Robert agreed to start with a TLA+ model of the replay rule. He as
 
 - The recorded reads alone caught all five mistakes. The function's own check and the promises caught three, the ones that break a declared rule.
 - A call that says what it means, such as "add 2", needs no check, and the recorded reads send it back for nothing.
-- The model is tiny and leaves out worlds with more than one call.
+- The model is tiny and leaves out worlds with more than one call. The [second model](#what-the-second-model-found) covers those.
 
 **Many agents** ([findings](research/30-earlier-work-on-merging-by-replay.md)).
 
@@ -497,10 +497,35 @@ On 2026-11-14 Robert agreed to start with a TLA+ model of the replay rule. He as
 
 **What Claude would change in the order proposed above.** Robert has not accepted this.
 
-1. Next, a model of worlds with more than one call, to settle what lands whole and when promises are checked.
+1. Next, a model of worlds with more than one call, to settle what lands whole and when promises are checked. Robert agreed to this one on 2026-11-14 and it is done; see the next section.
 2. Treat the precision of recorded reads as the first design question for many agents.
 3. Put off the TLA+ model of disk writes until the storage design is firmer.
 4. Use Alloy when grants are designed.
+
+## What the second model found
+
+A world is an agent's own copy of the data. A call is one use of an approved write function. Robert asked on 2026-11-14 what "a world with more than one call" meant, and then agreed to a model of it. The predictions were committed before the model, and all 40 settings came out as predicted ([results](models/README.md)).
+
+The model lands a world of two calls in four ways and runs six small cases through each.
+
+| Way of landing | What happened |
+| --- | --- |
+| **Each call by itself, rule after each.** A Mo service today. | A transfer written as "take" then "put" never lands: "take" breaks the rule and is refused every time. Where no rule is declared, the two calls land with a gap. Another agent read the gap and recorded a wrong sum. In another case the second call was refused for ever, and what the first had taken was gone. The recorded reads did not help. |
+| **The whole world, rule at the end.** A transaction in an ordinary database. | The transfer lands and five cases come out right. In the sixth an agent combined two approved calls into a change neither could make: "spend" then "close" raised a budget from 2 to 3. The result keeps the rule, so nothing catches it. |
+| **The whole world, rule after every call.** | Nothing went wrong in any case. The transfer as two calls never lands. It has to be one approved function. |
+| **Each call by itself, rule at the end.** | Meant to fail, and did: the main line broke its rule in between. |
+
+What follows from it:
+
+- **There is a third option.** Claude put two to Robert: the call is the unit, or the world is. Writing the predictions turned up a third: the world lands whole, and the rule is still checked after every call. It is the rule this document already had, with all-or-nothing landing added. No other agent can read a gap, nothing is left half done, and a world can do only what approved calls can do one at a time.
+- **Its price.** A change whose middle breaks a rule must be one approved function. The agent proposes it and a person approves it, which is the route Robert decided for new write functions.
+- **Under "rule at the end" a write function cannot rely on the rules holding when it starts.** "Close" was safe only because spent is never above the budget. Every function would have to check for itself whatever it relies on.
+- **The recorded reads must be run again in place.** Each read is run at its point in the replay, where it sees the world's own earlier calls. Compared with the main line, a world that read its own change is refused for ever.
+- **A possible later addition, not modelled:** a person marks one rule as "checked at the end of a world". SQL databases have this as deferred constraints (from memory, not checked). It would allow the two-call transfer for that rule alone.
+
+Claude recommends the third option. Robert has not chosen.
+
+Limits. Every prediction matched, so the model confirmed what was expected and did not surprise; the third option came from writing the predictions. The cases are six, tiny and chosen by hand. Whether real work often needs a change whose middle breaks a rule is not known, and it decides how much the third option's price hurts. Landing a whole world in one step has not been checked against what a Mo service can do today.
 
 ## Deep dives for later
 
@@ -520,7 +545,10 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **Code stored by hash.**
 - **Storage laid out by type,** and a key for each sensitive field.
 - **Many agents:** the replay rule, which reads count as relied on, fairness, taking one agent's work out.
-- **Worlds with more than one call:** what lands whole, and when promises are checked.
+- **Worlds with more than one call:** modelled on 2026-11-14; the choice between the three ways of landing is Robert's and is open.
+- **A rule checked at the end of a world,** marked rule by rule by a person.
+- **How often real work needs a change whose middle breaks a rule,** which decides the price of checking after every call.
+- **A long world sent back for ever,** since a world with more calls reads more.
 - **Clearing old versions,** given how fast garbage grows.
 - **One write at a time** in place of one operation at a time. This changes a settled rule.
 - **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.

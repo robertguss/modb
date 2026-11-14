@@ -91,6 +91,7 @@ End with one table (system, strength, what pays for it, weakness), a short "Idea
 - [What earlier work stands behind write-once trees and views kept current?](issues/31-earlier-work-on-write-once-trees-and-views-kept-current.md): The tree of write-once nodes is proven at scale, but garbage grows fast, hashes fight erasure, and only restricted forms of view can be kept current.
 - [What earlier work stands behind grants as views and requests as programs?](issues/32-earlier-work-on-grants-as-views-and-requests-as-programs.md): Requests as programs is an old idea newly combined that lost for reasons other than the idea itself; grants as view functions are sound at the core and leak through errors, timing, totals and work limits.
 - [Does the replay rule catch what merges get wrong?](issues/33-does-the-replay-rule-catch-what-merges-get-wrong.md): All 48 settings as predicted: recorded reads catch all five mistakes, declared rules catch three, and a call that says what it means is sent back for nothing.
+- [What lands together when a world holds more than one call?](issues/35-what-lands-together-when-a-world-holds-more-than-one-call.md): All 40 settings as predicted: calls landing one by one leave gaps, a whole world checked only at its end lets approved calls combine into a change neither could make, and a whole world checked after every call got nothing wrong. Robert has not chosen.
 
 ## Not yet specified
 
