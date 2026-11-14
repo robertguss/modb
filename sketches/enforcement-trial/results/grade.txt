@@ -1,0 +1,54 @@
+
+arm A: 20 sessions
+  good within two repairs: 20/20 = 100% (84 to 100)
+  ended good: 20/20 = 100% (84 to 100)
+  first valid version was accepted: 19/20 = 95% (76 to 99)
+  met the rule's error: 1/20 = 5% (1 to 24)
+  needless walk at the end, of the tasks an index answers: 0/16 = 0% (0 to 19)
+
+arm G: 20 sessions
+  good within two repairs: 20/20 = 100% (84 to 100)
+  ended good: 20/20 = 100% (84 to 100)
+  first valid version was accepted: 20/20 = 100% (84 to 100)
+  met the rule's error: 0/20 = 0% (-0 to 16)
+  needless walk at the end, of the tasks an index answers: 0/16 = 0% (0 to 19)
+
+arm A, claude: 10 sessions
+  good within two repairs: 10/10 = 100% (72 to 100)
+  ended good: 10/10 = 100% (72 to 100)
+  first valid version was accepted: 10/10 = 100% (72 to 100)
+  met the rule's error: 0/10 = 0% (-0 to 28)
+  needless walk at the end, of the tasks an index answers: 0/8 = 0% (0 to 32)
+
+arm A, gpt: 10 sessions
+  good within two repairs: 10/10 = 100% (72 to 100)
+  ended good: 10/10 = 100% (72 to 100)
+  first valid version was accepted: 9/10 = 90% (60 to 98)
+  met the rule's error: 1/10 = 10% (2 to 40)
+  needless walk at the end, of the tasks an index answers: 0/8 = 0% (0 to 32)
+
+arm G, claude: 10 sessions
+  good within two repairs: 10/10 = 100% (72 to 100)
+  ended good: 10/10 = 100% (72 to 100)
+  first valid version was accepted: 10/10 = 100% (72 to 100)
+  met the rule's error: 0/10 = 0% (-0 to 28)
+  needless walk at the end, of the tasks an index answers: 0/8 = 0% (0 to 32)
+
+arm G, gpt: 10 sessions
+  good within two repairs: 10/10 = 100% (72 to 100)
+  ended good: 10/10 = 100% (72 to 100)
+  first valid version was accepted: 10/10 = 100% (72 to 100)
+  met the rule's error: 0/10 = 0% (-0 to 28)
+  needless walk at the end, of the tasks an index answers: 0/8 = 0% (0 to 32)
+
+task            A-claude A-gpt    G-claude G-gpt   
+orders_of       good/1   good/1   good/1   good/1  
+product_name    good/1   good/1   good/1   good/1  
+large_orders    good/2   good/1   good/1   good/1  
+paid_total      good/4   good/4   good/1   good/5  
+open_count      good/1   good/3   good/1   good/6  
+bought          good/1   good/1   good/1   good/1  
+units_sold      good/1   good/2   good/1   good/1  
+latest          good/4   good/2   good/2   good/1  
+mentions        good/1   good/1   good/1   good/1  
+idle_customers  good/1   good/2   good/1   good/1  

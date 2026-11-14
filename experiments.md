@@ -11,7 +11,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -77,6 +77,43 @@ Claude's further predictions, added before any session ran:
 
 With 20 sessions in an arm, a 95% interval is about 20 points each way. The trial can show a large gap and cannot show a small one.
 
+### Result of experiment 4, 2026-11-14
+
+Run as frozen in commit `28916e0`. The two pilots needed no change to the harness. All 40 sessions ran and each reported `done`. The grading output, every verdict and the 42 answers are in [sketches/enforcement-trial/results](sketches/enforcement-trial/results/grade.txt).
+
+| Measure | Arm A, plain Mo | Arm G, table type |
+| --- | --- | --- |
+| Good within two repairs | 20 of 20 (interval 84% to 100%) | 20 of 20 (84% to 100%) |
+| Ended good | 20 of 20 | 20 of 20 |
+| The rule accepted the first valid version | 19 of 20 | 20 of 20 |
+| Needless walk at the end, on the 16 index tasks | 0 | 0 |
+| Walked the right table, on the 4 tasks that need it | 4 of 4 | 4 of 4 |
+
+- **The trial cannot tell the arms apart.** Both are at the top of the scale. Claude and GPT each scored 10 of 10 in each arm.
+- **Agents told the rule wrote the shape at once.** `STORE.md` states arm A's rule in about ten lines with one example. 17 of the 20 answers under A read tables only through library calls and 3 used a `for` loop.
+- **The one refusal under A was the stand-in script's fault.** Session 14 wrote a correct filter on two indexed fields, with the test wrapped onto its own line. `rule.py` joined the lines with a space after the bracket and then failed to see the test. The agent took one more version to get past it, by moving one test into a loop, and did not reach for `walk`.
+- **The compile errors the sessions did meet were ordinary Mo errors,** such as an unused import or a case imported without its type. They came in both arms alike.
+
+How the predictions did:
+
+- GPT Sol, A reaches 90% within two repairs: right.
+- Gemini Carbon, A reaches 90% with 10% or less needless walks: right. That the table type falls under 60% on joins: wrong. The four join and compound tasks came out 8 of 8 under G.
+- Claude Opus, A is no better than the table type: right.
+- Claude, all five: right. A and G both at 85% or more, within 15 points, no more than 2 needless walks, and the first valid version accepted in 60% or more.
+
+What it means:
+
+- **Experiment 1 measured habit; this measured what agents do once told.** 13% of the row-picking code agents wrote unprompted was in a shape. Told the rule in one page, they wrote the shape first time in 19 sessions of 20. The fear that agents cannot write the shapes is answered for simple reads.
+- **Neither arm costs agents anything measurable here.** So the choice between them rests on what each costs to build and what can go wrong in it, not on which agents handle better.
+- **A brittle recogniser showed up even in a script of 100 lines.** A compiler reads a syntax tree and would not make this mistake, but equivalent code being refused is the risk experiment 6 is about.
+
+What it does not show:
+
+- **Hard reads.** No task needed `or`, a negation, a top ten over a whole table, a group-by, or a read buried in a long function that does other work. The census found most real row-picking in exactly that last form.
+- **Agents not told the rule,** or told it only by the error.
+- **Sealed sessions.** The sessions ran inside this repository and were asked to stay in their folders. Whether each did was not checked.
+- **A real compiler pass, or any speed.** Arm A's rule is a script and nothing was made fast.
+
 ### Result of experiment 1, 2026-11-14
 
 Run with [sketches/shape-census](sketches/README.md#shape-census) over `~/code/mo/learnability` at Mo commit `ce86860a`. The script and its controls were committed (`12f889d`) before the first run. Controls: 10 planted misses found and none recognised; 8 planted hits, all recognised.
@@ -140,7 +177,7 @@ What it does not show: time. The run counted instructions and did not time the b
 ### Where Claude stands, with what would move it
 
 - **Strict in some form, for the program's own code: 85%.** All three reviewers chose it and Mo has no warnings.
-- **Strict by recognising plain Mo, against a table type with its own methods: 30% for plain Mo after experiment 1.** Before the council Claude gave plain Mo 80%, and about even after it. The census brought it down again: 13% of the places agents pick rows are in a shape. It is not lower because the census is of habit on local collections, not of agents repairing code a compiler refused. Experiment 4 is the one that can move it back: agents under A ending correct and on a fast route nine times in ten, with few needless walks.
+- **Strict by recognising plain Mo, against a table type with its own methods: 35% for plain Mo after experiment 4.** Before the council Claude gave plain Mo 80%, about even after it, and 30% after the census. Experiment 4 removed the reason for the drop: agents told the rule write the shape. It did not restore plain Mo, because the table type did exactly as well and asks far less of Mo. The table type needs a library type with hidden rows, which Mo has today. Plain Mo needs a new compiler pass, a rule for which rewrites keep the answer (experiment 3) and a recogniser that survives ordinary edits (experiment 6). With no measured gain for agents, that extra work has nothing to pay for it yet.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments

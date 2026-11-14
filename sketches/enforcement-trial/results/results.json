@@ -1,0 +1,1244 @@
+[
+ {
+  "session": "01",
+  "arm": "a",
+  "model": "claude",
+  "task": "orders_of",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "02",
+  "arm": "a",
+  "model": "gpt",
+  "task": "orders_of",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "03",
+  "arm": "g",
+  "model": "claude",
+  "task": "orders_of",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "04",
+  "arm": "g",
+  "model": "gpt",
+  "task": "orders_of",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "05",
+  "arm": "a",
+  "model": "claude",
+  "task": "product_name",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "06",
+  "arm": "a",
+  "model": "gpt",
+  "task": "product_name",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "07",
+  "arm": "g",
+  "model": "claude",
+  "task": "product_name",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "08",
+  "arm": "g",
+  "model": "gpt",
+  "task": "product_name",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "09",
+  "arm": "a",
+  "model": "claude",
+  "task": "large_orders",
+  "runs": 4,
+  "versions": 2,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "10",
+  "arm": "a",
+  "model": "gpt",
+  "task": "large_orders",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "11",
+  "arm": "g",
+  "model": "claude",
+  "task": "large_orders",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "12",
+  "arm": "g",
+  "model": "gpt",
+  "task": "large_orders",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "13",
+  "arm": "a",
+  "model": "claude",
+  "task": "paid_total",
+  "runs": 8,
+  "versions": 4,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "14",
+  "arm": "a",
+  "model": "gpt",
+  "task": "paid_total",
+  "runs": 6,
+  "versions": 4,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": false,
+  "met the rule's error": true,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": true,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "15",
+  "arm": "g",
+  "model": "claude",
+  "task": "paid_total",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "16",
+  "arm": "g",
+  "model": "gpt",
+  "task": "paid_total",
+  "runs": 7,
+  "versions": 5,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "17",
+  "arm": "a",
+  "model": "claude",
+  "task": "open_count",
+  "runs": 3,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "18",
+  "arm": "a",
+  "model": "gpt",
+  "task": "open_count",
+  "runs": 4,
+  "versions": 3,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "19",
+  "arm": "g",
+  "model": "claude",
+  "task": "open_count",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "20",
+  "arm": "g",
+  "model": "gpt",
+  "task": "open_count",
+  "runs": 12,
+  "versions": 6,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "21",
+  "arm": "a",
+  "model": "claude",
+  "task": "bought",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "22",
+  "arm": "a",
+  "model": "gpt",
+  "task": "bought",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "23",
+  "arm": "g",
+  "model": "claude",
+  "task": "bought",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "24",
+  "arm": "g",
+  "model": "gpt",
+  "task": "bought",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "25",
+  "arm": "a",
+  "model": "claude",
+  "task": "units_sold",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "26",
+  "arm": "a",
+  "model": "gpt",
+  "task": "units_sold",
+  "runs": 3,
+  "versions": 2,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "27",
+  "arm": "g",
+  "model": "claude",
+  "task": "units_sold",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "28",
+  "arm": "g",
+  "model": "gpt",
+  "task": "units_sold",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "29",
+  "arm": "a",
+  "model": "claude",
+  "task": "latest",
+  "runs": 6,
+  "versions": 4,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "30",
+  "arm": "a",
+  "model": "gpt",
+  "task": "latest",
+  "runs": 3,
+  "versions": 2,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "31",
+  "arm": "g",
+  "model": "claude",
+  "task": "latest",
+  "runs": 4,
+  "versions": 2,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "32",
+  "arm": "g",
+  "model": "gpt",
+  "task": "latest",
+  "runs": 1,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "33",
+  "arm": "a",
+  "model": "claude",
+  "task": "mentions",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "orders"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "orders"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "34",
+  "arm": "a",
+  "model": "gpt",
+  "task": "mentions",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "orders"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "orders"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "35",
+  "arm": "g",
+  "model": "claude",
+  "task": "mentions",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "orders"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "orders"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "36",
+  "arm": "g",
+  "model": "gpt",
+  "task": "mentions",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "orders"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "orders"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "37",
+  "arm": "a",
+  "model": "claude",
+  "task": "idle_customers",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "customers"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "customers"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "38",
+  "arm": "a",
+  "model": "gpt",
+  "task": "idle_customers",
+  "runs": 3,
+  "versions": 2,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "customers"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": false,
+    "refused": false,
+    "right": false,
+    "walked": [
+     "customers"
+    ],
+    "needless": false,
+    "good": false
+   },
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "customers"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "39",
+  "arm": "g",
+  "model": "claude",
+  "task": "idle_customers",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "customers"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "customers"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "40",
+  "arm": "g",
+  "model": "gpt",
+  "task": "idle_customers",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [
+   "customers"
+  ],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [
+     "customers"
+    ],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "p1",
+  "arm": "a",
+  "model": "claude",
+  "task": "city_customers",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ },
+ {
+  "session": "p2",
+  "arm": "g",
+  "model": "gpt",
+  "task": "city_customers",
+  "runs": 2,
+  "versions": 1,
+  "ended good": true,
+  "good within two repairs": true,
+  "first valid version was accepted": true,
+  "met the rule's error": false,
+  "walked at the end": [],
+  "needless walk at the end": false,
+  "verdicts": [
+   {
+    "checks": true,
+    "refused": false,
+    "right": true,
+    "walked": [],
+    "needless": false,
+    "good": true
+   }
+  ]
+ }
+]

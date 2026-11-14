@@ -148,6 +148,37 @@ The controls run before every count. `controls/misses/` holds ten filters hidden
 
 What it does not count: `while` loops, `all?`, a loop that reads its row with `case`, and loops over a range or a written-out list. It writes every site to `build/shape-census/`, which git ignores.
 
+## enforcement-trial
+
+Not a claim but a trial, for experiment 4 in [experiments.md](../experiments.md): fresh agent sessions write ten read functions over a four-table shop under two rules. The design is in [freeze.md](enforcement-trial/freeze.md), which was committed before the first session. The result is in `experiments.md` and the sessions' answers are in `enforcement-trial/results/`.
+
+| File | What it is |
+| --- | --- |
+| `rows.mo`, `shop-a.head.mo`, `shop-g.head.mo` | The shop's rows, and the store in each arm. A session's `shop.mo` is one head followed by the rows |
+| `STORE-a.md`, `STORE-g.md`, `PROMPT.md`, `tasks.py` | What a session reads: the store's page, the prompt, and each task with its example |
+| `rule.py` | Arm A's rule, standing in for a compiler. It uses `../shape-census/census.py` |
+| `mo.py` | The `mo` a session runs. It records every check and test with a copy of `answer.mo`, and in arm A applies the rule |
+| `reference-a.mo`, `reference-g.mo` | An answer to every task in each arm, which the hidden tests compare against |
+| `trial.py` | `selfcheck`, `setup` and `grade` |
+
+```sh
+cp $MO build/enforcement-trial/mo
+python3 sketches/enforcement-trial/trial.py selfcheck   # the controls
+python3 sketches/enforcement-trial/trial.py setup       # one folder for each session, under build/
+python3 sketches/enforcement-trial/trial.py grade       # after the sessions have run
+```
+
+Each session is then started by hand with the text in its `prompt.txt`.
+
+The controls, all in `selfcheck`, which passed on 2026-11-14 before the freeze:
+
+- The 22 reference answers pass their hidden tests, and the two arms print the same 803 answers.
+- Three planted wrong answers must fail the hidden tests: one that picks the wrong orders, one off by one on a range, and one that drops the rule for orders placed on the same day.
+- The eleven slow reads in `controls/slow-a.mo` pass `mo check` and must each be refused by arm A's rule.
+- A read that reaches inside a table must be refused in arm G.
+
+A known fault in `rule.py`, found in the trial and left as it was: a call whose function is wrapped onto its own line, as `filter(` then `fn(order) ... end` then `)`, is refused though it is in a shape. It happened once in 20 sessions.
+
 ## instruction-counts
 
 The claim under test, for experiment 5 in [experiments.md](../experiments.md): the count of instructions a read runs tells a walk of the whole store from an indexed read. The result is there.
