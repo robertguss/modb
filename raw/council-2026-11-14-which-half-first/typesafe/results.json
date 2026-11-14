@@ -1,0 +1,2064 @@
+{
+ "positions-sol": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "[Own reasoning] Build a small executable sketch of the boundary between the halves first, then one thin slice through both, including incremental storage; I am **85% confident**.\n\nMy three strongest reasons:\n\n1. [Read in a document] [models/README.md](models/README.md) establishes useful distinctions about replay and whole-world landing, but explicitly has no implementation comparison; [sketches/README.md](sketches/README.md) says the existing sketch omits forks, recorded reads and replay against changed state. [Own reasoning] Implementing that complete interaction is the next valuable experiment. Neither a finished upper half nor a finished storage engine is necessary to discover whether it works.\n\n2. [Read in a document] [issue 11](issues/11-how-fast-and-large-is-a-mo-service.md) separates fixed HTTP overhead from whole-state copying and reports a roughly 9 MiB effective ceiling for its measured shape. [Checked in the code] [service.c:259](mo/src/vm/service.c:259) encodes and decodes replacement state, and [service.c:463](mo/src/vm/service.c:463) checksums its entire encoding. [Own reasoning] These justify addressing persistence early, but do not justify designing all storage before exercising its consumers. Adding worlds and retained history to this existing persistence path compounds precisely the measured weakness.\n\n3. [Read in a document] [design-ideas.md](design-ideas.md) proposes both pure functions over typed state and a storage library that loads nodes through a capability; [the reference](mo/docs/reference/README.md:1107) excludes capabilities from service state, inputs and results. [Own reasoning] The important uncertainty is how approved functions and arbitrary read programs access data larger than memory. Explicit fetching, transparent paging and materialised views impose different language and execution contracts. Settle that with executable examples before either half hardens around an incompatible assumption.\n\n[Own reasoning] The strongest case against my recommendation is that the storage requirements already overlap substantially: cheap versions, incremental writes and durable ordered commits. Building a minimal persistent collection first could teach more than inventing an interface around today\u2019s limitations. A boundary sketch can become speculative architecture. I would constrain mine to one concrete workload and discard abstractions that the slice does not need.\n\n[Own reasoning] \u201cWhich half first\u201d needs these qualifications:\n\n- Storage first does not require completing indexes, content addressing, background maintenance and concurrent reads together. A persistent collection with version roots is a smaller first step.\n- Upper first does not require exposing `Map` throughout approved functions. A small domain module can contain that dependency; rewriting every write function is a risk, not an inevitable cost.\n- The boundary includes durable commit, retained code identities, replay context, storage failures and work accounting\u2014not just collection type and copying.\n- Needless-send-back counts will not necessarily carry over unchanged: storage latency changes overlap between worlds and therefore conflict frequency. Upper-first measurements remain useful, but workload timing matters.\n- An additional intermediate order is a persistent collection **in memory**, then replay and read programs over it, then durable nodes. This separates collection semantics from disk recovery without abandoning either.\n\n[Own reasoning] Before committing, I would sketch one workload with two overlapping worlds, interleaved reads and writes, a narrowed view, and whole-world landing with checks after each call. Specify where nodes are fetched, how failures surface, and what is committed before acknowledgement. Then measure copied bytes, nodes read/written, retained bytes per world, validation work and retries as world count and length grow.\n\n[Own reasoning] I would favour storage first if ordinary approved functions cannot retain a useful, bounded execution contract without paging support. I would favour upper first if the sketch shows a simple replaceable boundary and realistic overlapping worlds remain comfortably within today\u2019s memory and work limits. These are learning criteria, consistent with [map.md](map.md), rather than speed-to-use criteria.\n\n[Checked in the code] One factual correction: [design-ideas.md](design-ideas.md) says \u201cEvery call is logged.\u201d Successful reads are excluded: [service.c:242](mo/src/vm/service.c:242) prevents a read-only tool from producing replacement state, and [service.c:1118](mo/src/vm/service.c:1118) persists only updates. [Own reasoning] Recording questions for replay and accountable reads therefore needs an additional durable mechanism, even before snapshots\u2019 log pruning becomes relevant.\n"
+   },
+   "questions": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building the upper half first, on today's services?",
+     "criteria": {
+      "true": "The order the review recommends begins with the upper half built on today's services.",
+      "false": "The order the review recommends begins with something other than the upper half on today's services."
+     }
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend completing the storage half before any of the upper half is built?",
+     "criteria": {
+      "true": "The review recommends that the whole storage half is built first.",
+      "false": "The review recommends that only a part of the storage work, or none of it, comes before the upper half."
+     }
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building a collection that keeps versions without copying before the upper half?",
+     "criteria": {
+      "true": "The order the review recommends has such a collection built before the upper half.",
+      "false": "The order the review recommends does not put such a collection before the upper half."
+     }
+    },
+    "disk_last": {
+     "type": "noul",
+     "instructions": "Does `review` recommend leaving storage on disk until after the upper half is built?",
+     "criteria": {
+      "true": "The review's order builds the upper half first and storage on disk after it.",
+      "false": "The review's order builds storage on disk before the upper half or in the same slice as it."
+     }
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "instructions": "Does `review` name an experiment to run before the order is committed to?",
+     "criteria": {
+      "true": "The review names at least one sketch, measurement or model to do before committing.",
+      "false": "The review asks for nothing to be tried before committing."
+     }
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping versions cheaply needs a change to how the runtime saves state?",
+     "criteria": {
+      "true": "The review says cheap versions cannot be had without changing how the runtime saves state.",
+      "false": "The review does not say that a change to how the runtime saves state is needed."
+     }
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` describe a way to keep versions cheaply that needs no change to the runtime?",
+     "criteria": {
+      "true": "The review describes a design that keeps versions cheaply on the runtime as it is.",
+      "false": "The review describes no such design."
+     }
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "instructions": "Does `review` say that saving a service's state turns data shared between versions into full copies?",
+     "criteria": {
+      "true": "The review says that sharing is lost when state is saved.",
+      "false": "The review does not make this point."
+     }
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services do not log read calls?",
+     "criteria": {
+      "true": "The review says that read calls are left out of the log.",
+      "false": "The review does not make this point."
+     }
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "instructions": "Does `review` name, as an open problem, how functions reach data that is not in memory?",
+     "criteria": {
+      "true": "The review says it is not settled how functions reach data that is not in memory.",
+      "false": "The review does not raise this problem."
+     }
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "instructions": "Does `review` say that the rule against capabilities in a service's state bears on how storage is built?",
+     "criteria": {
+      "true": "The review ties the rule against capabilities in service state to the design of storage.",
+      "false": "The review does not mention that rule."
+     }
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "instructions": "Does `review` say that the limits on each call are a problem that neither order fixes?",
+     "criteria": {
+      "true": "The review says the limits on calls remain whichever half is built first.",
+      "false": "The review does not make this point."
+     }
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services cannot run a new read program without upgrading the whole service?",
+     "criteria": {
+      "true": "The review says new code enters a running service only through an upgrade of the whole service.",
+      "false": "The review does not make this point."
+     }
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "instructions": "Does `review` raise doubt about whether agents will write correct read programs?",
+     "criteria": {
+      "true": "The review says it is uncertain that agents can write correct read programs.",
+      "false": "The review raises no such doubt."
+     }
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "instructions": "Does `review` say that rewriting the write functions later would cost less than the document suggests?",
+     "criteria": {
+      "true": "The review says the cost of rewriting write functions is smaller than the document makes it.",
+      "false": "The review does not say the document overstates that cost."
+     }
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "instructions": "Does `review` say that what storage must provide is already known from decisions already made?",
+     "criteria": {
+      "true": "The review says the needs storage must meet are already fixed.",
+      "false": "The review does not say that the needs are already fixed."
+     }
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "instructions": "Does `review` say that the design of storage depends on upper-half rules that are not yet settled?",
+     "criteria": {
+      "true": "The review says storage cannot be designed well until some upper-half rules are settled.",
+      "false": "The review does not make this point."
+     }
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "instructions": "Does `review` advise against building the database?",
+     "criteria": {
+      "true": "The review tells the owner not to build the database.",
+      "false": "The review accepts that the database will be built."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for the order it recommends?",
+     "criteria": {
+      "true": "One of the review's reasons for its order is that something would be usable sooner.",
+      "false": "None of the review's reasons for its order is that something would be usable sooner."
+     }
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "instructions": "Does `review` give an argument against its own recommendation?",
+     "criteria": {
+      "true": "The review states a case against the order it recommends.",
+      "false": "The review gives only arguments in favour of its order."
+     }
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "instructions": "Does `review` report a factual error in the documents it read?",
+     "criteria": {
+      "true": "The review names at least one statement in the documents that it found to be wrong.",
+      "false": "The review names no statement in the documents as wrong."
+     }
+    },
+    "first_step": {
+     "type": "choice",
+     "instructions": "What does `review` recommend building first?",
+     "criteria": {
+      "sketch_of_the_boundary": "A small runnable sketch of the boundary between the two halves, before either half.",
+      "versioned_collection_in_memory": "A collection that keeps versions without copying, held in memory, with no change to how state is saved.",
+      "versioned_collection_and_saving": "A collection that keeps versions without copying, together with a change to how state is saved so that sharing survives.",
+      "upper_half_on_todays_services": "The upper half, on today's services as they are.",
+      "whole_storage_half": "The whole storage half, on disk."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "noul": 0.18
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "noul": 0.19
+    },
+    "disk_last": {
+     "type": "noul",
+     "noul": 0.1
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.43
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.14
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "noul": 0.29
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "noul": 0.9
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "noul": 0.19
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "noul": 0.15
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "noul": 0.82
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.09
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "first_step": {
+     "type": "choice",
+     "choice": "sketch_of_the_boundary",
+     "confidence": 1.0,
+     "probabilities": {
+      "sketch_of_the_boundary": 1.0,
+      "versioned_collection_in_memory": 0.0,
+      "versioned_collection_and_saving": 0.0,
+      "upper_half_on_todays_services": 0.0,
+      "whole_storage_half": 0.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 2959,
+    "output_tokens": 493
+   }
+  }
+ },
+ "positions-opus": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "**1. Recommendation.** Put the seam first, from the storage side: build a collection that keeps versions without copying and a saved state that keeps that sharing, then run a thin slice of the upper half on it. I'm about 65% sure.\n\n**2. Three strongest reasons**\n\n- **Today's service can't hold a version cheaply, even with a tree written in Mo.**\n  - Checked in the code and read in a document: `docs/design/saved-state.md:199` says \"Sharing is expanded, not serialized\". Lines 209\u2013216 say every new state goes through encode and decode before it is accepted.\n  - Checked in the code: `src/vm/service.c:259-266` and `:305` do exactly that.\n  - My reasoning: a world, a snapshot or an old root kept in the state therefore becomes a full copy on every write, whatever collection the program uses. Building the upper half first would test worlds, snapshots and history with whole copies at a small size. The two models already showed that much at toy size.\n  - \"Which half first\" says versions cost a copy (line 595). It understates the problem: this cannot be fixed in the library layer.\n- **The upper half's logic is already largely de-risked, and its needs are now stated.**\n  - Read in a document: the replay model matched all 48 predictions and the worlds model all 40 (`models/README.md`). The land-whole sketch passes `mo test` (`sketches/README.md`). Every-question-counts and landing whole were decided on 2026-11-14 (`design-ideas.md`).\n  - My reasoning: \"built for needs the upper half has only guessed at\" (line 611) is out of date. Snapshots for read-only programs, roots per world, a kept log and replay all follow from decisions already made. Line 243 already lists them.\n- **The growing cost is Mo's own cost, not the database's.**\n  - Read in a document: issue 11 splits a write's cost three ways. The part that grows is about 0.65 ms per 1,000 rows of whole-state encode, decode and checksum.\n  - Checked in the code: a write also starts with a whole copy of the map. `service.c:293-294` duplicates parameters marked owned, and `src/heap/table.c:254-272` copies a table whenever its reference count is not 1.\n  - My inference: that copy is the 10% `copy_table` share in issue 11, so changing only how state is saved would not flatten the line.\n  - My reasoning: fixing both grows Mo for every service, which is the stated purpose. \"Usable sooner\" was the main argument for the upper half, and it has been ruled out.\n\n**3. Strongest case against.** My reasoning: the biggest unknowns are in the upper half, and storage cannot answer them.\n\n- Do agents write correct read programs?\n- How often is a send-back needless?\n- Can a person review \"what becomes possible\"?\n\nA clean versioned store could be built and request-as-program could then fail with agents. Storage-first also changes the runtime early. That reopens memory safety (issue 24) and collides with Phases 6 to 8. Both outside reviews warned against this half (read in a document).\n\n**4. What \"Which half first\" gets wrong, misses or frames unfairly**\n\n- **Wrong or missing:** saving expands sharing and every write copies the map in memory. Together these mean \"upper half first on today's services\" cannot really test worlds or history (checked in the code, see above).\n- **Missing order: learnability first.**\n  - Read in a document: idea 1 says `learnability/` in Mo could measure whether agents write correct small programs.\n  - My reasoning: that measurement needs neither half and is the largest risk to idea 1.\n- **Missing third track: the call path.**\n  - Read in a document: 10 ms of HTTP per call (issue 11).\n  - Checked in the code: 20 calls a second with a burst of 40, a 16 KiB body and a 32 KiB reply (`src/base/limits.h:518, 524, 566-567`).\n  - My reasoning: for many agents these limits bind before storage does, and neither order touches them.\n- **Unfair rework comparison.** My reasoning: rewriting write functions costs little if the new collection keeps a `Map`-like interface. Building storage for the wrong needs costs more. The section weighs the two as equals.\n- **Untested ceiling.** Checked in the code: `MO_LIMIT_SAVED_NODES` is 2^20 (`limits.h:364`). My reasoning: rows that are records with several fields could hit that node limit before the memory ceiling. Issue 11 measured only a `Map(Int, Text)`.\n\n**5. What to measure before committing**\n\n- **(a) A persistent ordered map written in Mo today, inside a service.**\n  - Measure: steps per insert and lookup at 100k rows, against `Map`.\n  - Measure: the saved size with N retained versions. I predict roughly N\u00d7 (my reasoning).\n  - Find out: what it takes to make the saved codec and the handler handoff keep sharing.\n  - What would change my mind: if keeping sharing needs deep runtime or memory-safety work that collides with Phases 6 to 8, I'd switch to the upper half first on whole copies with a hard size cap.\n- **(b) A small learnability run of agents writing read programs against a typed view.**\n  - What would change my mind: correctness well below the query-language baselines (issue 04) would put \"learnability first\" ahead of both halves.\n\n**6. Claims I checked against Mo's code**\n\n- Confirmed:\n  - A snapshot deletes the log: `src/host/store.c:472-476`.\n  - Snapshot every 100 messages: `limits.h:365`.\n  - About a million steps of work: `limits.h:333`.\n  - 64 MiB per call: `limits.h:334`.\n  - 16 MiB saved state: `limits.h:344`.\n  - Request, reply and rate limits: `limits.h:518`, `:524`, `:566`.\n- Nuance, not an error: \"a Mo `Map` is one block, so a changed copy is a whole copy\" holds only when the map is shared. A map with one owner is updated in place (`table.c:254`). At the service boundary the state is shared, so the claim holds in practice.\n- Incomplete: \"Only the third cost is about how data is stored\" leaves out the in-memory map copy at handler entry (`service.c:293-294`, `table.c:271`).\n\nI didn't run anything, so the `copy_table` attribution and the N\u00d7 saved-size prediction are inferences. Reference section 11 beyond 11.5's opening lines was not read.\n"
+   },
+   "questions": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building the upper half first, on today's services?",
+     "criteria": {
+      "true": "The order the review recommends begins with the upper half built on today's services.",
+      "false": "The order the review recommends begins with something other than the upper half on today's services."
+     }
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend completing the storage half before any of the upper half is built?",
+     "criteria": {
+      "true": "The review recommends that the whole storage half is built first.",
+      "false": "The review recommends that only a part of the storage work, or none of it, comes before the upper half."
+     }
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building a collection that keeps versions without copying before the upper half?",
+     "criteria": {
+      "true": "The order the review recommends has such a collection built before the upper half.",
+      "false": "The order the review recommends does not put such a collection before the upper half."
+     }
+    },
+    "disk_last": {
+     "type": "noul",
+     "instructions": "Does `review` recommend leaving storage on disk until after the upper half is built?",
+     "criteria": {
+      "true": "The review's order builds the upper half first and storage on disk after it.",
+      "false": "The review's order builds storage on disk before the upper half or in the same slice as it."
+     }
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "instructions": "Does `review` name an experiment to run before the order is committed to?",
+     "criteria": {
+      "true": "The review names at least one sketch, measurement or model to do before committing.",
+      "false": "The review asks for nothing to be tried before committing."
+     }
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping versions cheaply needs a change to how the runtime saves state?",
+     "criteria": {
+      "true": "The review says cheap versions cannot be had without changing how the runtime saves state.",
+      "false": "The review does not say that a change to how the runtime saves state is needed."
+     }
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` describe a way to keep versions cheaply that needs no change to the runtime?",
+     "criteria": {
+      "true": "The review describes a design that keeps versions cheaply on the runtime as it is.",
+      "false": "The review describes no such design."
+     }
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "instructions": "Does `review` say that saving a service's state turns data shared between versions into full copies?",
+     "criteria": {
+      "true": "The review says that sharing is lost when state is saved.",
+      "false": "The review does not make this point."
+     }
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services do not log read calls?",
+     "criteria": {
+      "true": "The review says that read calls are left out of the log.",
+      "false": "The review does not make this point."
+     }
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "instructions": "Does `review` name, as an open problem, how functions reach data that is not in memory?",
+     "criteria": {
+      "true": "The review says it is not settled how functions reach data that is not in memory.",
+      "false": "The review does not raise this problem."
+     }
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "instructions": "Does `review` say that the rule against capabilities in a service's state bears on how storage is built?",
+     "criteria": {
+      "true": "The review ties the rule against capabilities in service state to the design of storage.",
+      "false": "The review does not mention that rule."
+     }
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "instructions": "Does `review` say that the limits on each call are a problem that neither order fixes?",
+     "criteria": {
+      "true": "The review says the limits on calls remain whichever half is built first.",
+      "false": "The review does not make this point."
+     }
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services cannot run a new read program without upgrading the whole service?",
+     "criteria": {
+      "true": "The review says new code enters a running service only through an upgrade of the whole service.",
+      "false": "The review does not make this point."
+     }
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "instructions": "Does `review` raise doubt about whether agents will write correct read programs?",
+     "criteria": {
+      "true": "The review says it is uncertain that agents can write correct read programs.",
+      "false": "The review raises no such doubt."
+     }
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "instructions": "Does `review` say that rewriting the write functions later would cost less than the document suggests?",
+     "criteria": {
+      "true": "The review says the cost of rewriting write functions is smaller than the document makes it.",
+      "false": "The review does not say the document overstates that cost."
+     }
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "instructions": "Does `review` say that what storage must provide is already known from decisions already made?",
+     "criteria": {
+      "true": "The review says the needs storage must meet are already fixed.",
+      "false": "The review does not say that the needs are already fixed."
+     }
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "instructions": "Does `review` say that the design of storage depends on upper-half rules that are not yet settled?",
+     "criteria": {
+      "true": "The review says storage cannot be designed well until some upper-half rules are settled.",
+      "false": "The review does not make this point."
+     }
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "instructions": "Does `review` advise against building the database?",
+     "criteria": {
+      "true": "The review tells the owner not to build the database.",
+      "false": "The review accepts that the database will be built."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for the order it recommends?",
+     "criteria": {
+      "true": "One of the review's reasons for its order is that something would be usable sooner.",
+      "false": "None of the review's reasons for its order is that something would be usable sooner."
+     }
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "instructions": "Does `review` give an argument against its own recommendation?",
+     "criteria": {
+      "true": "The review states a case against the order it recommends.",
+      "false": "The review gives only arguments in favour of its order."
+     }
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "instructions": "Does `review` report a factual error in the documents it read?",
+     "criteria": {
+      "true": "The review names at least one statement in the documents that it found to be wrong.",
+      "false": "The review names no statement in the documents as wrong."
+     }
+    },
+    "first_step": {
+     "type": "choice",
+     "instructions": "What does `review` recommend building first?",
+     "criteria": {
+      "sketch_of_the_boundary": "A small runnable sketch of the boundary between the two halves, before either half.",
+      "versioned_collection_in_memory": "A collection that keeps versions without copying, held in memory, with no change to how state is saved.",
+      "versioned_collection_and_saving": "A collection that keeps versions without copying, together with a change to how state is saved so that sharing survives.",
+      "upper_half_on_todays_services": "The upper half, on today's services as they are.",
+      "whole_storage_half": "The whole storage half, on disk."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "noul": 0.32
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "disk_last": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.94
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.21
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "noul": 0.07
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "noul": 0.38
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "noul": 0.92
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "noul": 0.92
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "noul": 0.3
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.12
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "noul": 0.85
+    },
+    "first_step": {
+     "type": "choice",
+     "choice": "versioned_collection_and_saving",
+     "confidence": 1.0,
+     "probabilities": {
+      "sketch_of_the_boundary": 0.0,
+      "versioned_collection_in_memory": 0.0,
+      "versioned_collection_and_saving": 1.0,
+      "upper_half_on_todays_services": 0.0,
+      "whole_storage_half": 0.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 3628,
+    "output_tokens": 494
+   }
+  }
+ },
+ "positions-gemini": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "1. I recommend \"some other order\": define a versioned-collection seam backed by an in-memory explicit-ID persistent tree first, build the upper half on that seam second, and build the on-disk storage half last, at 75% confidence (your own reasoning).\n\n2. Three strongest reasons:\n- **Physical storage depends on unsettled upper-half rules** (your own reasoning). [design-ideas.md:486-488](design-ideas.md:486) notes kept versions pin dead tree nodes, hash-named history fights personal-data erasure, and arbitrary Mo views cannot update incrementally, while [design-ideas.md:258-260](design-ideas.md:258) leaves view limits and per-field encryption open (read in a document). Fixing page layout, content hashes, and indexes before settling world lifetimes, erasure, and view shapes risks building the wrong engine (your own reasoning).\n- **Raw `Map` and service `State` destroy multi-world sharing** (your own reasoning). `mo_table_set` clones the whole table in [table.c:186](mo/src/heap/table.c:186), and every state-changing call runs `encoded_copy` in [service.c:259](mo/src/vm/service.c:259) and [service.c:305](mo/src/vm/service.c:305), encoding and decoding the whole state while expanding pointer sharing via [saved.c:186](mo/src/heap/saved.c:186) and [saved.c:288](mo/src/heap/saved.c:288) (checked in the code), per [saved-state.md:199-214](mo/docs/design/saved-state.md:199) (read in a document). Ten agent worlds held as pointer-shared Mo trees expand into ten copies per write, cutting the 125,000-row ceiling in [11-how-fast-and-large-is-a-mo-service.md:44](issues/11-how-fast-and-large-is-a-mo-service.md:44) tenfold unless nodes share via explicit IDs behind a seam (your own reasoning).\n- **The upper half tests Mo's missing runtime capabilities first** (your own reasoning). [map.md:107-111](map.md:107) and [design-ideas.md:62-63](design-ideas.md:62) require unplanned Mo read programs and view grants (read in a document), whereas `mo serve` only admits new code via whole-service upgrades in [protocol-upgrade.c:449](mo/src/tools/protocol-upgrade.c:449) and caps calls at 1,048,576 instructions, 16 KiB requests, 32 KiB replies, and 20 requests/s in [limits.h:333](mo/src/base/limits.h:333), [limits.h:518](mo/src/base/limits.h:518), [limits.h:524](mo/src/base/limits.h:524), and [limits.h:566](mo/src/base/limits.h:566) (checked in the code).\n\n3. Strongest case against:\nAn in-memory seam can hide failure and budget modes that appear once state exceeds RAM (your own reasoning). When nodes fault from disk, pure reads, views, and promise checks like [land-whole/main.mo:54](sketches/land-whole/main.mo:54) can exhaust `MO_LIMIT_SERVICE_WORK` in [limits.h:333](mo/src/base/limits.h:333) or hit I/O errors (checked in the code; your own reasoning). If Mo's purity rules force paged lookups to take a capability or return `Result`, upper-half signatures built on pure values must be rewritten (your own reasoning).\n\n4. What is wrong, missing, or unfair in \"Which half first\":\n- **Unlisted order:** [design-ideas.md:575-626](design-ideas.md:575) bundles versioning with disk durability (read in a document), omitting *in-memory structural sharing first, upper half second, disk pages and indexes last* (your own reasoning).\n- **Missed `encoded_copy` expansion:** [design-ideas.md:595-597](design-ideas.md:595) notes `Map` copying (read in a document), missing that `encoded_copy` in [service.c:259](mo/src/vm/service.c:259) flattens pointer sharing across worlds on every write and enforces `MO_LIMIT_SAVED_NODES` (1,048,576) and `MO_LIMIT_SAVED_BYTES` (16 MiB) in [limits.h:221](mo/src/base/limits.h:221) and [limits.h:344](mo/src/base/limits.h:344) (checked in the code; your own reasoning).\n- **Unfair storage-first framing:** [design-ideas.md:610](design-ideas.md:610) says database work waits until storage finishes (read in a document), ignoring a minimal C-host B-tree without indexes or GC (your own reasoning).\n- **Missing host trade-off:** [design-ideas.md:586-615](design-ideas.md:586) omits turn serialization in [service.c:1083](mo/src/vm/service.c:1083) and running ad-hoc read functions without `mo push` (checked in the code; your own reasoning).\n\n5. What to sketch before committing, and what changes my mind:\n- **Lazy-handle sketch:** Sketch the versioned collection in Mo and check whether pure reads and promises can traverse nodes that a C host later pages from disk (your own reasoning). If Mo requires capability or error types on every lookup, build a minimal C-host paged B-tree first (your own reasoning).\n- **Read-eval sketch:** Sketch compiling and running an agent's ad-hoc Mo read function against a snapshot without service upgrade (your own reasoning). If dynamic Mo queries lose to a fixed query AST, pull storage and index design forward (your own reasoning).\n\n6. Factual claims checked against Mo's code and found wrong:\n- [11-how-fast-and-large-is-a-mo-service.md:49](issues/11-how-fast-and-large-is-a-mo-service.md:49) says the supervisor restarted after 16 refusals (read in a document); `supervise` in [service.c:1065-1077](mo/src/vm/service.c:1065) ([limits.h:336-338](mo/src/base/limits.h:336)) restarts on failures 5 and 10, and on failure 15 stops the service, exiting `mo serve` in [serve.c:179-196](mo/src/tools/serve.c:179) (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:46](issues/11-how-fast-and-large-is-a-mo-service.md:46) calls `58,718,816` bytes 64 MiB less the stack (read in a document); `64 MiB - 8 MiB` in [service.c:85](mo/src/vm/service.c:85) is `58,720,256`, before [process.c:121](mo/src/vm/process.c:121) subtracts `sizeof(struct mo_process)` (1,440 bytes) (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:38](issues/11-how-fast-and-large-is-a-mo-service.md:38) and [11-how-fast-and-large-is-a-mo-service.md:58](issues/11-how-fast-and-large-is-a-mo-service.md:58) attribute per-write growth to encoding state for the log checksum (read in a document); `encoded_copy` in [service.c:259-266](mo/src/vm/service.c:259) and [service.c:305](mo/src/vm/service.c:305) encodes and decodes the whole state on every write even without a store (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:118](issues/11-how-fast-and-large-is-a-mo-service.md:118) calls `authenticate` checking who is calling in Mo bytecode (read in a document); token verification is C (`MO_LISTENER_AUTH`, [protocol-request.c:134](mo/src/tools/protocol-request.c:134)), while `authenticate` builds `List(Byte)` and parses HTTP headers in Mo ([protocol-request.c:5-47](mo/src/tools/protocol-request.c:5)), which `plan` repeats at [protocol-request.c:174](mo/src/tools/protocol-request.c:174) (checked in the code).\n- [design-ideas.md:201](design-ideas.md:201) and [design-ideas.md:357](design-ideas.md:357) cite 12,049 Lean lines and 5,314 lines across 26 `.mo` files (read in a document); at `ef374248`, `formal/` has 13,555 Lean lines and those 26 `.mo` files total 5,683 lines (checked in the code).\n"
+   },
+   "questions": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building the upper half first, on today's services?",
+     "criteria": {
+      "true": "The order the review recommends begins with the upper half built on today's services.",
+      "false": "The order the review recommends begins with something other than the upper half on today's services."
+     }
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend completing the storage half before any of the upper half is built?",
+     "criteria": {
+      "true": "The review recommends that the whole storage half is built first.",
+      "false": "The review recommends that only a part of the storage work, or none of it, comes before the upper half."
+     }
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "instructions": "Does `review` recommend building a collection that keeps versions without copying before the upper half?",
+     "criteria": {
+      "true": "The order the review recommends has such a collection built before the upper half.",
+      "false": "The order the review recommends does not put such a collection before the upper half."
+     }
+    },
+    "disk_last": {
+     "type": "noul",
+     "instructions": "Does `review` recommend leaving storage on disk until after the upper half is built?",
+     "criteria": {
+      "true": "The review's order builds the upper half first and storage on disk after it.",
+      "false": "The review's order builds storage on disk before the upper half or in the same slice as it."
+     }
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "instructions": "Does `review` name an experiment to run before the order is committed to?",
+     "criteria": {
+      "true": "The review names at least one sketch, measurement or model to do before committing.",
+      "false": "The review asks for nothing to be tried before committing."
+     }
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping versions cheaply needs a change to how the runtime saves state?",
+     "criteria": {
+      "true": "The review says cheap versions cannot be had without changing how the runtime saves state.",
+      "false": "The review does not say that a change to how the runtime saves state is needed."
+     }
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "instructions": "Does `review` describe a way to keep versions cheaply that needs no change to the runtime?",
+     "criteria": {
+      "true": "The review describes a design that keeps versions cheaply on the runtime as it is.",
+      "false": "The review describes no such design."
+     }
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "instructions": "Does `review` say that saving a service's state turns data shared between versions into full copies?",
+     "criteria": {
+      "true": "The review says that sharing is lost when state is saved.",
+      "false": "The review does not make this point."
+     }
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services do not log read calls?",
+     "criteria": {
+      "true": "The review says that read calls are left out of the log.",
+      "false": "The review does not make this point."
+     }
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "instructions": "Does `review` name, as an open problem, how functions reach data that is not in memory?",
+     "criteria": {
+      "true": "The review says it is not settled how functions reach data that is not in memory.",
+      "false": "The review does not raise this problem."
+     }
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "instructions": "Does `review` say that the rule against capabilities in a service's state bears on how storage is built?",
+     "criteria": {
+      "true": "The review ties the rule against capabilities in service state to the design of storage.",
+      "false": "The review does not mention that rule."
+     }
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "instructions": "Does `review` say that the limits on each call are a problem that neither order fixes?",
+     "criteria": {
+      "true": "The review says the limits on calls remain whichever half is built first.",
+      "false": "The review does not make this point."
+     }
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "instructions": "Does `review` say that today's services cannot run a new read program without upgrading the whole service?",
+     "criteria": {
+      "true": "The review says new code enters a running service only through an upgrade of the whole service.",
+      "false": "The review does not make this point."
+     }
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "instructions": "Does `review` raise doubt about whether agents will write correct read programs?",
+     "criteria": {
+      "true": "The review says it is uncertain that agents can write correct read programs.",
+      "false": "The review raises no such doubt."
+     }
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "instructions": "Does `review` say that rewriting the write functions later would cost less than the document suggests?",
+     "criteria": {
+      "true": "The review says the cost of rewriting write functions is smaller than the document makes it.",
+      "false": "The review does not say the document overstates that cost."
+     }
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "instructions": "Does `review` say that what storage must provide is already known from decisions already made?",
+     "criteria": {
+      "true": "The review says the needs storage must meet are already fixed.",
+      "false": "The review does not say that the needs are already fixed."
+     }
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "instructions": "Does `review` say that the design of storage depends on upper-half rules that are not yet settled?",
+     "criteria": {
+      "true": "The review says storage cannot be designed well until some upper-half rules are settled.",
+      "false": "The review does not make this point."
+     }
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "instructions": "Does `review` advise against building the database?",
+     "criteria": {
+      "true": "The review tells the owner not to build the database.",
+      "false": "The review accepts that the database will be built."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for the order it recommends?",
+     "criteria": {
+      "true": "One of the review's reasons for its order is that something would be usable sooner.",
+      "false": "None of the review's reasons for its order is that something would be usable sooner."
+     }
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "instructions": "Does `review` give an argument against its own recommendation?",
+     "criteria": {
+      "true": "The review states a case against the order it recommends.",
+      "false": "The review gives only arguments in favour of its order."
+     }
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "instructions": "Does `review` report a factual error in the documents it read?",
+     "criteria": {
+      "true": "The review names at least one statement in the documents that it found to be wrong.",
+      "false": "The review names no statement in the documents as wrong."
+     }
+    },
+    "first_step": {
+     "type": "choice",
+     "instructions": "What does `review` recommend building first?",
+     "criteria": {
+      "sketch_of_the_boundary": "A small runnable sketch of the boundary between the two halves, before either half.",
+      "versioned_collection_in_memory": "A collection that keeps versions without copying, held in memory, with no change to how state is saved.",
+      "versioned_collection_and_saving": "A collection that keeps versions without copying, together with a change to how state is saved so that sharing survives.",
+      "upper_half_on_todays_services": "The upper half, on today's services as they are.",
+      "whole_storage_half": "The whole storage half, on disk."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "upper_first_on_today": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "whole_storage_first": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "versioned_collection_first": {
+     "type": "noul",
+     "noul": 0.94
+    },
+    "disk_last": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "experiment_before_committing": {
+     "type": "noul",
+     "noul": 1.0
+    },
+    "runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.92
+    },
+    "no_runtime_change_needed": {
+     "type": "noul",
+     "noul": 0.13
+    },
+    "sharing_lost_on_save": {
+     "type": "noul",
+     "noul": 0.93
+    },
+    "reads_not_logged": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "data_beyond_memory_open": {
+     "type": "noul",
+     "noul": 0.94
+    },
+    "capability_rule_matters": {
+     "type": "noul",
+     "noul": 0.13
+    },
+    "call_limits_untouched": {
+     "type": "noul",
+     "noul": 0.15
+    },
+    "cannot_run_new_read_program": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "doubts_agents_write_programs": {
+     "type": "noul",
+     "noul": 0.22
+    },
+    "rework_overstated": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "storage_needs_known": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "storage_needs_unsettled": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "advises_no_database": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.12
+    },
+    "gives_case_against_itself": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "reports_factual_error": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "first_step": {
+     "type": "choice",
+     "choice": "versioned_collection_in_memory",
+     "confidence": 0.85,
+     "probabilities": {
+      "sketch_of_the_boundary": 0.02,
+      "versioned_collection_in_memory": 0.88,
+      "versioned_collection_and_saving": 0.1,
+      "upper_half_on_todays_services": 0.0,
+      "whole_storage_half": 0.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 4138,
+    "output_tokens": 493
+   }
+  }
+ },
+ "citation-sol_1": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Each replacement state is encoded and then decoded.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "259-266",
+      "text": "static bool encoded_copy(struct mo_heap *heap, uint32_t type, struct mo_cell value,\n                         struct mo_cell *out, struct mo_buffer *encoded,\n                         enum mo_saved_status *status) {\n    mo_buffer_clear(encoded);\n    *status = mo_value_encode_status(heap, type, value, encoded);\n    return *status == MO_SAVED_OK &&\n           mo_value_decode(heap, type, encoded->bytes, encoded->length, out);\n}"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.76,
+     "probabilities": {
+      "supports": 0.84,
+      "contradicts": 0.01,
+      "says_nothing": 0.15
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.89,
+     "probabilities": {
+      "says_nothing": 0.06,
+      "contradicts": 0.01,
+      "supports": 0.93
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 611,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-sol_2": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A checksum is computed over the whole encoded state when an update is persisted.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "455-468",
+      "text": "static bool persist(struct mo_service_loop *s, const struct service_message *m,\n                    const struct mo_buffer *state) {\n    if (s->store == NULL)\n        return true;\n    struct mo_buffer bytes, value;\n    mo_buffer_init(&bytes, MO_LIMIT_SAVED_BYTES);\n    mo_buffer_init(&value, MO_LIMIT_SAVED_BYTES);\n    uint32_t count = m->timer ? 0 : s->descriptor->tools[m->handler].argument_count;\n    struct mo_log_record_header header = {.state_checksum =\n                                              mo_binary_checksum(state->bytes, state->length),\n                                          .arrival = m->arrival,\n                                          .handler = m->handler,\n                                          .count = count,\n                                          .timer = m->timer};"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.97,
+     "probabilities": {
+      "supports": 0.98,
+      "contradicts": 0.01,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.97,
+     "probabilities": {
+      "says_nothing": 0.01,
+      "contradicts": 0.01,
+      "supports": 0.98
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 676,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-sol_3": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A read-only tool never produces a replacement state.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "238-243",
+      "text": "/* An updating tool's Ok carries its new state first; a timer's result is the new state. */\nstatic bool replacement(const struct mo_process *p, const struct mo_bytecode_service *service,\n                        bool timer, uint32_t handler, uint32_t type, struct mo_cell value,\n                        struct mo_cell *out) {\n    if (!timer && service->tools[handler].read_only)\n        return false;"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.96,
+     "probabilities": {
+      "supports": 0.97,
+      "contradicts": 0.02,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.97,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.02,
+      "supports": 0.98
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 608,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-sol_4": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Only a call that updated the state is persisted.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "1114-1118",
+      "text": "    if (returned) {\n        if (reply.status != MO_SERVICE_OK) {\n            capture_failure(s, &message, &call);\n            log_event(s, MO_SERVICE_FAILURE, reply.status, time, NULL, handler, 0);\n        } else if (reply.updated && !persist(s, &message, &encoded)) {"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.44,
+     "probabilities": {
+      "supports": 0.63,
+      "contradicts": 0.31,
+      "says_nothing": 0.06
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.28,
+     "probabilities": {
+      "says_nothing": 0.08,
+      "contradicts": 0.4,
+      "supports": 0.52
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 588,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-sol_5": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A service's state, handler inputs and handler results may not contain capabilities.",
+    "evidence": [
+     {
+      "file": "docs/reference/README.md",
+      "lines": "1106-1108",
+      "text": "block has no explicit generic-specialization syntax. The state, handler inputs\nand handler results must contain neither capabilities nor function values,\nincluding inside records, choices, tuples and collections."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 564,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_1": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "When a value is saved, data shared inside it is written out in full and not as links.",
+    "evidence": [
+     {
+      "file": "docs/design/saved-state.md",
+      "lines": "199-200",
+      "text": "Nested values omit schema and magic. Sharing is expanded, not serialized as\nnative links. Recursive schemas use backreferences; value trees do not."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.97,
+     "probabilities": {
+      "supports": 0.98,
+      "contradicts": 0.02,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 560,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_2": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Every new state of a service with a store goes through encode and decode before it is accepted.",
+    "evidence": [
+     {
+      "file": "docs/design/saved-state.md",
+      "lines": "209-212",
+      "text": "Because sharing is expanded, a decoded value can need more heap than the live\nvalue it came from. A store-backed service therefore passes the initial state,\neach state-changing tool's arguments and each new state through encode and\ndecode in its own heap before accepting them. The live service then holds the"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 588,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_3": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Parameters marked as owned are duplicated before the handler is called.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "292-297",
+      "text": "    for (uint32_t i = 0; i < fn->parameter_count; i++)\n        if (fn->parameters[i].ownership == MO_PARAMETER_OWNED)\n            values[i] = mo_value_dup(p->heap, fn->parameters[i].type, values[i]);\n    *call = (struct mo_service_call){\n        .function = function, .type = fn->result_type, .saved = MO_SAVED_OK};\n    call->status = invoke(p, function, values, fn->parameter_count, &call->value, &call->defect);"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.96,
+     "probabilities": {
+      "supports": 0.97,
+      "contradicts": 0.03,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 639,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_4": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A table whose reference count is not 1 is copied when it is changed.",
+    "evidence": [
+     {
+      "file": "src/heap/table.c",
+      "lines": "253-272",
+      "text": "    struct mo_allocation *table = old;\n    if (old->object.count != 1 ||\n        (inserting && (old->length == info->capacity || distance >= MO_LIMIT_HEAP_PROBES))) {\n        uint32_t capacity = capacity_for(info->active + (inserting ? 1 : 0));\n        /* A nearly full unique table needs slack, not a same-sized copy after\n         * every remove/reinsert. Removal compacts after a quarter are dead.\n         * One extra capacity tier also keeps churn amortized at the live limit. */\n        if (old->object.count == 1 && inserting && old->length == info->capacity &&\n            info->active >= info->capacity / 2 && info->capacity <= MO_LIMIT_COLLECTION_SIZE) {\n            capacity = 2 * info->capacity;\n        }\n        uint32_t slots = 2 * capacity;\n        if (distance >= MO_LIMIT_HEAP_PROBES && slots <= info->slots) {\n            if (info->slots == MO_LIMIT_HEAP_INDEX_SLOTS) {\n                return false;\n            }\n            slots = info->slots * 2;\n        }\n        table = copy_table(process, type, old, capacity, slots, MO_NO_INDEX, true, true, hash,\n                           &position, &slot);"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.96,
+     "probabilities": {
+      "supports": 0.97,
+      "contradicts": 0.02,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.96,
+     "probabilities": {
+      "says_nothing": 0.01,
+      "contradicts": 0.02,
+      "supports": 0.97
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 800,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_5": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Taking a snapshot deletes the log.",
+    "evidence": [
+     {
+      "file": "src/host/store.c",
+      "lines": "470-476",
+      "text": "                 record->sequence == head && record->kind == MO_STORE_STATE &&\n                 store_write_blob(s,\n                                  \"INSERT INTO snapshot VALUES(1,?2) ON CONFLICT(id) DO UPDATE\"\n                                  \" SET record=excluded.record\",\n                                  record->sequence, &bytes) &&\n                 store_exec(s, \"INSERT INTO head VALUES(1,0) ON CONFLICT(id) DO NOTHING;\"\n                               \"DELETE FROM log\");"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 606,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-opus_6": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The limit on saved nodes is defined as 1 << 20.",
+    "evidence": [
+     {
+      "file": "src/base/limits.h",
+      "lines": "364-364",
+      "text": "#define MO_LIMIT_SAVED_NODES (1 << 20)"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 538,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-gemini_1": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "After every fifth failure the supervisor records a restart, and at the third restart it stops the service.",
+    "evidence": [
+     {
+      "file": "src/base/limits.h",
+      "lines": "336-338",
+      "text": "#define MO_LIMIT_SERVICE_FAILURES 5\n#define MO_LIMIT_SERVICE_FAILURE_WINDOW_US UINT64_C(60000000)\n#define MO_LIMIT_SERVICE_RESTARTS 3"
+     },
+     {
+      "file": "src/vm/service.c",
+      "lines": "1065-1077",
+      "text": "static void supervise(struct mo_service_loop *s, enum mo_service_status reason,\n                      struct mo_service_time time) {\n    s->failure_count =\n        record(s->failures, s->failure_count, time.elapsed, MO_LIMIT_SERVICE_FAILURE_WINDOW_US);\n    if (s->failure_count != MO_LIMIT_SERVICE_FAILURES)\n        return;\n    s->failure_count = 0;\n    s->restart_count =\n        record(s->restarts, s->restart_count, time.elapsed, MO_LIMIT_SERVICE_RESTART_WINDOW_US);\n    log_event(s, MO_SERVICE_RESTART, reason, time, NULL, MO_NO_INDEX, s->restart_count);\n    s->running = s->restart_count != MO_LIMIT_SERVICE_RESTARTS;\n    if (!s->running)\n        log_event(s, MO_SERVICE_STOP, reason, time, NULL, MO_NO_INDEX, 0);"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.89,
+     "probabilities": {
+      "supports": 0.93,
+      "contradicts": 0.06,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.92,
+     "probabilities": {
+      "says_nothing": 0.01,
+      "contradicts": 0.04,
+      "supports": 0.95
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 790,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-gemini_2": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The size of the process record is subtracted from the heap size.",
+    "evidence": [
+     {
+      "file": "src/vm/process.c",
+      "lines": "117-122",
+      "text": "    struct mo_process *process = calloc(1, sizeof *process);\n    if (process == NULL)\n        return NULL;\n    struct mo_limits heap_limits = *limits;\n    heap_limits.heap_size -= sizeof *process;\n    process->heap = mo_heap_new(runtime->heap, &heap_limits);"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.97,
+     "probabilities": {
+      "supports": 0.98,
+      "contradicts": 0.02,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 585,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-gemini_3": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The token is checked by a call to the listener.",
+    "evidence": [
+     {
+      "file": "src/tools/protocol-request.c",
+      "lines": "132-135",
+      "text": "    union mo_listener_result result;\n    enum mo_listener_status status =\n        mo_listener_call(s->listener, MO_LISTENER_AUTH, &request, &result);\n    bool admitted = status == MO_LISTENER_OK && result.authenticated && upgrade != approval;"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.85,
+     "probabilities": {
+      "supports": 0.9,
+      "contradicts": 0.03,
+      "says_nothing": 0.07
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.89,
+     "probabilities": {
+      "says_nothing": 0.05,
+      "contradicts": 0.02,
+      "supports": 0.93
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 576,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-gemini_4": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The function `plan` calls `headers` on the request.",
+    "evidence": [
+     {
+      "file": "src/tools/protocol-request.c",
+      "lines": "172-175",
+      "text": "static bool plan(struct mo_protocol_server *s, struct protocol_connection *c, bool *send_continue) {\n    struct mo_cell args[3], value;\n    if (!headers(s, c, &args[0], &args[1]))\n        return false;"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 577,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-gemini_5": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "This line defines the limit on saved nodes.",
+    "evidence": [
+     {
+      "file": "src/base/limits.h",
+      "lines": "221-221",
+      "text": "#define MO_LIMIT_GLOBALS (1 << 20)"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "says_nothing",
+     "confidence": 0.25,
+     "probabilities": {
+      "supports": 0.23,
+      "contradicts": 0.27,
+      "says_nothing": 0.5
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "says_nothing",
+     "confidence": 0.33,
+     "probabilities": {
+      "says_nothing": 0.55,
+      "contradicts": 0.26,
+      "supports": 0.19
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 531,
+    "output_tokens": 95
+   }
+  }
+ },
+ "citation-gemini_6": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The state is encoded and decoded on every write even when the service has no store.",
+    "evidence": [
+     {
+      "file": "src/vm/service.c",
+      "lines": "268-276",
+      "text": "static bool saved_copy(struct mo_service_loop *s, uint32_t type, struct mo_cell value,\n                       struct mo_cell *out, struct mo_buffer *encoded) {\n    if (s->store == NULL) {\n        *out = mo_value_dup(s->process->heap, type, value);\n        return true;\n    }\n    enum mo_saved_status status;\n    return encoded_copy(s->process->heap, type, value, out, encoded, &status);\n}"
+     },
+     {
+      "file": "src/vm/service.c",
+      "lines": "302-305",
+      "text": "    uint32_t type = service->state_type;\n    if (encoded == NULL)\n        call->state = mo_value_dup(p->heap, type, next);\n    else if (!encoded_copy(p->heap, type, next, &call->state, encoded, &call->saved)) {"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 0.74,
+     "probabilities": {
+      "supports": 0.14,
+      "contradicts": 0.83,
+      "says_nothing": 0.03
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 0.8,
+     "probabilities": {
+      "says_nothing": 0.02,
+      "contradicts": 0.87,
+      "supports": 0.11
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 720,
+    "output_tokens": 91
+   }
+  }
+ },
+ "citation-gemini_7": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "This code makes a copy of a whole table.",
+    "evidence": [
+     {
+      "file": "src/heap/table.c",
+      "lines": "172-188",
+      "text": "                return NULL;\n            }\n            slots *= 2;\n            continue;\n        }\n        mo_table_info(copy)->active = copy->length;\n        if (duplicate) {\n            for (uint32_t i = 0; i < copy->length; i++) {\n                for (uint32_t j = 0; j < stride; j++) {\n                    copy->cells[stride * i + j] =\n                        mo_value_dup(process, kind->parameters[j], copy->cells[stride * i + j]);\n                }\n            }\n        }\n        *position = mapped;\n        *slot_out = target_slot;\n        return copy;"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.58,
+     "probabilities": {
+      "supports": 0.72,
+      "contradicts": 0.11,
+      "says_nothing": 0.17
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.72,
+     "probabilities": {
+      "says_nothing": 0.12,
+      "contradicts": 0.07,
+      "supports": 0.81
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 652,
+    "output_tokens": 87
+   }
+  }
+ }
+}

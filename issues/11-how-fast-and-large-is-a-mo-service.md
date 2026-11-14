@@ -35,7 +35,7 @@ Measured on 2026-11-14. The counts of bytes and rows repeated exactly in two run
 - A write takes about 17 ms, plus 0.76 ms for every 1,000 rows. That is about 10 ms for every MiB of saved state.
 - Under heavier load the write at 100,000 rows measured 85 ms (load 8) and 167 ms (load 20) in two later runs.
 
-**Why a write grows with the state.** Read in the code here; measured apart in the part added at the end. Each log record carries "the FNV-1a checksum of the saved state the message produced" (`src/base/log-record.h`), so every write encodes the whole new state. Mo's Phase 4 notes found the same: "Each update at a large state takes about 0.15 s, most of it the saved copy the runtime makes of every new state" (`learnability/phase4/preflight/README.md`).
+**Why a write grows with the state.** Read in the code here; measured apart in the part added at the end, which found the larger cause: the new state is encoded and decoded back into a fresh copy on every write (corrected on 2026-11-14 after a reviewer's note). The smaller cause is this one. Each log record carries "the FNV-1a checksum of the saved state the message produced" (`src/base/log-record.h`), so every write encodes the whole new state. Mo's Phase 4 notes found the same: "Each update at a large state takes about 0.15 s, most of it the saved copy the runtime makes of every new state" (`learnability/phase4/preflight/README.md`).
 
 **Snapshots.** One is taken every 100 messages (`MO_LIMIT_SERVICE_SNAPSHOT_MESSAGES`; the service reported `snapshot_sequence` 200 at `recovery_sequence` 215). At 100,000 rows the two writes that carried a snapshot took 122 and 118 ms, against a median of 85 ms for the rest. In the repeat they took 183 and 129 ms against 167.
 
@@ -43,10 +43,10 @@ Measured on 2026-11-14. The counts of bytes and rows repeated exactly in two run
 
 **The largest state.** The same in both runs.
 
-- At 100,000 rows the service reported 7,588,082 bytes of encoded state, 19.2 MB of heap in use and a peak of 51.3 MB. The limit for one call is 58,718,816 bytes: 64 MiB less the stack.
+- At 100,000 rows the service reported 7,588,082 bytes of encoded state, 19.2 MB of heap in use and a peak of 51.3 MB. The limit for one call is 58,718,816 bytes: 64 MiB less the 8 MiB stack and less 1,440 bytes for the process record (`mo_process_new` in `src/vm/process.c`).
 - At 125,000 rows it reported 9,488,082 bytes encoded (9.05 MiB) and a peak of 58,455,547 bytes. A write still worked. Adding 5,000 rows was refused three times with `memory_limit`: "the call ran out of memory; service state is unchanged".
 - For small rows, then, the ceiling is the memory one call may use, reached at about 9 MiB of saved state. The 16 MiB limit on saved state is not what stops it. Each added row cost 76 bytes saved, 128 bytes of heap at rest and 287 bytes of heap at the peak of a write.
-- In the first run a larger step took the state to 130,000 rows. After that every write was refused, including one that set a row to the value it already had. After 16 refusals the supervisor restarted the service. A service can be grown into a state it cannot write to.
+- In the first run a larger step took the state to 130,000 rows. After that every write was refused, including one that set a row to the value it already had. The supervisor restarted the service at the 16th refusal. Its rule is five failures within 60 seconds for a restart, and a stop at the third restart within its window (`supervise` in `src/vm/service.c`); a reviewer supplied the rule on 2026-11-14. A service can be grown into a state it cannot write to.
 - At 125,000 rows the process used 146 to 154 MiB and the store file was 14.6 MiB.
 
 **Restart.** Empty: 0.5 s, and 0.9 s in the repeat. At 125,000 rows with 25 messages after the last snapshot: 9.1 s, and 4.3 s in the repeat. Not broken down.
@@ -115,7 +115,8 @@ The script then stops the service with `gdb` while calls run, and counts the sha
 
 - Reads ran at the usual pace, 60 ms apart: 1,225 calls, none refused, 300 samples, 43 of them busy.
 - 42 of the 43 were inside the VM (`mo_vm_execute`). 88% were under `mo_protocol_read`, which reads the request, and 9% under `mo_protocol_complete`.
-- Handling the head of the request (`head_complete`) was in 72%: checking who is calling (`authenticate`) in 47% and deciding what the request is (`plan`) in 26%.
+- Handling the head of the request (`head_complete`) was in 72%: `authenticate` in 47% and `plan`, which decides what the request is, in 26%.
+- What `authenticate` spends that time on is turning the request's headers into a Mo list of bytes and parsing them in Mo. The token itself is checked in C (`MO_LISTENER_AUTH`). `plan` then converts the headers a second time. A reviewer found both on 2026-11-14 (`src/tools/protocol-request.c`).
 - That layer is Mo bytecode that the VM runs under a work budget. `authenticate` calls `mo_protocol_invoke(s, c, PF_INSPECT, args, &value)` (`src/tools/protocol-request.c`).
 - The step that runs the handler (`mo_service_step`) is not among the 45 functions listed, so it was in one sample at most.
 - A trace of the system calls of one read agrees: the request arrives, 5.9 ms pass with no system call, and the reply is sent.

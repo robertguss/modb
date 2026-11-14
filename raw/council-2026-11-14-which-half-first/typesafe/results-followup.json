@@ -1,0 +1,257 @@
+{
+ "followup-sol": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "[Own reasoning] Build a small executable sketch of the boundary between the halves first, then one thin slice through both, including incremental storage; I am **85% confident**.\n\nMy three strongest reasons:\n\n1. [Read in a document] [models/README.md](models/README.md) establishes useful distinctions about replay and whole-world landing, but explicitly has no implementation comparison; [sketches/README.md](sketches/README.md) says the existing sketch omits forks, recorded reads and replay against changed state. [Own reasoning] Implementing that complete interaction is the next valuable experiment. Neither a finished upper half nor a finished storage engine is necessary to discover whether it works.\n\n2. [Read in a document] [issue 11](issues/11-how-fast-and-large-is-a-mo-service.md) separates fixed HTTP overhead from whole-state copying and reports a roughly 9 MiB effective ceiling for its measured shape. [Checked in the code] [service.c:259](mo/src/vm/service.c:259) encodes and decodes replacement state, and [service.c:463](mo/src/vm/service.c:463) checksums its entire encoding. [Own reasoning] These justify addressing persistence early, but do not justify designing all storage before exercising its consumers. Adding worlds and retained history to this existing persistence path compounds precisely the measured weakness.\n\n3. [Read in a document] [design-ideas.md](design-ideas.md) proposes both pure functions over typed state and a storage library that loads nodes through a capability; [the reference](mo/docs/reference/README.md:1107) excludes capabilities from service state, inputs and results. [Own reasoning] The important uncertainty is how approved functions and arbitrary read programs access data larger than memory. Explicit fetching, transparent paging and materialised views impose different language and execution contracts. Settle that with executable examples before either half hardens around an incompatible assumption.\n\n[Own reasoning] The strongest case against my recommendation is that the storage requirements already overlap substantially: cheap versions, incremental writes and durable ordered commits. Building a minimal persistent collection first could teach more than inventing an interface around today\u2019s limitations. A boundary sketch can become speculative architecture. I would constrain mine to one concrete workload and discard abstractions that the slice does not need.\n\n[Own reasoning] \u201cWhich half first\u201d needs these qualifications:\n\n- Storage first does not require completing indexes, content addressing, background maintenance and concurrent reads together. A persistent collection with version roots is a smaller first step.\n- Upper first does not require exposing `Map` throughout approved functions. A small domain module can contain that dependency; rewriting every write function is a risk, not an inevitable cost.\n- The boundary includes durable commit, retained code identities, replay context, storage failures and work accounting\u2014not just collection type and copying.\n- Needless-send-back counts will not necessarily carry over unchanged: storage latency changes overlap between worlds and therefore conflict frequency. Upper-first measurements remain useful, but workload timing matters.\n- An additional intermediate order is a persistent collection **in memory**, then replay and read programs over it, then durable nodes. This separates collection semantics from disk recovery without abandoning either.\n\n[Own reasoning] Before committing, I would sketch one workload with two overlapping worlds, interleaved reads and writes, a narrowed view, and whole-world landing with checks after each call. Specify where nodes are fetched, how failures surface, and what is committed before acknowledgement. Then measure copied bytes, nodes read/written, retained bytes per world, validation work and retries as world count and length grow.\n\n[Own reasoning] I would favour storage first if ordinary approved functions cannot retain a useful, bounded execution contract without paging support. I would favour upper first if the sketch shows a simple replaceable boundary and realistic overlapping worlds remain comfortably within today\u2019s memory and work limits. These are learning criteria, consistent with [map.md](map.md), rather than speed-to-use criteria.\n\n[Checked in the code] One factual correction: [design-ideas.md](design-ideas.md) says \u201cEvery call is logged.\u201d Successful reads are excluded: [service.c:242](mo/src/vm/service.c:242) prevents a read-only tool from producing replacement state, and [service.c:1118](mo/src/vm/service.c:1118) persists only updates. [Own reasoning] Recording questions for replay and accountable reads therefore needs an additional durable mechanism, even before snapshots\u2019 log pruning becomes relevant.\n"
+   },
+   "questions": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "instructions": "Does `review` propose that versions share data through explicit identifiers for nodes?",
+     "criteria": {
+      "true": "The review proposes nodes that refer to each other by identifier so that versions can share them.",
+      "false": "The review proposes no such identifiers."
+     }
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "instructions": "Does `review` propose writing the versioned collection in the language itself?",
+     "criteria": {
+      "true": "The review says the versioned collection is written as a program or library in the language.",
+      "false": "The review says the collection is built into the runtime or host, or does not say where it is written."
+     }
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "instructions": "Does `review` propose changing how state is saved so that the saved form keeps sharing?",
+     "criteria": {
+      "true": "The review proposes a change to the saving of state so that shared data stays shared.",
+      "false": "The review proposes no change to how state is saved."
+     }
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions can be avoided?",
+     "criteria": {
+      "true": "The review describes a way to keep the write functions from needing a rewrite.",
+      "false": "The review does not say the rewrite can be avoided."
+     }
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions would be cheap?",
+     "criteria": {
+      "true": "The review says rewriting the write functions would cost little.",
+      "false": "The review does not say the rewrite would cost little."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "noul": 0.4
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "noul": 0.22
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "noul": 0.73
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "noul": 0.87
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "noul": 0.05
+    }
+   },
+   "usage": {
+    "input_tokens": 1700,
+    "output_tokens": 103
+   }
+  }
+ },
+ "followup-opus": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "**1. Recommendation.** Put the seam first, from the storage side: build a collection that keeps versions without copying and a saved state that keeps that sharing, then run a thin slice of the upper half on it. I'm about 65% sure.\n\n**2. Three strongest reasons**\n\n- **Today's service can't hold a version cheaply, even with a tree written in Mo.**\n  - Checked in the code and read in a document: `docs/design/saved-state.md:199` says \"Sharing is expanded, not serialized\". Lines 209\u2013216 say every new state goes through encode and decode before it is accepted.\n  - Checked in the code: `src/vm/service.c:259-266` and `:305` do exactly that.\n  - My reasoning: a world, a snapshot or an old root kept in the state therefore becomes a full copy on every write, whatever collection the program uses. Building the upper half first would test worlds, snapshots and history with whole copies at a small size. The two models already showed that much at toy size.\n  - \"Which half first\" says versions cost a copy (line 595). It understates the problem: this cannot be fixed in the library layer.\n- **The upper half's logic is already largely de-risked, and its needs are now stated.**\n  - Read in a document: the replay model matched all 48 predictions and the worlds model all 40 (`models/README.md`). The land-whole sketch passes `mo test` (`sketches/README.md`). Every-question-counts and landing whole were decided on 2026-11-14 (`design-ideas.md`).\n  - My reasoning: \"built for needs the upper half has only guessed at\" (line 611) is out of date. Snapshots for read-only programs, roots per world, a kept log and replay all follow from decisions already made. Line 243 already lists them.\n- **The growing cost is Mo's own cost, not the database's.**\n  - Read in a document: issue 11 splits a write's cost three ways. The part that grows is about 0.65 ms per 1,000 rows of whole-state encode, decode and checksum.\n  - Checked in the code: a write also starts with a whole copy of the map. `service.c:293-294` duplicates parameters marked owned, and `src/heap/table.c:254-272` copies a table whenever its reference count is not 1.\n  - My inference: that copy is the 10% `copy_table` share in issue 11, so changing only how state is saved would not flatten the line.\n  - My reasoning: fixing both grows Mo for every service, which is the stated purpose. \"Usable sooner\" was the main argument for the upper half, and it has been ruled out.\n\n**3. Strongest case against.** My reasoning: the biggest unknowns are in the upper half, and storage cannot answer them.\n\n- Do agents write correct read programs?\n- How often is a send-back needless?\n- Can a person review \"what becomes possible\"?\n\nA clean versioned store could be built and request-as-program could then fail with agents. Storage-first also changes the runtime early. That reopens memory safety (issue 24) and collides with Phases 6 to 8. Both outside reviews warned against this half (read in a document).\n\n**4. What \"Which half first\" gets wrong, misses or frames unfairly**\n\n- **Wrong or missing:** saving expands sharing and every write copies the map in memory. Together these mean \"upper half first on today's services\" cannot really test worlds or history (checked in the code, see above).\n- **Missing order: learnability first.**\n  - Read in a document: idea 1 says `learnability/` in Mo could measure whether agents write correct small programs.\n  - My reasoning: that measurement needs neither half and is the largest risk to idea 1.\n- **Missing third track: the call path.**\n  - Read in a document: 10 ms of HTTP per call (issue 11).\n  - Checked in the code: 20 calls a second with a burst of 40, a 16 KiB body and a 32 KiB reply (`src/base/limits.h:518, 524, 566-567`).\n  - My reasoning: for many agents these limits bind before storage does, and neither order touches them.\n- **Unfair rework comparison.** My reasoning: rewriting write functions costs little if the new collection keeps a `Map`-like interface. Building storage for the wrong needs costs more. The section weighs the two as equals.\n- **Untested ceiling.** Checked in the code: `MO_LIMIT_SAVED_NODES` is 2^20 (`limits.h:364`). My reasoning: rows that are records with several fields could hit that node limit before the memory ceiling. Issue 11 measured only a `Map(Int, Text)`.\n\n**5. What to measure before committing**\n\n- **(a) A persistent ordered map written in Mo today, inside a service.**\n  - Measure: steps per insert and lookup at 100k rows, against `Map`.\n  - Measure: the saved size with N retained versions. I predict roughly N\u00d7 (my reasoning).\n  - Find out: what it takes to make the saved codec and the handler handoff keep sharing.\n  - What would change my mind: if keeping sharing needs deep runtime or memory-safety work that collides with Phases 6 to 8, I'd switch to the upper half first on whole copies with a hard size cap.\n- **(b) A small learnability run of agents writing read programs against a typed view.**\n  - What would change my mind: correctness well below the query-language baselines (issue 04) would put \"learnability first\" ahead of both halves.\n\n**6. Claims I checked against Mo's code**\n\n- Confirmed:\n  - A snapshot deletes the log: `src/host/store.c:472-476`.\n  - Snapshot every 100 messages: `limits.h:365`.\n  - About a million steps of work: `limits.h:333`.\n  - 64 MiB per call: `limits.h:334`.\n  - 16 MiB saved state: `limits.h:344`.\n  - Request, reply and rate limits: `limits.h:518`, `:524`, `:566`.\n- Nuance, not an error: \"a Mo `Map` is one block, so a changed copy is a whole copy\" holds only when the map is shared. A map with one owner is updated in place (`table.c:254`). At the service boundary the state is shared, so the claim holds in practice.\n- Incomplete: \"Only the third cost is about how data is stored\" leaves out the in-memory map copy at handler entry (`service.c:293-294`, `table.c:271`).\n\nI didn't run anything, so the `copy_table` attribution and the N\u00d7 saved-size prediction are inferences. Reference section 11 beyond 11.5's opening lines was not read.\n"
+   },
+   "questions": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "instructions": "Does `review` propose that versions share data through explicit identifiers for nodes?",
+     "criteria": {
+      "true": "The review proposes nodes that refer to each other by identifier so that versions can share them.",
+      "false": "The review proposes no such identifiers."
+     }
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "instructions": "Does `review` propose writing the versioned collection in the language itself?",
+     "criteria": {
+      "true": "The review says the versioned collection is written as a program or library in the language.",
+      "false": "The review says the collection is built into the runtime or host, or does not say where it is written."
+     }
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "instructions": "Does `review` propose changing how state is saved so that the saved form keeps sharing?",
+     "criteria": {
+      "true": "The review proposes a change to the saving of state so that shared data stays shared.",
+      "false": "The review proposes no change to how state is saved."
+     }
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions can be avoided?",
+     "criteria": {
+      "true": "The review describes a way to keep the write functions from needing a rewrite.",
+      "false": "The review does not say the rewrite can be avoided."
+     }
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions would be cheap?",
+     "criteria": {
+      "true": "The review says rewriting the write functions would cost little.",
+      "false": "The review does not say the rewrite would cost little."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "noul": 0.17
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "noul": 0.92
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "noul": 0.65
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "noul": 0.95
+    }
+   },
+   "usage": {
+    "input_tokens": 2369,
+    "output_tokens": 103
+   }
+  }
+ },
+ "followup-gemini": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "upper half": "The part of the database that agents and people touch: write functions, read programs, grants, an agent's own copy of the data (a world) and how it lands.",
+     "storage half": "How the data is kept: more data than fits in memory, saving only what changed, keeping versions without copying, and storage on disk.",
+     "today's services": "The language's existing services. Each keeps its whole state in memory and saves the whole state on every write.",
+     "the document": "The planning document the review was asked to read, which sets out both orders."
+    },
+    "review": "1. I recommend \"some other order\": define a versioned-collection seam backed by an in-memory explicit-ID persistent tree first, build the upper half on that seam second, and build the on-disk storage half last, at 75% confidence (your own reasoning).\n\n2. Three strongest reasons:\n- **Physical storage depends on unsettled upper-half rules** (your own reasoning). [design-ideas.md:486-488](design-ideas.md:486) notes kept versions pin dead tree nodes, hash-named history fights personal-data erasure, and arbitrary Mo views cannot update incrementally, while [design-ideas.md:258-260](design-ideas.md:258) leaves view limits and per-field encryption open (read in a document). Fixing page layout, content hashes, and indexes before settling world lifetimes, erasure, and view shapes risks building the wrong engine (your own reasoning).\n- **Raw `Map` and service `State` destroy multi-world sharing** (your own reasoning). `mo_table_set` clones the whole table in [table.c:186](mo/src/heap/table.c:186), and every state-changing call runs `encoded_copy` in [service.c:259](mo/src/vm/service.c:259) and [service.c:305](mo/src/vm/service.c:305), encoding and decoding the whole state while expanding pointer sharing via [saved.c:186](mo/src/heap/saved.c:186) and [saved.c:288](mo/src/heap/saved.c:288) (checked in the code), per [saved-state.md:199-214](mo/docs/design/saved-state.md:199) (read in a document). Ten agent worlds held as pointer-shared Mo trees expand into ten copies per write, cutting the 125,000-row ceiling in [11-how-fast-and-large-is-a-mo-service.md:44](issues/11-how-fast-and-large-is-a-mo-service.md:44) tenfold unless nodes share via explicit IDs behind a seam (your own reasoning).\n- **The upper half tests Mo's missing runtime capabilities first** (your own reasoning). [map.md:107-111](map.md:107) and [design-ideas.md:62-63](design-ideas.md:62) require unplanned Mo read programs and view grants (read in a document), whereas `mo serve` only admits new code via whole-service upgrades in [protocol-upgrade.c:449](mo/src/tools/protocol-upgrade.c:449) and caps calls at 1,048,576 instructions, 16 KiB requests, 32 KiB replies, and 20 requests/s in [limits.h:333](mo/src/base/limits.h:333), [limits.h:518](mo/src/base/limits.h:518), [limits.h:524](mo/src/base/limits.h:524), and [limits.h:566](mo/src/base/limits.h:566) (checked in the code).\n\n3. Strongest case against:\nAn in-memory seam can hide failure and budget modes that appear once state exceeds RAM (your own reasoning). When nodes fault from disk, pure reads, views, and promise checks like [land-whole/main.mo:54](sketches/land-whole/main.mo:54) can exhaust `MO_LIMIT_SERVICE_WORK` in [limits.h:333](mo/src/base/limits.h:333) or hit I/O errors (checked in the code; your own reasoning). If Mo's purity rules force paged lookups to take a capability or return `Result`, upper-half signatures built on pure values must be rewritten (your own reasoning).\n\n4. What is wrong, missing, or unfair in \"Which half first\":\n- **Unlisted order:** [design-ideas.md:575-626](design-ideas.md:575) bundles versioning with disk durability (read in a document), omitting *in-memory structural sharing first, upper half second, disk pages and indexes last* (your own reasoning).\n- **Missed `encoded_copy` expansion:** [design-ideas.md:595-597](design-ideas.md:595) notes `Map` copying (read in a document), missing that `encoded_copy` in [service.c:259](mo/src/vm/service.c:259) flattens pointer sharing across worlds on every write and enforces `MO_LIMIT_SAVED_NODES` (1,048,576) and `MO_LIMIT_SAVED_BYTES` (16 MiB) in [limits.h:221](mo/src/base/limits.h:221) and [limits.h:344](mo/src/base/limits.h:344) (checked in the code; your own reasoning).\n- **Unfair storage-first framing:** [design-ideas.md:610](design-ideas.md:610) says database work waits until storage finishes (read in a document), ignoring a minimal C-host B-tree without indexes or GC (your own reasoning).\n- **Missing host trade-off:** [design-ideas.md:586-615](design-ideas.md:586) omits turn serialization in [service.c:1083](mo/src/vm/service.c:1083) and running ad-hoc read functions without `mo push` (checked in the code; your own reasoning).\n\n5. What to sketch before committing, and what changes my mind:\n- **Lazy-handle sketch:** Sketch the versioned collection in Mo and check whether pure reads and promises can traverse nodes that a C host later pages from disk (your own reasoning). If Mo requires capability or error types on every lookup, build a minimal C-host paged B-tree first (your own reasoning).\n- **Read-eval sketch:** Sketch compiling and running an agent's ad-hoc Mo read function against a snapshot without service upgrade (your own reasoning). If dynamic Mo queries lose to a fixed query AST, pull storage and index design forward (your own reasoning).\n\n6. Factual claims checked against Mo's code and found wrong:\n- [11-how-fast-and-large-is-a-mo-service.md:49](issues/11-how-fast-and-large-is-a-mo-service.md:49) says the supervisor restarted after 16 refusals (read in a document); `supervise` in [service.c:1065-1077](mo/src/vm/service.c:1065) ([limits.h:336-338](mo/src/base/limits.h:336)) restarts on failures 5 and 10, and on failure 15 stops the service, exiting `mo serve` in [serve.c:179-196](mo/src/tools/serve.c:179) (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:46](issues/11-how-fast-and-large-is-a-mo-service.md:46) calls `58,718,816` bytes 64 MiB less the stack (read in a document); `64 MiB - 8 MiB` in [service.c:85](mo/src/vm/service.c:85) is `58,720,256`, before [process.c:121](mo/src/vm/process.c:121) subtracts `sizeof(struct mo_process)` (1,440 bytes) (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:38](issues/11-how-fast-and-large-is-a-mo-service.md:38) and [11-how-fast-and-large-is-a-mo-service.md:58](issues/11-how-fast-and-large-is-a-mo-service.md:58) attribute per-write growth to encoding state for the log checksum (read in a document); `encoded_copy` in [service.c:259-266](mo/src/vm/service.c:259) and [service.c:305](mo/src/vm/service.c:305) encodes and decodes the whole state on every write even without a store (checked in the code).\n- [11-how-fast-and-large-is-a-mo-service.md:118](issues/11-how-fast-and-large-is-a-mo-service.md:118) calls `authenticate` checking who is calling in Mo bytecode (read in a document); token verification is C (`MO_LISTENER_AUTH`, [protocol-request.c:134](mo/src/tools/protocol-request.c:134)), while `authenticate` builds `List(Byte)` and parses HTTP headers in Mo ([protocol-request.c:5-47](mo/src/tools/protocol-request.c:5)), which `plan` repeats at [protocol-request.c:174](mo/src/tools/protocol-request.c:174) (checked in the code).\n- [design-ideas.md:201](design-ideas.md:201) and [design-ideas.md:357](design-ideas.md:357) cite 12,049 Lean lines and 5,314 lines across 26 `.mo` files (read in a document); at `ef374248`, `formal/` has 13,555 Lean lines and those 26 `.mo` files total 5,683 lines (checked in the code).\n"
+   },
+   "questions": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "instructions": "Does `review` propose that versions share data through explicit identifiers for nodes?",
+     "criteria": {
+      "true": "The review proposes nodes that refer to each other by identifier so that versions can share them.",
+      "false": "The review proposes no such identifiers."
+     }
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "instructions": "Does `review` propose writing the versioned collection in the language itself?",
+     "criteria": {
+      "true": "The review says the versioned collection is written as a program or library in the language.",
+      "false": "The review says the collection is built into the runtime or host, or does not say where it is written."
+     }
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "instructions": "Does `review` propose changing how state is saved so that the saved form keeps sharing?",
+     "criteria": {
+      "true": "The review proposes a change to the saving of state so that shared data stays shared.",
+      "false": "The review proposes no change to how state is saved."
+     }
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions can be avoided?",
+     "criteria": {
+      "true": "The review describes a way to keep the write functions from needing a rewrite.",
+      "false": "The review does not say the rewrite can be avoided."
+     }
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a later rewrite of the write functions would be cheap?",
+     "criteria": {
+      "true": "The review says rewriting the write functions would cost little.",
+      "false": "The review does not say the rewrite would cost little."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "proposes_explicit_ids": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "collection_written_in_language": {
+     "type": "noul",
+     "noul": 0.8
+    },
+    "saved_format_must_keep_sharing": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "rewrite_avoidable": {
+     "type": "noul",
+     "noul": 0.22
+    },
+    "rewrite_cheap": {
+     "type": "noul",
+     "noul": 0.03
+    }
+   },
+   "usage": {
+    "input_tokens": 2879,
+    "output_tokens": 103
+   }
+  }
+ }
+}

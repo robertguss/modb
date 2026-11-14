@@ -43,7 +43,7 @@ Checked in Mo's code and documents on 2026-11-14:
 
 - A service has one typed state. Each tool is a function from the old state, the time and its arguments to a new state and a reply.
 - Time is an argument, so the same call always gives the same result.
-- Every call is logged and the state is saved. A snapshot deletes the log (`src/host/store.c`), so the log is not a history.
+- Every call that changes the state is logged, and the state is saved. A read is not logged (`replacement` and `persist` in `src/vm/service.c`; a reviewer found this on 2026-11-14). A snapshot deletes the log (`src/host/store.c`), so the log is not a history.
 - Each handler may do about a million steps of work (`MO_LIMIT_SERVICE_WORK` in `src/base/limits.h`).
 - Changing a running service is a compiled upgrade with a migration from the old state.
 - Promises and examples are checked by `mo test`, which also simulates a service and its recovery from a crash.
@@ -198,7 +198,7 @@ The limits: a proof is about the model, and the implementation is compared with 
 
 Robert proposed on 2026-11-14 to write small Lean and TLA+ models, "like we did for pieces of Mo", invited pushback, and said to keep performance in mind with optimisation later. What follows is Claude's proposal. Robert has not accepted it.
 
-**What each has cost in Mo.** Checked on 2026-11-14: the three TLA+ models are 257 lines together, and each has configurations that are meant to fail. The Lean model is 12,049 lines.
+**What each has cost in Mo.** Checked on 2026-11-14: the three TLA+ models are 257 lines together, and each has configurations that are meant to fail. The Lean model is 13,555 lines in 48 files (recounted on 2026-11-14; a reviewer found the earlier figure of 12,049 wrong).
 
 | Instrument | Good for | Not good for | Use here |
 | --- | --- | --- | --- |
@@ -225,6 +225,7 @@ Robert proposed on 2026-11-14 to write small Lean and TLA+ models, "like we did 
 | On every write, growing | About 0.65 ms for every 1,000 rows | The whole state is encoded and decoded back into a fresh copy (59% of a write at 100,000 rows), checksummed (9%) and the old copy freed (10%) | How Mo saves a service's state |
 
 - The yardstick: SQLite by itself, on the same disk with the settings Mo's store uses, takes about 3 ms for a synced write and a few thousandths of a millisecond for a read, from one row to ten million. It has no HTTP request around it, so it is a floor and not a like-for-like figure.
+- A write also copies the whole map before the function changes it: the service hands the function a second reference to the state, and a shared map is copied on its first change (`src/vm/service.c`, `src/heap/table.c`). A reviewer found this, and it fits the 10% of a write measured in `copy_table`. That the two are the same cost is an inference.
 - Only the third cost is about how data is stored. The tree of write-once nodes under "Storage underneath" is aimed at it.
 - The first cost falls on reads, which agents send in high volumes. A request program (idea 1) that does many reads in one request would pay it once. This is Claude's inference and was not measured.
 - None of this is a decision. Whether the first slice lives with these costs, or Mo changes first, is open.
@@ -276,7 +277,7 @@ What falls out of that one choice:
 - Mo's `Map` and `Set` are hash tables held in one block (`src/heap/table.c`). A changed copy of a shared map is a whole copy. The tree-shaped collection would be new.
 - Mo programs have no hash-of-bytes function (`src/base/prims.def` has none), cannot write bytes and cannot read at an offset. Each is a general ability, not one only a database wants.
 
-**Two ways to build it.** As a library written in Mo, where a tree's nodes are loaded by name through a capability: everything is ordinary Mo that `mo test` can simulate and the Lean model covers. Or inside the runtime, where any Mo value can quietly live on disk: more powerful, but it hides which step touches the disk. Claude's lean is the library first.
+**Two ways to build it.** As a library written in Mo, where a tree's nodes are loaded by name through a capability: everything is ordinary Mo that `mo test` can simulate and the Lean model covers. Or inside the runtime, where any Mo value can quietly live on disk: more powerful, but it hides which step touches the disk. Claude's lean is the library first. A reviewer pointed out on 2026-11-14 that the library route does not fit a service as Mo stands: a service's state, inputs and results may hold no capability (`docs/reference/README.md`, section 11.5), so a handler has no way to load a node through one.
 
 **Open.**
 
@@ -354,7 +355,7 @@ Raised by Robert on 2026-11-14. Not decided.
 **Mo already works this way at small scale.** Checked on 2026-11-14:
 
 - A service gets saved state, crash recovery, timers, typed upgrades and MCP tools from a few lines of declaration. One program, `mo`, checks, tests, formats, serves and upgrades it.
-- Mo's own rule is that "the library is written in Mo wherever it can be" (`~/code/mo/docs/design/library.md`). 26 files of Mo, 5,314 lines, ship inside `mo`: the library in `lib/`, and the HTTP and MCP handling of `mo serve` in `runtime/`.
+- Mo's own rule is that "the library is written in Mo wherever it can be" (`~/code/mo/docs/design/library.md`). 26 files of Mo, 5,683 lines (recounted on 2026-11-14), ship inside `mo`: the library in `lib/`, and the HTTP and MCP handling of `mo serve` in `runtime/`.
 
 **What it would change here.**
 
@@ -574,7 +575,7 @@ Answer 6 extends a line already in this document: for each write function a pers
 
 ## Which half first
 
-Reopened by Robert on 2026-11-14 after the measurements: "It doesn't really matter to me which one comes first. I'm in no rush." He asked for the trade-offs of each order and for an outside review by other models. Nothing here is decided, and this section holds no recommendation until that review is back.
+Reopened by Robert on 2026-11-14 after the measurements: "It doesn't really matter to me which one comes first. I'm in no rush." He asked for the trade-offs of each order and for an outside review by other models. Nothing here is decided. The review came back the same day and is summarised at the end of this section, with Claude's recommendation after it.
 
 **The two halves.**
 
@@ -592,10 +593,10 @@ What it gives:
 Its issues:
 
 - The measured limits apply: about 125,000 small rows, a write that costs more as the data grows, a read that waits behind a write, 10 ms on every call and 20 calls a second, a request of 16 KiB and a reply of 32 KiB.
-- The upper half's own ideas lean on storage. A world, a snapshot for a read program and an old state are each a version. In Mo today a changed copy of a map is a whole copy, so each version costs a copy, in memory and in the one saved state.
-- A snapshot deletes the log, so "the log is the truth" cannot be built on today's store as it is.
-- The write functions would be written against Mo's `Map`. If storage later brings a different collection, they are written again.
-- Times taken on it say little about the finished design. Counts, such as needless send-backs, carry over.
+- The upper half's own ideas lean on storage. A world, a snapshot for a read program and an old state are each a version. In Mo today a changed copy of a map is a whole copy, so each version costs a copy, in memory and in the one saved state. Saving makes it worse than the map alone. A saved value writes shared data out in full, and the service then loads that copy back (`docs/design/saved-state.md`: "Sharing is expanded, not serialized"). A collection that shares its parts by reference loses the sharing at every write.
+- A snapshot deletes the log, so "the log is the truth" cannot be built on today's store as it is. Reads are never logged, so recording what an agent asked needs something new as well.
+- The write functions would be written against Mo's `Map`. If storage later brings a different collection, they are written again, unless a small module hides the collection from them.
+- Times taken on it say little about the finished design. Counts, such as needless send-backs, carry over only in part: how often two worlds collide depends on how long each stays open, which depends on speed.
 
 **Storage half first.**
 
@@ -608,21 +609,44 @@ What it gives:
 
 Its issues:
 
-- It is built for needs the upper half has only guessed at. Whether nodes need names by hash, how long history is kept and whether views are kept current all come from ideas not yet tried.
+- It is built for needs the upper half has only guessed at. Whether nodes need names by hash, how long history is kept and whether views are kept current all come from ideas not yet tried. One reviewer disputes this and two agree; see the end of this section.
 - It changes Mo's runtime at once. That reopens the parked question of memory safety and the question of how the work sits beside Phases 6 to 8.
 - Nothing of Robert's is in it, and no agent uses it, until the upper half follows.
 - Both outside reviews earlier on 2026-11-14 warned about this half: one said to build a storage engine only if a guarantee needs it, the other never.
 - It does not touch the 10 ms on every call, which is not a storage cost.
 
-**What ties the halves together.** Two things: the type the data lives in, and whether a version costs a copy. Whichever half goes first settles these two for the other.
+**What ties the halves together.** Two things: the type the data lives in, and whether a version costs a copy. Whichever half goes first settles these two for the other. The reviewers added three more: how a function reaches data that is not in memory, what is committed before a reply is sent, and how a storage failure shows in a function that is meant to be pure.
 
 **Other orders.**
 
 - The seam first: decide the collection the data lives in and what a version is, as an interface, then build either half against it.
 - One thin slice through both: one write function, one world and one read program, on the smallest store that writes only what changed.
 - A change to how Mo saves a service's state, apart from any database, since the growing cost is Mo's.
+- Measure first whether agents write correct read programs. It needs neither half (a reviewer's addition).
+- A third track beside both: the call path. At 10 ms a call, 20 calls a second, 16 KiB a request and 32 KiB a reply, those limits bind before storage does for many agents (a reviewer's addition).
 
 **What would decide it.** Which half holds more that is unknown. Which rework costs more: write functions written again, or storage built for the wrong needs. Which part of Mo Robert wants to grow first. "Usable sooner" is not a reason, by the map's notes.
+
+**What the council said, 2026-11-14.** Three models from three providers read this file, the map, the measurements and Mo's code. They were briefed without Claude's view and changed nothing. Their reviews are kept word for word in `raw/council-2026-11-14-which-half-first/`, and the record is on [Which half comes first?](issues/36-which-half-comes-first.md).
+
+| Reviewer | Builds first | Its confidence |
+| --- | --- | --- |
+| GPT Sol | A small runnable sketch of the boundary between the halves, then one thin slice through both, with storage that writes only what changed | 85% |
+| Gemini Carbon | A versioned collection with explicit identifiers for its nodes, in memory, behind a seam; then the upper half; storage on disk last | 75% |
+| Claude Opus | The seam from the storage side: a versioned collection and a saved form that keeps sharing; then a thin slice of the upper half | 65% |
+
+- **All three:** not the upper half on today's services, not the whole storage half, and an experiment before committing.
+- **Two of three** put a versioned collection before the upper half. GPT Sol does not; its first step is the sketch.
+- **Split on disk:** Gemini Carbon leaves it for last. The other two put a new way of saving in the first slice.
+- **Split on whether storage's needs are known:** Claude Opus says the decisions of 2026-11-14 fix them. The other two say they depend on upper-half rules not yet settled.
+- **Not settled by the reviews:** whether versions can be cheap in a library written in Mo, with explicit identifiers, or only after Mo's saving changes. One reviewer proposes the first and one says only the second works. A sketch can settle it.
+
+**Claude's recommendation after the council.** Not decided by Robert.
+
+1. Sketch a versioned collection in Mo today, with explicit identifiers for its nodes. The control shares nodes by reference and is predicted to cost a full copy for each kept version.
+2. Measure the saved size with N kept versions, and the steps for an insert and a lookup against `Map`.
+3. Run one workload on it: two worlds that overlap, a narrowed view, and a landing with the rule checked after every call.
+4. Decide the order after that. The sketch is what tells a library apart from a change to Mo's runtime.
 
 ## Deep dives for later
 
@@ -656,6 +680,11 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
 - **Which half first,** reopened on 2026-11-14.
 - **The seam between the halves:** the collection the data lives in, and what a version costs.
+- **How a write function reaches data that is not in memory:** fetching by name, paging by the runtime, or views kept ready. Each asks something different of Mo.
+- **Recording reads,** which Mo does not log today.
+- **Whether agents write correct read programs,** which `learnability/` in Mo could measure.
+- **Running a read program without upgrading the whole service.**
+- **The limit of about a million saved nodes,** which rows with several fields may reach before the memory ceiling.
 - **One write at a time** in place of one operation at a time. This changes a settled rule.
 - **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.
 - **Batteries:** which, in what order, and what keeps the list short.

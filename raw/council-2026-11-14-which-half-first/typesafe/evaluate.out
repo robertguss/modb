@@ -1,0 +1,46 @@
+POSITIONS  (probability each review says so: sol, opus, gemini)
+  upper_first_on_today           0.18 0.02 0.03  NNN  none      predicted NNN
+  whole_storage_first            0.06 0.32 0.03  N?N  unsettled predicted NNN  <- differs: opus
+  versioned_collection_first     0.19 0.98 0.94  NYY  split     predicted UYY
+  disk_last                      0.10 0.03 0.96  NNY  split     predicted NNY
+  experiment_before_committing   0.99 0.99 1.00  YYY  all three predicted YYY
+  runtime_change_needed          0.43 0.94 0.92  ?YY  unsettled predicted UYN  <- differs: gemini
+  no_runtime_change_needed       0.14 0.21 0.13  NNN  none      predicted NNU
+  sharing_lost_on_save           0.29 0.97 0.93  NYY  split     predicted NYY
+  reads_not_logged               0.95 0.07 0.05  YNN  split     predicted YNN
+  data_beyond_memory_open        0.98 0.38 0.94  Y?Y  unsettled predicted YNY  <- differs: opus
+  capability_rule_matters        0.90 0.04 0.13  YNN  split     predicted YNU
+  call_limits_untouched          0.19 0.97 0.15  NYN  split     predicted NYU
+  cannot_run_new_read_program    0.04 0.05 0.97  NNY  split     predicted NNY
+  doubts_agents_write_programs   0.11 0.98 0.22  NYN  split     predicted NYU
+  rework_overstated              0.15 0.92 0.06  NYN  split     predicted YYN  <- differs: sol
+  storage_needs_known            0.11 0.92 0.03  NYN  split     predicted UYN
+  storage_needs_unsettled        0.82 0.30 0.99  YNY  split     predicted UNY
+  advises_no_database            0.04 0.05 0.05  NNN  none      predicted NNN
+  argues_from_speed              0.09 0.12 0.12  NNN  none      predicted NNN
+  gives_case_against_itself      0.98 0.98 0.99  YYY  all three predicted YYY
+  reports_factual_error          0.98 0.85 0.99  YYY  all three predicted YUY
+FIRST STEP
+  sol     sketch_of_the_boundary 1.00, versioned_collection_in_memory 0.00   predicted sketch_of_the_boundary
+  opus    versioned_collection_and_saving 1.00, sketch_of_the_boundary 0.00   predicted versioned_collection_and_saving
+  gemini  versioned_collection_in_memory 0.88, versioned_collection_and_saving 0.10   predicted versioned_collection_in_memory
+CITATIONS  (verdict with options in two orders, then the smaller of the two top probabilities)
+  sol_1     supports     supports     0.84  -> supports       predicted supports
+  sol_2     supports     supports     0.98  -> supports       predicted supports
+  sol_3     supports     supports     0.97  -> supports       predicted supports
+  sol_4     supports     supports     0.52  -> needs a person predicted supports  <- differs
+  sol_5     supports     supports     0.99  -> supports       predicted supports
+  opus_1    supports     supports     0.98  -> supports       predicted supports
+  opus_2    supports     supports     1.00  -> supports       predicted supports
+  opus_3    supports     supports     0.97  -> supports       predicted supports
+  opus_4    supports     supports     0.97  -> supports       predicted supports
+  opus_5    supports     supports     0.99  -> supports       predicted supports
+  opus_6    supports     supports     1.00  -> supports       predicted supports
+  gemini_1  supports     supports     0.93  -> supports       predicted supports
+  gemini_2  supports     supports     0.98  -> supports       predicted supports
+  gemini_3  supports     supports     0.90  -> supports       predicted supports
+  gemini_4  supports     supports     1.00  -> supports       predicted supports
+  gemini_5  says_nothing says_nothing 0.50  -> needs a person predicted contradicts  <- differs
+  gemini_6  contradicts  contradicts  0.83  -> contradicts    predicted contradicts
+  gemini_7  supports     supports     0.72  -> needs a person predicted supports  <- differs
+requests 21, input tokens 21934, cost about $0.0009
