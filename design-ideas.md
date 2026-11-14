@@ -282,7 +282,7 @@ Explored on 2026-11-14 at Robert's request, after the storage underneath. Nothin
 Replaying is not new. [Bayou](wiki/systems/bayou.md) did it in 1995 and [Zero](wiki/systems/zero.md) does it today. What the other ideas in this file add to it:
 
 - **Each call checks itself again.** A write function already refuses when its conditions do not hold. Replayed on the newer state, it reads the newer state. When two agents approve the same form, the second replay is refused with a typed reason the agent can act on. Bayou needed a hand-written check on every write; here the function is the check.
-- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second. For a world with more than one call this has a price: a transfer written as two calls breaks "the total stays the same" in between and never lands. Claude first wrote that the rule "cannot be right as stated". The second model corrected that: checked after every call and landed whole, it got nothing wrong, and the transfer has to be one approved function ([what the second model found](#what-the-second-model-found)).
+- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second. For a world with more than one call this has a price: a transfer written as two calls breaks "the total stays the same" in between and never lands. Claude first wrote that the rule "cannot be right as stated". The second model corrected that: checked after every call and landed whole, it got nothing wrong, and the transfer has to be one approved function. Robert chose this on 2026-11-14 ([what the second model found](#what-the-second-model-found)).
 - **The database already knows what the agent read.** Every question the agent asked was a read program the database ran, so the world's record holds each program and its answer. At replay the database runs them again. A different answer means the agent decided on something that is no longer true. [Writes that carry their assumptions](wiki/ideas/writes-that-carry-their-assumptions.md) found that agents rarely state what they assumed. Here they do not have to.
 - **Giving up is free.** Dropping a world is dropping a root.
 - **Two worlds reconcile the same way.** Replaying one world's calls onto another world is the same step. The main line is only the world everyone agrees is real, and its log is the final order.
@@ -523,7 +523,7 @@ What follows from it:
 - **The recorded reads must be run again in place.** Each read is run at its point in the replay, where it sees the world's own earlier calls. Compared with the main line, a world that read its own change is refused for ever.
 - **A possible later addition, not modelled:** a person marks one rule as "checked at the end of a world". SQL databases have this as deferred constraints (from memory, not checked). It would allow the two-call transfer for that rule alone.
 
-Claude recommends the third option. Robert has not chosen.
+**Decided by Robert on 2026-11-14: the third option.** A world lands whole, or not at all, and the rule is checked after every call in it. A change whose middle breaks a rule is one approved function. Claude had recommended it at about 75%, the doubt being how often agents would have to propose new functions.
 
 Limits. Every prediction matched, so the model confirmed what was expected and did not surprise; the third option came from writing the predictions. The cases are six, tiny and chosen by hand. Whether real work often needs a change whose middle breaks a rule is not known, and it decides how much the third option's price hurts. Landing a whole world in one step has not been checked against what a Mo service can do today.
 
@@ -545,7 +545,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **Code stored by hash.**
 - **Storage laid out by type,** and a key for each sensitive field.
 - **Many agents:** the replay rule, which reads count as relied on, fairness, taking one agent's work out.
-- **Worlds with more than one call:** modelled on 2026-11-14; the choice between the three ways of landing is Robert's and is open.
+- **Worlds with more than one call:** modelled and decided on 2026-11-14. A world lands whole, with the rule checked after every call.
 - **A rule checked at the end of a world,** marked rule by rule by a person.
 - **How often real work needs a change whose middle breaks a rule,** which decides the price of checking after every call.
 - **A long world sent back for ever,** since a world with more calls reads more.
@@ -566,6 +566,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 ## How these sit with what is already decided
 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
+- A world lands whole, with the rule checked after every call ([decided on 2026-11-14](#what-the-second-model-found)). This keeps the accountable write: a world can do only what approved calls can do one at a time.
 - Robert accepted building the upper half first. Every idea above belongs to the upper half.
 - [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.
 - The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
