@@ -25,3 +25,17 @@ This ticket must weigh the evidence against the coordination-first decision in `
 - Earlier work the survey missed: Hippocratic databases (2002) and Hyperledger Fabric's endorsement policies; see [What earlier work binds a write or a read to a purpose and an approval?](25-earlier-work-on-purpose-and-approval.md).
 - Two limits in Mo today: one service credential reaches the operator views of all state (`docs/agent-guide.md`), and a snapshot deletes the recovery log (`src/host/store.c`), so that log is not a permanent history.
 - The risk nobody named: approved rules give false assurance. Keeping the rules right, and the person's attention to review them, may be the scarce thing, not write throughput.
+
+**2026-11-14, second outside review.** A model from a third provider (Gemini 4 Carbon) reviewed the direction after reading the first review. Its verdict: do not build a storage engine at all; keep the accountable write as a layer of rules above SQLite; build something Robert works in every day. Its points, each checked unless marked:
+
+- A database is not used directly; an application on top of one is. An engine pushes Mo towards disk internals, while Mo still cannot make an outbound HTTPS call, write raw bytes, tell one caller from another, or let a service hold a file or a socket (`~/code/mo/docs/design/services.md`: state, inputs and results hold no capabilities; one `token` per service).
+- A Mo service already is one writer over a memory image logged to SQLite, so a database written in Mo either duplicates that or bends it.
+- The accountable write is not new: regulated industries have long required who, under what authority and why on each change to a record (FDA 21 CFR Part 11 and the rules around it; not checked here), and purpose-based access control dates from 2005. It also says Datomic can check facts on the transaction at commit, where the wiki says "optional, unchecked". All three go to [What earlier work binds a write or a read to a purpose and an approval?](25-earlier-work-on-purpose-and-approval.md).
+- Who, grant, conditions and resulting state can be checked. Why cannot: a hijacked model invents a plausible reason. A centre about writes also leaves out reads, where leaks happen.
+- "Data that protects itself" is an unsolved problem no shipping database solves (`research/20`), so it does not belong in a first version; nor do student records.
+- Mo's service limits bound the first slice: 16 MiB of saved state, 16 KiB per request, 32 KiB per reply, 20 requests a second, about a million steps per handler (`src/base/limits.h`). This repo's wiki, research and tickets total 913 KiB, so the state limit is not near; nine files exceed the request limit and one the reply limit.
+- Its first job: this project's own tickets and wiki, served by a small Mo service with a token per agent, conditions on each change and a list of who did what, used by two agents for a week.
+- The risk it names: research and tickets, which agents produce without effort, standing in for the friction of living in rough Mo software. It counts 126 wiki pages and no Mo code.
+- Two errors in it: no Rust prototype exists, only a ticket; and the wiki would not reach the 16 MiB limit.
+
+Both outside reviews and the agent working with Robert now agree on the first step: a Mo service he uses, with accountable writes, on SQLite. They differ on the engine afterwards: this review says never, the first says only if a guarantee needs it.
