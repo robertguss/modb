@@ -69,7 +69,21 @@ An agent sends a small Mo program instead of a query. The database checks its ty
 - **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds; a snapshot to run it on.
 - **Earlier work and risk:** the wiki records [stored procedures and triggers](wiki/ideas/stored-procedures-and-triggers.md) as a trap for agents. Nearer relatives are [deterministic functions as transactions](wiki/ideas/deterministic-functions-inside-transactions.md), [Convex](wiki/systems/convex.md) and [SpacetimeDB](wiki/systems/spacetimedb.md). A program arriving from an agent has to be compiled, and Mo's compiler child runs with the server's own access today ([How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md)).
 - **Open:** do agents write a correct small program as reliably as a query? Nobody has measured it; the experiments under `learnability/` in Mo measure how well agents write Mo and could measure this. What stops a program that walks everything?
-- **Standing:** Claude's pick to explore first, because it is where the two pictures meet and it is the least proven.
+- **Standing:** chosen by Robert on 2026-11-14 as the first idea to explore. He added that it could help with FERPA, HIPAA and other compliance rules, and asked whether it needs Lean, TLA+ or another formal method.
+
+**One request, start to finish.**
+
+1. The agent writes a small Mo function. Its parameters are the only data it can touch, because Mo has no other way to reach anything. A sketch, in the style of the task queue's functions: `fn overdue(forms: Forms) : Map(Department, Int)`.
+2. The database compiles it. If the caller's grant leaves a field out, the type the program is handed has no such field, so a program that mentions it does not compile.
+3. The database checks the type of the result against what the grant lets out: counts by department pass, a list of names does not.
+4. It runs on a snapshot, under a work limit. It was never handed the network or the disk, so the reply is the only way anything leaves.
+5. The program's text, the caller, the grant and the declared reason go in the log.
+
+**Why this helps with rules about sensitive data in general.** Most such rules ask for the same three things: limit who sees what, record who saw what and why, and show afterwards that the limits held. Here the refusal happens before any data is read, the record is the exact question and can be run again, and the limit can be stated as a theorem (see "What would be checked" below). The database knows no particular law. A person writes the rules as types and grants.
+
+**Where it stops.** Once a reply has left, the database cannot follow it. A count over a small group can still identify someone ([how hidden data is recovered](wiki/ideas/re-identification-by-linking.md), [k-anonymity](wiki/ideas/k-anonymity.md), [differential privacy](wiki/ideas/differential-privacy.md)).
+
+**Open fork.** May a request program change data, or only read it? Claude's lean: reads are free-form programs; writes go only through functions a person approved, so the accountable write stays strict.
 
 ### 2. Promises as the schema
 
@@ -131,6 +145,33 @@ The weak point of Picture 2: a question nobody wrote a function for. Three answe
 - **Walk everything.** Fine while the data is small.
 - **The database proposes an index.** It notices which programs are slow and offers to keep a second copy arranged for them ([derived copies fed from one log](wiki/ideas/derived-copies-fed-from-one-log.md)).
 - **A declarative form inside Mo.** A way of writing "give me the items where…" in Mo that the compiler can plan, as a query language's optimiser does ([set-at-a-time queries](wiki/ideas/set-at-a-time-queries.md)). No SQL does not have to mean no declarative questions.
+
+### 9. Sensitivity that travels in the types
+
+A value read from a sensitive field carries a label in its type, and so does anything computed from it. Only a release function that a person approved, such as "count" or "average over at least ten", can take the label off. The database then knows whether a reply depends on sensitive data, however the program computed it. This is "data that protects itself" done with types, not with masking.
+
+- **Mo today:** nothing. It would be a new part of the type system, useful to any program that handles secrets.
+- **Earlier work:** [information-flow labels](wiki/ideas/information-flow-labels.md), [IFDB](wiki/systems/ifdb.md).
+- **Open:** labels do not stop leaks through how long a program runs or how large its reply is. Choosing the release functions is where the judgement goes.
+
+## What would be checked, and with what
+
+Mo already has the tools. Checked on 2026-11-14: `formal/` in `~/code/mo` holds a Lean model of Mo Core with 238 theorems, among them `type_safety` and `eval_deterministic` (`MoCore/Theorems.lean`); the C VM is compared with that model; and `models/` holds three TLA+ models (`Capture.tla`, `Export.tla`, `Swap.tla`).
+
+| Claim the database would make | Fits | Mo today |
+| --- | --- | --- |
+| A checked program does not go wrong, and the same call gives the same result | Lean | Proved for Mo Core |
+| A program can touch only what it was handed | Lean, a new theorem | Stated as property P7 in `docs/design/sandbox-properties.md` and enforced by the language's design; the comparison with Lean runs programs without capabilities, so it is not covered there |
+| Sensitive data reaches a reply only through an approved release function | Lean, after idea 9 exists | Nothing |
+| With grants withdrawn, approvals gone stale and crashes mid-write, no write commits under a withdrawn grant and no reply is sent before its record is safe | TLA+ | Three models, for other protocols |
+| The code behaves as the design says when things fail | Simulation (idea 6) | `mo test` simulates a service and its crash recovery |
+| The rules say what their owner means | No tool; a person approves them, with examples of what each allows and refuses | Phase 6's review door |
+
+Because a request is a Mo program, "no accepted program can read outside its grant" can be proved once for every program. Databases that filter queries test their filters.
+
+The same method has been used for an authorization language: Cedar's authors "formalized Cedar in Lean", implemented it in Rust, and use "differential random testing to ensure that the implementation matches the model" (https://dl.acm.org/doi/full/10.1145/3649835).
+
+The limits: a proof is about the model, and the implementation is compared with the model, not proved. No tool shows that the rules themselves are the right ones.
 
 ## How these sit with what is already decided
 
