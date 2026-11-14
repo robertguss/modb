@@ -8,6 +8,7 @@ How this file works:
 - An experiment is small: a Mo program under `sketches/`, a script that stands in for a compiler pass, a measurement of agents writing code, or a model under `models/`.
 - Every experiment has its prediction written here before it runs, and a control that must fail.
 - A result is written under the experiment with the date and a link to what was run. A prediction is never edited after its result is in.
+- An option is judged by where Mo should end up, not by what Mo does today. Robert, 2026-11-14: "I'm not interested in finding out how to make it work with what it does today. I'm all about potentially rewriting it or changing it or doing whatever we need to do to make it the best that it possibly can be." What an option asks of Mo is listed, and is not a reason against it. An experiment still runs on today's Mo or on a stand-in, and its result says so.
 
 ## Decision 1. How is a fast read enforced?
 
@@ -29,6 +30,7 @@ How this file works:
 | F | The review door holds an upgrade that makes a read slower, by ranked cost class | Gemini Carbon chose it, with A. The other two did not |
 | G | The type enforces it. A stored `Table` is not a `List`: it has `get`, the index methods and one `walk`, so a slow read can only be written as `walk`. Recognising shapes is then a convenience, not a gate | Added by Claude Opus. Close to E plus A |
 | H | An access-plan report: every table access, the index it needs, whether that index is ready, every walk | Added by GPT Sol. It goes with any other option |
+| I | Tables are part of the language. A table is its own kind of value with no insertion order. It is read with ordinary Mo expressions, which the compiler plans. The indexes are worked out from the reads the program contains. Each read function carries its checked cost. A read with no fast route is an error unless it says `walk`, and the runtime counts rows read | Added by Claude on 2026-11-14 after Robert's steer. Not seen by the council and not tested. It is A with Mo changed so that A's faults go away, and with H built in |
 
 ### What the council settled without an experiment
 
@@ -177,7 +179,8 @@ What it does not show: time. The run counted instructions and did not time the b
 ### Where Claude stands, with what would move it
 
 - **Strict in some form, for the program's own code: 85%.** All three reviewers chose it and Mo has no warnings.
-- **Strict by recognising plain Mo, against a table type with its own methods: 35% for plain Mo after experiment 4.** Before the council Claude gave plain Mo 80%, about even after it, and 30% after the census. Experiment 4 removed the reason for the drop: agents told the rule write the shape. It did not restore plain Mo, because the table type did exactly as well and asks far less of Mo. The table type needs a library type with hidden rows, which Mo has today. Plain Mo needs a new compiler pass, a rule for which rewrites keep the answer (experiment 3) and a recogniser that survives ordinary edits (experiment 6). With no measured gain for agents, that extra work has nothing to pay for it yet.
+- **Strict by recognising plain Mo, against a table type with its own methods: 35% for plain Mo after experiment 4.** Before the council Claude gave plain Mo 80%, about even after it, and 30% after the census. Experiment 4 removed the reason for the drop: agents told the rule write the shape. It did not restore plain Mo, because the table type did exactly as well. Claude then leaned to the table type because it asks less of Mo. Robert set that reason aside on 2026-11-14, so the 35% no longer stands.
+- **Tables in the language (I), against a table type in a library (G): 55% for I, with nothing measured.** Experiment 4 does not choose between them. It gave arm G the seven index functions its tasks needed, and gave arm A the indexed fields. It never asked a question whose index did not exist yet. That is where the two differ: under G somebody must write a new function in the store for each new question, and under I the read itself says which index is needed. What the council held against plain Mo was insertion order, eager evaluation, the shape being lost before Mo Core, and built-ins the instruction count cannot see. Each is a fact about Mo today, so under Robert's steer each is a thing to change in Mo, not a reason against. What still counts against I: which expressions are fast is a rule the writer must learn, and all three reviewers warned of a hidden query language. A trial with questions that need a new index would move this number either way.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
