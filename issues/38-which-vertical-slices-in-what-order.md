@@ -109,3 +109,16 @@ Missing from Claude's list: authority that changes while a world is open (all th
 **Decided by Robert on 2026-11-14: the first slice.** Asked "Shall the first slice be 'questions asked again at landing', on made-up rows?", he answered "Yes". It is [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md), opened the same day with its predictions written before any code.
 
 His answer covers the first slice only. The other four slices, their order, the guards and the stop rule are still Claude's proposal. This ticket waits for the first slice's result, which all three reviewers said reshapes the rest.
+
+**The first slice reported, 2026-11-14.** [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md): only for a small table. A landing that asks three questions again fits in one call up to about 1,400 rows. The limit is what one call may run, and Mo's own `Map` meets it too, at about 17,700 rows for one full read. Claude's guess above, that a sum would not fit at 10,000 rows, held: one sum fits to 6,500.
+
+**What it changes in the list. Claude's proposal, not decided by Robert.** Every later slice holds rows and asks questions, so every one meets this limit. Claude would put one slice ahead of the others:
+
+| # | Slice | What it must show |
+| --- | --- | --- |
+| 2 | A landing that reads only what changed | At landing, find the rows that differ between the version a question was asked on and the main line, by walking the two versions of the tree only where their node numbers differ, and work out from those rows whether the answer changed. On the same made-up rows: a landing with three questions at 50,000 rows fits in one call when few rows have changed, and the number of changed rows at which it stops fitting. The rule is checked the same way. Control: a change that the walk misses must let a stale world land |
+
+- It is Claude's old slice 2, kept totals, in the form the tree makes cheap. The first slice has turned it from an option into something the others need.
+- It builds on the same sketch and needs no real data and no change to Mo.
+- The slice with two agents on real data would follow it, with the other three after, as listed above.
+- The other four ways out are on the first slice's ticket. Two of them ask Mo for something: a larger limit for a call, and a caller's function run against the live state.

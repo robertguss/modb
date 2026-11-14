@@ -1,17 +1,48 @@
 ## Worlds on the tree by number. A world is an agent's own version of the
 ## rows. It costs one number to start, sees its own changes, and lands whole
 ## or not at all. The rows are balances, and the rule is that their total
-## never changes.
+## never changes. A landing asks again every question the world asked.
 module Worlds
+expose Call(..),
+Question(..),
+Answer(..),
+Step(..),
+Refused(..),
+Db(..),
+World(..),
+branches,
+begin,
+answer,
+ask,
+act,
+land,
+anywhere?
 use Tree
+
+branches = 10
 
 enum Call
   Move(from: Int, to: Int, amount: Int)
   Give(to: Int, amount: Int)
 end
 
+## One of a fixed set of read functions, with its argument. An account's
+## branch is its number modulo `branches`.
+enum Question
+  Row(key: Int)
+  BranchTotal(branch: Int)
+  Below(amount: Int)
+  Bands(width: Int)
+end
+
+enum Answer
+  Number(Int)
+  Keys(List(Int))
+  Counts(Map(Int, Int))
+end
+
 enum Step
-  Asked(key: Int, answer: Int)
+  Asked(question: Question, answer: Answer)
   Called(Call)
 end
 
@@ -19,7 +50,7 @@ enum Refused
   OutsideView(key: Int)
   Short(key: Int, have: Int, want: Int)
   RuleBroken(step: Int)
-  Moved(key: Int)
+  Moved(Question)
 end
 
 ## `main` is the version that every landed world has changed.
@@ -43,7 +74,44 @@ fn balance(db: Db, version: Int, key: Int) : Int
 end
 
 fn total(tree: Map(Int, Tree.Node(Int)), version: Int) : Int
-  Tree.entries(tree, version).map(fn(entry) entry.1 end).sum
+  Tree.fold(tree, version, 0, fn(sum, _key, held) sum + held end)
+end
+
+## Answers a question on one version, over the rows the view lets through.
+fn answer(tree: Map(Int, Tree.Node(Int)), version: Int, view: fn(Int) : Bool, question: Question) : Answer
+  case question
+    Row(key: key): Number(Tree.get_at(tree, version, key) or 0)
+    BranchTotal(branch: branch): Number(
+      Tree.fold(
+        tree,
+        version,
+        0,
+        fn(sum, key, held)
+          if view(key) and key % branches == branch: sum + held else: sum
+        end
+      )
+    )
+    Below(amount: amount): Keys(
+      Tree.fold(
+        tree,
+        version,
+        [],
+        fn(keys, key, held)
+          if view(key) and held < amount: keys.append(key) else: keys
+        end
+      )
+    )
+    Bands(width: width): Counts(
+      Tree.fold(
+        tree,
+        version,
+        {},
+        fn(counts, key, held)
+          if view(key): counts.set(held / width, (counts.get(held / width) or 0) + 1) else: counts
+        end
+      )
+    )
+  end
 end
 
 fn touched(wanted: Call) : List(Int)
@@ -68,13 +136,19 @@ fn apply(tree: Map(Int, Tree.Node(Int)), wanted: Call) : Result(Map(Int, Tree.No
   end
 end
 
-## Reads a row of the world's own version, through its view, and records the
-## answer.
-fn ask(db: Db, world: World, view: fn(Int) : Bool, key: Int) : Result((World, Int), Refused)
-  return Error(OutsideView(key: key)) if not view(key)
-  answer = balance(db, world.version, key)
-  asked = world.steps.append(Asked(key: key, answer: answer))
-  Ok((World(version: world.version, steps: asked), answer))
+## Asks a question of the world's own version, through its view, and records
+## the answer.
+fn ask(db: Db, world: World, view: fn(Int) : Bool, question: Question) : Result(
+  (World, Answer),
+  Refused
+)
+  case question
+    Row(key: key) if not view(key): Error(OutsideView(key: key))
+    Row(key: _) | BranchTotal(branch: _) | Below(amount: _) | Bands(width: _):
+      got = answer(db.tree, world.version, view, question)
+      asked = world.steps.append(Asked(question: question, answer: got))
+      Ok((World(version: world.version, steps: asked), got))
+  end
 end
 
 ## Runs a call on the world's own version. The main line does not change.
@@ -90,19 +164,19 @@ fn act(db: Db, world: World, view: fn(Int) : Bool, wanted: Call) : Result((Db, W
   ))
 end
 
-## Replays a world on the main line as it is now. Every question must get the
-## answer it got in the world, and the rule must hold after every call. It
-## gives the new database, or the reason and no change.
-fn land(db: Db, world: World) : Result(Db, Refused)
+## Replays a world on the main line as it is now. Every question is asked
+## again and must get the answer it got in the world, and the rule must hold
+## after every call. It gives the new database, or the reason and no change.
+fn land(db: Db, world: World, view: fn(Int) : Bool) : Result(Db, Refused)
   var tree = Tree.open(db.tree, db.main)
+  before = total(tree, db.main)
   var step = 0
   for taken in world.steps
     case taken
-      Asked(key: key, answer: answer):
-        now = Tree.get(tree, key) or 0
-        return Error(Moved(key: key)) if now != answer
+      Asked(question: question, answer: got):
+        now = answer(tree, Tree.root(tree), view, question)
+        return Error(Moved(question)) if now != got
       Called(wanted):
-        before = total(tree, Tree.root(tree))
         tree = try apply(tree, wanted)
         return Error(RuleBroken(step: step)) if total(tree, Tree.root(tree)) != before
     end
@@ -117,6 +191,21 @@ fn start() : Db
     tree = Tree.put(tree, key, 10)
   end
   Db(tree: tree, main: Tree.root(tree))
+end
+
+## Thirty accounts holding 10 each, so each of the ten branches holds 30.
+## One world asks what branch 3 holds and then moves money inside branch 5.
+## Before it lands, another world's move lands.
+fn after_another_lands(other: Call) : Result(Db, Refused)
+  var tree = {}
+  for key in 0..30
+    tree = Tree.put(tree, key, 10)
+  end
+  db = Db(tree: tree, main: Tree.root(tree))
+  (asked, _) = try ask(db, begin(db), anywhere?, BranchTotal(branch: 3))
+  (first, relying) = try act(db, asked, anywhere?, Move(from: 5, to: 15, amount: 1))
+  (second, moving) = try act(first, begin(first), anywhere?, other)
+  land(try land(second, moving, anywhere?), relying, anywhere?)
 end
 
 fn anywhere?(_key: Int) : Bool
@@ -146,20 +235,20 @@ test "two worlds that do not overlap both land, and the old main line can still 
   db = start()
   assert act(db, begin(db), anywhere?, Move(from: 0, to: 1, amount: 3)) is Ok((first, left))
   assert act(first, begin(first), anywhere?, Move(from: 2, to: 3, amount: 4)) is Ok((second, right))
-  assert land(second, left) is Ok(once)
-  assert land(once, right) is Ok(twice)
+  assert land(second, left, anywhere?) is Ok(once)
+  assert land(once, right, anywhere?) is Ok(twice)
   assert [0, 1, 2, 3].map(fn(key) balance(twice, twice.main, key) end) == [7, 13, 6, 14]
   assert [0, 1, 2, 3].map(fn(key) balance(twice, db.main, key) end) == [10, 10, 10, 10]
 end
 
 test "the second of two overlapping worlds is sent back, and nothing changes"
   db = start()
-  assert ask(db, begin(db), anywhere?, 0) is Ok((left, 10))
+  assert ask(db, begin(db), anywhere?, Row(key: 0)) is Ok((left, Number(10)))
   assert act(db, left, anywhere?, Move(from: 0, to: 1, amount: 5)) is Ok((first, left_done))
-  assert ask(first, begin(first), anywhere?, 0) is Ok((right, 10))
+  assert ask(first, begin(first), anywhere?, Row(key: 0)) is Ok((right, Number(10)))
   assert act(first, right, anywhere?, Move(from: 0, to: 2, amount: 4)) is Ok((second, right_done))
-  assert land(second, left_done) is Ok(once)
-  assert land(once, right_done) == Error(Moved(key: 0))
+  assert land(second, left_done, anywhere?) is Ok(once)
+  assert land(once, right_done, anywhere?) == Error(Moved(Row(key: 0)))
   assert balance(once, once.main, 0) == 5
   assert balance(once, once.main, 2) == 10
 end
@@ -168,13 +257,32 @@ test "a world whose second call breaks the rule lands nothing"
   db = start()
   assert act(db, begin(db), anywhere?, Move(from: 0, to: 1, amount: 1)) is Ok((first, moved))
   assert act(first, moved, anywhere?, Give(to: 2, amount: 5)) is Ok((second, given))
-  assert land(second, given) == Error(RuleBroken(step: 1))
+  assert land(second, given, anywhere?) == Error(RuleBroken(step: 1))
   assert balance(second, second.main, 0) == 10
 end
 
 test "a view narrows what a world may ask and change"
   db = start()
-  assert ask(db, begin(db), low?, 5) == Error(OutsideView(key: 5))
+  assert ask(db, begin(db), low?, Row(key: 5)) == Error(OutsideView(key: 5))
   assert act(db, begin(db), low?, Move(from: 0, to: 5, amount: 1)) == Error(OutsideView(key: 5))
   assert act(db, begin(db), low?, Move(from: 0, to: 3, amount: 1)) is Ok(_)
+end
+
+test "a question over every row is answered through the view"
+  db = start()
+  assert ask(db, begin(db), anywhere?, BranchTotal(branch: 3)) is Ok((_, Number(10)))
+  assert ask(db, begin(db), anywhere?, Below(amount: 11)) is Ok((_, Keys([0, 1, 2, 3, 4, 5, 6, 7])))
+  assert ask(db, begin(db), low?, Below(amount: 11)) is Ok((_, Keys([0, 1, 2, 3])))
+  assert ask(db, begin(db), low?, Bands(width: 10)) is Ok((_, counted))
+  assert counted == Counts({1: 4})
+end
+
+test "a world that relied on a branch's total is sent back when money has left the branch"
+  assert after_another_lands(Move(from: 3, to: 4, amount: 2)) ==
+    Error(Moved(BranchTotal(branch: 3)))
+end
+
+test "a world lands when rows it read have changed and its answer has not"
+  assert after_another_lands(Move(from: 3, to: 13, amount: 2)) is Ok(landed)
+  assert [3, 13, 5, 15].map(fn(key) balance(landed, landed.main, key) end) == [8, 12, 9, 11]
 end

@@ -5,7 +5,7 @@
 ## The tree is a bare map and not a record that holds one, because Mo copies a
 ## map held in a record every time it changes.
 module Tree
-expose Node(..), capacity, get, get_at, put, keep, open, root, entries
+expose Node(..), capacity, get, get_at, put, keep, open, root, fold, entries
 
 width = 16
 levels = 5
@@ -100,24 +100,29 @@ fn keep(tree: Map(Int, Node(V))) : Map(Int, Node(V))
   open(tree, root(tree))
 end
 
-## Every row of a version, in key order.
-fn entries(tree: Map(Int, Node(V)), version: Int) : List((Int, V))
-  return [] if version == 0
-  walk(tree, version, 0)
+## Folds every row of a version, in key order.
+fn fold(tree: Map(Int, Node(V)), version: Int, start: A, step: fn(A, Int, V) : A) : A
+  return start if version == 0
+  climb(tree, version, 0, start, step)
 end
 
-fn walk(tree: Map(Int, Node(V)), at: Int, prefix: Int) : List((Int, V))
+fn climb(tree: Map(Int, Node(V)), at: Int, prefix: Int, start: A, step: fn(A, Int, V) : A) : A
   case tree.get(at)
-    Some(Leaf(value)): [(prefix, value)]
-    Some(Head(next: _)) | None: []
+    Some(Leaf(value)): step(start, prefix, value)
+    Some(Head(next: _)) | None: start
     Some(Branch(children)):
-      var rows = []
+      var reached = start
       for (slot, child) in children.enumerate
         continue if child == 0
-        rows = rows.concat(walk(tree, child, prefix * width + slot))
+        reached = climb(tree, child, prefix * width + slot, reached, step)
       end
-      rows
+      reached
   end
+end
+
+## Every row of a version, in key order.
+fn entries(tree: Map(Int, Node(V)), version: Int) : List((Int, V))
+  fold(tree, version, [], fn(rows, key, value) rows.append((key, value)) end)
 end
 
 fn filled(count: Int) : Map(Int, Node(Int))
@@ -170,4 +175,12 @@ test "entries lists a version's rows in key order"
   assert entries(filled(3), root(filled(3))) == [(0, 0), (1, 10), (2, 20)]
   assert entries(filled(18), root(filled(18))).size == 18
   assert entries(filled(0), 0) == []
+end
+
+test "fold visits every row of a version once, in key order"
+  tree = filled(300)
+  assert fold(tree, root(tree), 0, fn(sum, _key, value) sum + value end) == 448_500
+  assert fold(tree, root(tree), -1, fn(last, key, _value) if key == last + 1: key else: -2 end) ==
+    299
+  assert fold(filled(0), 0, 7, fn(sum, _key, value) sum + value end) == 7
 end

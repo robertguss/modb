@@ -44,9 +44,9 @@ Checked in Mo's code and documents on 2026-11-14:
 - A service has one typed state. Each tool is a function from the old state, the time and its arguments to a new state and a reply.
 - Time is an argument, so the same call always gives the same result.
 - Every call that changes the state is logged, and the state is saved. A read is not logged (`replacement` and `persist` in `src/vm/service.c`; a reviewer found this on 2026-11-14). A snapshot deletes the log (`src/host/store.c`), so the log is not a history.
-- Each handler may do about a million steps of work (`MO_LIMIT_SERVICE_WORK` in `src/base/limits.h`).
+- Each handler may do about a million steps of work (`MO_LIMIT_SERVICE_WORK` in `src/base/limits.h`). Measured on 2026-11-14: that is about 26 ms, and enough to read every row of a `Map` of about 17,700 rows once, at 59 instructions a row. A call refused for this limit counts as a failure. Five failures within a minute restart a service, and three restarts within ten minutes stop it until a person starts it.
 - Changing a running service is a compiled upgrade with a migration from the old state.
-- A caller's own function can be run over an exported copy of a service's state, with `mo query`. It runs outside the service, under a limit of 2^30 instructions (`MO_LIMIT_QUERY_WORK`), 1,024 times what a call to a service gets. Its parameters and result hold no capability and no function. A reviewer pointed out on 2026-11-14 that these notes had missed it.
+- A caller's own function can be run over an exported copy of a service's state, with `mo query`. It runs outside the service, under a limit of 2^30 instructions (`MO_LIMIT_QUERY_WORK`), 1,024 times what a call to a service gets. Its parameters and result hold no capability and no function. It takes the state and no other argument, and the copy is fetched in pages through the service's tools: 28 seconds at 50,000 small rows. A reviewer pointed out on 2026-11-14 that these notes had missed it.
 - Promises and examples are checked by `mo test`, which also simulates a service and its recovery from a crash.
 - Every outside effect goes through a capability, and each capability has a real and a fake version. A `Files` capability can already be narrowed with `within` and `read_only` (`src/base/hostops.def`).
 - Values never change once made, and the heap never holds a cycle (`docs/design/bytecode.md`).
@@ -716,6 +716,19 @@ What follows for the order: worlds, history and kept versions do not wait for th
 
 **Decided by Robert on 2026-11-14: the first slice.** Asked whether the first slice should be "questions asked again at landing", on made-up rows, he answered "Yes". It is the ticket [Can a landing ask an agent's questions again inside one call?](issues/39-can-a-landing-ask-an-agents-questions-again.md). His answer covers the first slice only: slices 2 to 5, their order, the guards and the stop rule are still Claude's proposal, and are looked at again when the first slice reports.
 
+**What the first slice found, 2026-11-14.** The full answer is on [the ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md). Four of the six predictions held, and two held in part.
+
+- **The rule works by its answer, with no change to Mo.** A world that relied on a branch's total is sent back when money has left the branch. It lands when money moved between two accounts of the branch, because its answer did not change.
+- **Asking again by reading every row does not scale.** A landing with three questions and one move fits in one call up to about 1,400 rows. One question alone fits up to about 6,500.
+- **The tree is not the cause.** A question costs about 150 instructions a row on the tree and 59 on Mo's own `Map`. A call may run 1,048,576.
+- **The rule costs as much as the questions.** Checking that the total never changes reads every row too.
+- **Outside a call the questions are cheap,** a third of a second each at 50,000 rows through `mo query`. The copy they run on takes 28 seconds to fetch.
+- **A question too large for a call counts as a failure of the service.** Fifteen of them, five to a minute, stop it for everyone.
+
+**Claude's idea from the slice, not decided and not built: ask again only about what changed.** Two versions of the tree share every node that neither has changed, and a shared node has the same number in both. So the rows that differ between the version a question was asked on and the main line can be found by walking only where the numbers differ. A landing would then cost in proportion to what changed since the world opened, not to the size of the table. A world that opened on the version that is still the main line has nothing to ask again. What it needs: each question records the version it was asked on; that version's nodes are kept until the world lands; and each question says how one changed row changes its answer, which a sum, a filter and a count all can. The rule could be checked the same way, from the rows a call wrote. It is one form of a view kept current, and earlier work says only some forms of question allow it ([ticket](issues/31-earlier-work-on-write-once-trees-and-views-kept-current.md)).
+
+**Five ways out, none chosen:** keep answers current as writes land; a write function that names the facts it relies on; check outside the call; ask again only about what changed; a larger limit for a call.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -747,14 +760,18 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
 - **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal. Robert chose the first slice on 2026-11-14; the rest waits for its result.
-- **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call. The first slice, [a ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md) since 2026-11-14.
+- **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call. The first slice, [a ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md), answered on 2026-11-14: it fits up to about 1,400 rows for three questions.
 - **Authority that changes while a world is open:** a grant withdrawn, or approved code replaced, between a world's opening and its landing. Raised by all three reviewers on 2026-11-14.
 - **A lost reply and a second try,** which must not land twice. Mo does not remove duplicate requests.
 - **An agent that has never seen the database,** as the test of whether read programs can be written without help.
 - **Read programs through `mo query`:** it runs a caller's function today, outside the service and on an exported copy.
 - **Freeing the nodes of a version nobody keeps.** The tree by number never frees a node; a long-lived one grows until the library can.
 - **A map in a record is copied on every change.** A matter for Mo: where it belongs, and whether a library should have to work around it.
-- **A call's instruction limit against a library collection.** 400 tree inserts fit in one call and 1,000 do not.
+- **A call's instruction limit against a library collection.** 400 tree inserts fit in one call and 1,000 do not. One full read fits up to about 6,500 rows of the tree and about 17,700 rows of a `Map`.
+- **Asking again only about what changed,** by walking two versions of the tree where their node numbers differ. Claude's idea from the first slice.
+- **A question too large for a call** counts as a failure, and enough of them stop the service for everyone. Who pays for a large question, and what the service does with one.
+- **A caller's function run against the live state,** where `mo query` runs one against a copy that takes seconds to fetch.
+- **A rule that reads every row,** such as a total that must not change: it meets the same limit as the questions do.
 - **The seam between the halves:** the collection the data lives in, and what a version costs.
 - **How a write function reaches data that is not in memory:** fetching by name, paging by the runtime, or views kept ready. Each asks something different of Mo.
 - **Recording reads,** which Mo does not log today.
