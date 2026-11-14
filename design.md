@@ -12,6 +12,8 @@ Many AI agents work on the same data at once. Each needs to ask questions nobody
 
 It has no query language. Questions, rules, permissions and changes are all written in Mo.
 
+**Challenged by Robert on 2026-11-14.** He said this draft is "a bit too fixated on agents doing everything", and asked how an ordinary web application written in Mo would store and query its users and its data, and where its business logic goes. He is right about the draft: it describes every caller as an agent. Section 3 answers him. Whether the ordinary application becomes the base of the design, with agents as a layer on top, is his to decide. If it does, this section and its one sentence are rewritten.
+
 ## 2. The whole in one picture
 
 ```
@@ -26,7 +28,79 @@ MO          the language, the runtime, capabilities
 
 The data store keeps data and versions of it. It knows nothing of agents. The database is what agents meet: it decides who may ask what, what may change, and what lands.
 
-## 3. The data store
+## 3. An ordinary application, with no agent
+
+A web application written in Mo that keeps users, items and orders. No agent is involved. The `store` block, `Table` and the `index` lines below are proposed and do not exist in Mo. The rest is Mo as it is.
+
+```mo
+struct User
+  email: Text
+  name: Text
+end
+
+struct Order
+  buyer: Int
+  item: Int
+  count: Int
+end
+
+store Shop
+  users: Table(Int, User)
+  stock: Table(Int, Int)
+  orders: Table(Int, Order)
+  index users_by_email: users by email
+  index orders_by_buyer: orders by buyer
+
+  promise "stock never goes below zero"
+    after.stock.all(fn(_item, left) left >= 0 end)
+  end
+end
+
+fn place_order(shop: Shop, _now: Time, buyer: Int, item: Int, count: Int) : Result(Shop, OrderError)
+  left = shop.stock.get(item) or 0
+  return Error(SoldOut(item)) if left < count
+  var next = shop
+  next.stock = shop.stock.set(item, left - count)
+  next.orders = shop.orders.add(Order(buyer: buyer, item: item, count: count))
+  Ok(next)
+end
+
+fn orders_of(shop: Shop, email: Text) : List(Order)
+  case shop.users_by_email.get(email)
+    Some(buyer): shop.orders_by_buyer.all(buyer)
+    None: []
+  end
+end
+```
+
+**The schema is the types.** There are no tables to declare elsewhere, no query strings and no layer that maps rows to objects. The compiler checks every use of the data.
+
+**The business logic is ordinary functions.** `place_order` is the application's own code. The page handler calls it. The database runs it whole or not at all, checks the promises, records the call with the signed-in user, and saves only the nodes that changed. A tool of a Mo service already has this shape today. What changes is that the state no longer has to fit in memory or be saved whole.
+
+**A query is a function that only reads.** It gets data three ways:
+
+- by key, as `shop.stock.get(item)`;
+- through an index the program declared, as `shop.users_by_email.get(email)`. The store keeps an index current on every write;
+- by walking a collection, as any Mo code may. This is the slow way.
+
+**How it is stored.** Each `Table` is a tree of nodes written once, on disk. A row is a leaf. An index is a second tree. Only the nodes a request touches are read into memory.
+
+**Where it runs.** In the application's own process. The store is a part of Mo that a program uses, not a server it connects to.
+
+**Changing the schema** is an upgrade of the program, with a function from the old types to the new ones.
+
+**What this case gets from the rest of the design without asking.** Every change is in the log with who made it. Any past state can be read. The whole application, store included, runs under `mo test` with a fake disk and a fake clock.
+
+**Where this case is weak.**
+
+- **A question nobody declared an index for walks everything.** Nothing chooses a fast route, as a query planner does. A form of "the orders where..." that the compiler can match to an index is an idea with no design. This is the largest gap for an ordinary application.
+- **Only Mo programs can read the data.** A reporting tool or a spreadsheet cannot. Object databases lost to relational ones on this.
+- **Reads hop from node to node,** which is slower than a table laid out for reading.
+- **For this case alone, SQLite is hard to beat.** What this offers over it is checked types from page to disk, logic and data that change together, and history, undo and simulation with no extra work.
+
+**Where agents come in.** An agent is one kind of caller. A page handler makes one call to one function, which lands at once. Worlds, read programs, grants and proposals are for callers that are not part of the compiled program: agents, a person asking a question nobody planned, a report.
+
+## 4. The data store
 
 ### What it must do
 
@@ -72,7 +146,7 @@ The tree can be rebuilt from the log, because the same call always gives the sam
 
 A tree of this shape, written in Mo as it stands, kept a version for 778 bytes at any size measured, where a whole copy cost megabytes ([ticket](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md)). Its nodes were named by number, because Mo has no hash. The shape works. Its speed there says nothing about the design: it ran as bytecode inside a service that re-saves its whole state on every write.
 
-## 4. The database
+## 5. The database
 
 ### What it must do
 
@@ -138,7 +212,7 @@ A tree of this shape, written in Mo as it stands, kept a version for 778 bytes a
 - **Fairness.** An agent that thinks for a long time keeps losing to agents that work fast.
 - **Which reads count.** An agent reads much that it does not rely on. Counting needless send-backs is how the finer rule would be chosen.
 
-## 5. What Mo must gain
+## 6. What Mo must gain
 
 Each line is an ability other programs would also use, which is Robert's test for anything Mo gains. "Mo today" is what was read in Mo's source or measured on 2026-11-14.
 
@@ -157,12 +231,13 @@ Each line is an ability other programs would also use, which is Robert's test fo
 | 11 | Simulate a disk that tears, loses and corrupts writes, and many callers at once | Checking the store and the landing rule | Any program that writes files | Simulation has neither |
 | 12 | Take and give more than a few kilobytes in one request | Read programs and their answers | Any service that moves documents | A request is at most 16 KiB and a reply 32 KiB |
 | 13 | Carry a label on sensitive data in its type | Need 8 of the database | Any program that handles secrets | Nothing |
+| 14 | Say what is wanted from a collection in a form the compiler can match to an index | Queries in an ordinary application, and questions nobody planned | Any program that searches its own data | Nothing. Not designed |
 
 Three smaller matters belong to Mo whatever is built on it. A map held in a record is copied every time it changes. Every call spends about 10 ms in the layer that reads the request. The child process that compiles arriving code runs with the server's own access.
 
-**The order Claude would take them in.** Lines 1 to 4 are the data store, and nothing else can be built without them. Lines 5 to 9 are the database above it. Lines 10 to 13 can follow.
+**The order Claude would take them in.** Lines 1 to 4 are the data store, and nothing else can be built without them. Lines 5 to 9 are the database above it. Lines 10 to 14 can follow.
 
-## 6. What this draft leaves open
+## 7. What this draft leaves open
 
 - **Library or runtime.** The store can be a library written in Mo, where every step that touches the disk is visible and can be simulated, or part of the runtime, where any value can live on disk. Line 3 above is where that is chosen. Claude leans to the library.
 - **Names by hash or by number.** Hashes let anyone check history and compare versions. Numbers are cheaper and do not fight erasing.
