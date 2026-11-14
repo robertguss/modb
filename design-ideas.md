@@ -729,6 +729,17 @@ What follows for the order: worlds, history and kept versions do not wait for th
 
 **Five ways out, none chosen:** keep answers current as writes land; a write function that names the facts it relies on; check outside the call; ask again only about what changed; a larger limit for a call.
 
+**Steer from Robert on 2026-11-14, after the first slice: what Mo needs, not what Mo does today.** "I think we are getting to focused on what can Mo do today and not what Mo needs to be able to do. We are trying to figure out what creating a data store and db in Mo and I wonder how valuable these slices actually are. We seem to have gotten off the path of creating a db in Mo which was the original intent of this thread."
+
+Claude's reading of it. Robert has not confirmed it.
+
+- **He is right, and the cause is a rule.** The map says no database code and no change to Mo. Under that rule a sketch or a slice can only find a limit of today's Mo and then work around it. The purpose of the effort runs the other way: the database is meant to drive what Mo gains.
+- **The next slice Claude proposed was a way around a constant.** "A landing that reads only what changed" answered a limit of 1,048,576 instructions for a call, which is one line of Mo's source. Claude has withdrawn it as a next slice. The idea stays above as a design idea.
+- **What the sketches and slices are worth:** a measured list of what Mo lacks. More slices on today's Mo would meet the same three walls again before they said anything about the database: a write costs in proportion to all of the state, a call has a fixed allowance, and one operation runs at a time.
+- **What they are not:** a design of the data store or of the database. None of them says what the database should be.
+
+What Claude proposed in reply, not decided: stop the slices; design the data store and the database from what they need, as if Mo had it; then write what Mo must gain, each as a capability other programs would also use, with the measurement that shows the gap. Whether the map's rule against changing Mo is lifted is Robert's decision.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -759,6 +770,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
+- **Designing from what the database needs, not from what Mo does today.** Robert's steer of 2026-11-14 after the first slice. What replaces the slices is not decided.
 - **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal. Robert chose the first slice on 2026-11-14; the rest waits for its result.
 - **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call. The first slice, [a ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md), answered on 2026-11-14: it fits up to about 1,400 rows for three questions.
 - **Authority that changes while a world is open:** a grant withdrawn, or approved code replaced, between a world's opening and its landing. Raised by all three reviewers on 2026-11-14.

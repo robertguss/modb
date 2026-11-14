@@ -122,3 +122,7 @@ His answer covers the first slice only. The other four slices, their order, the 
 - It builds on the same sketch and needs no real data and no change to Mo.
 - The slice with two agents on real data would follow it, with the other three after, as listed above.
 - The other four ways out are on the first slice's ticket. Two of them ask Mo for something: a larger limit for a call, and a caller's function run against the live state.
+
+**Robert's steer, 2026-11-14, on reading the first slice's result.** "I think we are getting to focused on what can Mo do today and not what Mo needs to be able to do. We are trying to figure out what creating a data store and db in Mo and I wonder how valuable these slices actually are. We seem to have gotten off the path of creating a db in Mo which was the original intent of this thread."
+
+Claude has withdrawn "a landing that reads only what changed" as a next slice. It was a way around one constant in Mo's source, which is the fault he names. No slice is opened until he says what replaces them. The steer, Claude's reading of it and what Claude proposed in reply are in [design-ideas.md](../design-ideas.md) under "Which half first". This ticket stays open.
