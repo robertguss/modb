@@ -525,7 +525,15 @@ What follows from it:
 
 **Decided by Robert on 2026-11-14: the third option.** A world lands whole, or not at all, and the rule is checked after every call in it. A change whose middle breaks a rule is one approved function. Claude had recommended it at about 75%, the doubt being how often agents would have to propose new functions.
 
-Limits. Every prediction matched, so the model confirmed what was expected and did not surprise; the third option came from writing the predictions. The cases are six, tiny and chosen by hand. Whether real work often needs a change whose middle breaks a rule is not known, and it decides how much the third option's price hurts. Landing a whole world in one step has not been checked against what a Mo service can do today.
+Limits. Every prediction matched, so the model confirmed what was expected and did not surprise; the third option came from writing the predictions. The cases are six, tiny and chosen by hand. Whether real work often needs a change whose middle breaks a rule is not known, and it decides how much the third option's price hurts.
+
+**What Mo has for this today.** Checked on 2026-11-14, after the decision.
+
+- **Landing whole needs no change to Mo.** A tool is an ordinary function from the state to a new state, and the stored state changes only when the tool returns one (reference, section 11.5). A landing tool can run a world's calls on its own copy and return the new state, or a failure and no change. A [sketch](sketches/land-whole/main.mo) does this in 85 lines. `mo test` passes its tests, its promise on generated sequences of landings, and its recovery check. With the check after each call deleted, `mo test` finds the landing that breaks the promise ([how it was run](sketches/README.md)).
+- **Mo's service promises are already about steps.** A step promise reads `before` and `after` for every tool call (reference, section 12.2). Checking the rule after every call keeps one call as one step. With the rule at the end, a promise such as "the count never falls" would compare a world's start with its end and could be broken in between. Neither Claude nor the model had weighed this before Robert chose.
+- **Still needed:** a promise that is checked when a write lands. In the sketch the rule is written twice, as the promise and as a function the landing tool calls. Idea 2 already names this need.
+- **Still needed:** calls as data. The sketch lists the write functions by hand as a choice type and picks one with `case`. A database would have to make that list from the approved functions.
+- The sketch has no forks, no recorded reads and no replay on a main line that has moved.
 
 ## Deep dives for later
 
