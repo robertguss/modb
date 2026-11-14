@@ -131,16 +131,16 @@ Keep every call for good. Audit is reading the log. Undo is replaying without th
 - **Mo today:** a log of calls, calls that repeat exactly, and `mo replay` and `mo history`. The log is deleted at each snapshot.
 - **Needs:** a log that is kept, room for it to grow, and a rule for replaying calls whose code has since changed.
 - **Earlier work:** [storing events instead of state](wiki/ideas/storing-events-instead-of-state.md), [facts added, never changed](wiki/ideas/append-only-facts.md), [history the agent cannot erase](wiki/ideas/history-and-audit-the-agent-cannot-erase.md), [Prevayler](wiki/systems/prevayler.md). It collides with [deleting personal data from history](wiki/ideas/deleting-personal-data-from-history.md).
-- **Open:** what undoing one call does to the later calls that depended on it.
+- **Open:** what undoing one call does to the later calls that depended on it. An answer is sketched under [Many agents working together](#many-agents-working-together).
 
 ### 5. A world per agent
 
 Hand an agent its own copy of the data to try things on. It merges back through a function the owner approves.
 
 - **Mo today:** values never change once made, so an old state stays valid while a new one is built.
-- **Needs:** large collections that share their unchanged parts between copies, or a copy costs as much as the data. How Mo stores maps has not been checked.
+- **Needs:** large collections that share their unchanged parts between copies, or a copy costs as much as the data. Checked on 2026-11-14: a Mo `Map` is one block, so a changed copy is a whole copy (see [Storage underneath](#storage-underneath)).
 - **Earlier work:** [copy-on-write branches](wiki/ideas/copy-on-write-branches.md), [branches that reconcile with each other](wiki/ideas/branches-that-reconcile-with-each-other.md), [three-way merge of data](wiki/ideas/three-way-merge-of-data.md), [merging by meaning](wiki/ideas/merging-by-meaning.md).
-- **Open:** the merge. Every system in the survey finds it the hard part.
+- **Open:** the merge. Every system in the survey finds it the hard part. Explored under [Many agents working together](#many-agents-working-together).
 
 ### 6. Simulation built in
 
@@ -241,6 +241,67 @@ What falls out of that one choice:
 - What a change costs when the tree is deep, and how fast old versions pile up.
 - Erasing one person's data from every old version. It can leave a marked hole where a node was, but [deleting personal data from history](wiki/ideas/deleting-personal-data-from-history.md) shows how hard this is.
 - Which form of view the database can keep current by itself.
+
+## Many agents working together
+
+Explored on 2026-11-14 at Robert's request, after the storage underneath. Nothing here is decided.
+
+**What the survey says is missing.** [Many branches that reconcile with each other](wiki/ideas/branches-that-reconcile-with-each-other.md) lists five things this needs and finds no system with all five: storage shared between copies without slow reads; giving up a copy as the cheap path; a rule for two copies that both changed; one merge across everything an agent touched; a final order. [Merging by meaning](wiki/ideas/merging-by-meaning.md) names the trouble underneath: a merge sees what each side wrote, never what it read or assumed.
+
+**The central idea: a change is a call, so merging is replaying.** Data changes only through approved write functions, and the log holds calls, not changed cells. An agent's world is therefore a root plus the list of calls the agent made in it. To bring a world back, the database replays those calls, in order, on the state as it now is. This is a rebase in Git's sense, except that each step is a function call with typed arguments and not a change to text.
+
+Replaying is not new. [Bayou](wiki/systems/bayou.md) did it in 1995 and [Zero](wiki/systems/zero.md) does it today. What the other ideas in this file add to it:
+
+- **Each call checks itself again.** A write function already refuses when its conditions do not hold. Replayed on the newer state, it reads the newer state. When two agents approve the same form, the second replay is refused with a typed reason the agent can act on. Bayou needed a hand-written check on every write; here the function is the check.
+- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second.
+- **The database already knows what the agent read.** Every question the agent asked was a read program the database ran, so the world's record holds each program and its answer. At replay the database runs them again. A different answer means the agent decided on something that is no longer true. [Writes that carry their assumptions](wiki/ideas/writes-that-carry-their-assumptions.md) found that agents rarely state what they assumed. Here they do not have to.
+- **Giving up is free.** Dropping a world is dropping a root.
+- **Two worlds reconcile the same way.** Replaying one world's calls onto another world is the same step. The main line is only the world everyone agrees is real, and its log is the final order.
+- **Long thinking holds nothing.** An agent can keep a world open for hours and nothing is locked. The price is a higher chance that its replay fails.
+
+A replay ends one of three ways. It lands. It is refused, by its own function or by a promise, and goes back to the agent with the reason. Or it would land, but an answer the agent relied on has changed. What happens then is a rule a person approves for each write function: let it through, send it back to the agent, or hold it for a person ([writes held for approval](wiki/ideas/writes-held-for-approval.md)).
+
+**Helpers get less, never more.**
+
+- An agent hands a helper a grant made from its own: a view function applied on top of the agent's view, fewer write functions, arguments fixed or limited, a limit on the number of calls and an end time.
+- The helper's view is computed from what the agent's view returns, so it cannot show more. Nothing has to be analysed to know the grant is narrower, and no person is needed ("narrower is free"). Mo's file capabilities already narrow this way (`within`, `read_only`).
+- The helper works in a world forked from the agent's world. Its calls come back to the agent's world and from there to the main line. Authority flows down and narrows at each step. Changes flow up and are replayed at each step.
+- Every call in the log names the whole chain: the person who approved the function, the agent, the helper.
+- Taking back an agent's grant ends every grant made from it.
+
+**Take one agent's work back out.** The log holds every call with its caller. To remove what one agent did, because injected text misled it or because it was wrong, replay the log from before its first call and leave its calls out. The later calls that are now refused, or whose recorded answers now differ, are the ones that depended on the removed work. This is an answer to the open question under idea 4. It cannot recall anything that already left through a release function.
+
+**Agents see each other through data.**
+
+- A claim such as "I am working on form 42" is an ordinary record written by an ordinary write function, as `lease` and `heartbeat` are in Mo's task queue today. No lock manager is needed.
+- "Tell me when this answer changes" is a view the database keeps current (see [Storage underneath](#storage-underneath)).
+
+**The first-version rule, made narrower.** Settled earlier: one operation runs at a time. The survey's evidence against that rule is that agents' exploring, not their writing, becomes the bottleneck. Under this design only writes to the main line must run one at a time. A read program or a world works on a root that never changes, so it could run alongside. Robert has not accepted this change to a settled rule. Mo today runs one thing at a time.
+
+**Mo today.** One caller for each service, with one token. One call at a time. Calls are logged and repeat exactly. Simulation controls time, randomness and the order of events.
+
+**Needs.** Telling callers apart. Grants for each caller, and grants made from grants. Worlds, which need the tree from the storage section. A record of what each world read. Running reads alongside the one writer.
+
+**What would be checked, and with what.** The replay rule is a protocol, so a TLA+ model. "A helper's grant never shows more than the grant it was made from" is a claim about the language, so Lean. Many agents in random orders, checked against the promises, is simulation, and it could be offered to users for their own data ([simulating the user's own workload](wiki/ideas/simulating-the-users-own-workload.md)).
+
+**Earlier work.** In the survey: [Bayou](wiki/systems/bayou.md) and [Zero](wiki/systems/zero.md) replay named writes against an authority that orders them; [Datomic](wiki/systems/datomic.md) and [XTDB](wiki/systems/xtdb.md) send a check with the write; [Chronos](wiki/systems/chronos.md) merges across several stores at once; [Neon](wiki/systems/neon.md) reports that agents made 20 times more branches than people and rolled back 50 times more often; Biscuit tokens narrow a grant without asking its issuer ([narrowed grants](wiki/ideas/attenuated-capabilities.md)). From Claude's own knowledge and not in the survey: Macaroons (2014) narrow a credential the same way; Retro (2010) repaired a system after a break-in by re-running everything except the attacker's actions.
+
+**Costs and limits.**
+
+- **Flagging too much.** An agent reads many things it does not rely on. Comparing answers, not the data under them, helps. Whether that is enough is unknown.
+- **A failed replay costs a new round of thinking,** which costs money. An agent that works for a long time keeps losing to agents that work fast. Claims held as data ease this and do not remove it.
+- **A world shows an agent its own changes before they are real.** Anything that leaves the database must run on the main line only, or data that never became real gets out.
+- **What nobody declared, nothing catches.** Two changes that break a rule nobody wrote as a promise both land. The log makes this findable and removable afterwards.
+- **Taking an agent's work out costs a replay of everything after it.**
+- **Reads through a tree of shared nodes are slower.** The survey found no system with shared storage and fast reads.
+- **The main line's order is what keeps rules such as "never below zero".** Without an order, only rules where any two valid copies always combine into a valid one can be kept ([Divergent copies and merging](issues/06-divergent-copies-and-merging.md)).
+
+**Open.**
+
+- Which of an agent's reads count as relied on.
+- Whether a helper's world must pass through the agent's world or may go straight to the main line.
+- What an agent gets back when its replay fails, so that it can plan again without reading everything again.
+- Fairness between fast and slow agents.
 
 ## How these sit with what is already decided
 
