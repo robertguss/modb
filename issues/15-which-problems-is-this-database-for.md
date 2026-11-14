@@ -13,3 +13,5 @@ This ticket must weigh the evidence against the coordination-first decision in `
 ## Comments
 
 **2026-11-14.** Ten candidate centres were put to Robert: A every write answers for itself; B data that protects itself; C many worlds; D undo anything; E the database is the program; F a database that explains itself; G built for the query flood; H memory for agents; I a database per agent; J a shared workspace for agents' work. Robert chose A as the centre, and asked which of the others to pull in.
+
+**2026-11-14, later.** Proposed split: A with F (the database explains itself) and stated assumptions inside it for the first version; D (undo) and B (data that protects itself) second; C and I kept open; G and H out. Robert moved B into the first version because he wants to be able to use the database with FERPA data, and asked what protects that data and what protects the database from an outside attacker. A research ticket on the security baseline for student records was added.
