@@ -1,0 +1,67 @@
+WHAT EACH REVIEW CONTAINS  (probability: sol, opus, gemini; then how many say yes)
+  slice_worlds_on_service          0.27 0.98 0.91  NYY  yes 2  predicted 3-3  <- differs
+  slice_rule_without_reading_all   0.08 0.13 0.97  NNY  yes 1  predicted 1-2  as predicted
+  slice_read_program               0.38 0.90 0.99  ?YY  yes 2 unsettled 1  predicted 2-3  open
+  slice_save_only_changes          0.10 0.99 0.79  NYY  yes 2  predicted 2-3  as predicted
+  slice_proposal_approval          0.80 0.99 0.98  YYY  yes 3  predicted 0-1  <- differs
+  slice_data_beyond_memory         0.22 0.11 0.88  NNY  yes 1  predicted 1-2  as predicted
+  slice_freeing_versions           0.99 0.11 0.97  YNY  yes 2  predicted 0-1  <- differs
+  slice_history                    0.89 0.63 0.67  Y??  yes 1 unsettled 2  predicted 0-1  open
+  slice_agent_learns_tools         0.23 0.09 0.64  NN?  yes 0 unsettled 1  predicted 1-2  open
+  slice_grant_as_view              0.99 0.90 0.99  YYY  yes 3  predicted 1-2  <- differs
+  first_needs_mo_change            0.65 0.49 0.64  ???  yes 0 unsettled 3  predicted 0-0  open
+  some_slice_needs_mo_change       0.89 0.96 0.97  YYY  yes 3  predicted 3-3  as predicted
+  gives_stop_rule                  0.95 0.96 0.96  YYY  yes 3  predicted 3-3  as predicted
+  stop_rule_names_questions        0.83 0.56 0.94  Y?Y  yes 2 unsettled 1  predicted 2-3  open
+  risk_never_decides               0.09 0.21 0.08  NNN  yes 0  predicted 2-3  <- differs
+  risk_small_scale_misleads        0.69 0.91 0.98  ?YY  yes 2 unsettled 1  predicted 1-2  open
+  risk_slices_do_not_join          0.98 0.96 0.99  YYY  yes 3  predicted 1-2  <- differs
+  argues_from_speed                0.14 0.33 0.20  N?N  yes 0 unsettled 1  predicted 0-0  open
+  presupposes_sql                  0.06 0.11 0.10  NNN  yes 0  predicted 0-0  as predicted
+  argues_for_a_half_first          0.32 0.12 0.57  ?N?  yes 0 unsettled 2  predicted 0-0  open
+  uses_real_data                   0.58 0.96 0.79  ?YY  yes 2 unsettled 1  predicted 0-1  <- differs
+  measures_cost_at_sizes           0.84 0.91 0.74  YYY  yes 3  predicted 2-3  as predicted
+ADDED AFTER READING TWO REVIEWS, NO PREDICTION  (probability: sol, opus, gemini)
+  first_checks_programs_at_landing   0.92 0.98 0.98  YYY
+  slice_authority_withdrawn          0.99 0.95 0.70  YYY
+  slice_lost_reply_retry             0.99 0.07 0.17  YNN
+  slices_extend_one_sketch           0.97 0.95 0.93  YYY
+  says_mo_runs_callers_function      0.72 0.97 0.13  YYN
+FIRST SLICE  (choice, its probability, and whether any listed option fits)
+  sol     worlds_on_a_running_service 0.38, read_program 0.38   an option fits 0.89   predicted worlds_on_a_running_service
+  opus    read_program 0.87, rule_or_read_over_many_rows 0.13   an option fits 0.92   predicted worlds_on_a_running_service  <- differs
+  gemini  read_program 0.90, agent_learns_the_tools 0.09   an option fits 0.95   predicted worlds_on_a_running_service  <- differs
+CLAUDE'S FIVE SLICES AGAINST THE THREE SLATES  (2 or 3 yes: shared; 1: contested; 0: Claude's alone)
+  1 a world over the wire                NYY  shared
+  2 a rule and a view over many rows     NNY  contested
+  3 a read program                       ?YY  shared
+  4 a write that costs what it changes   NYY  shared
+  5 a proposal a person approves         YYY  shared
+SLICES NOT ON CLAUDE'S LIST  (2 or 3 yes: missing from it)
+  slice_data_beyond_memory               NNY  -
+  slice_freeing_versions                 YNY  missing from Claude's list
+  slice_history                          Y??  -
+  slice_agent_learns_tools               NN?  -
+  slice_grant_as_view                    YYY  missing from Claude's list
+CITATIONS  (verdict with options in two orders, then the smaller of the two top probabilities)
+  query-command supports     supports     0.99  -> supports       predicted supports
+  no-functions supports     supports     0.99  -> supports       predicted supports
+  crash-between supports     supports     0.99  -> supports       predicted supports
+  retry-unsafe supports     supports     0.99  -> supports       predicted supports
+  reads-unlogged supports     supports     0.99  -> supports       predicted supports
+  log-deleted supports     supports     1.00  -> supports       predicted supports
+  body-limit supports     supports     0.99  -> supports       predicted supports
+  one-token  supports     supports     0.96  -> supports       predicted supports
+  nearest-thing supports     supports     0.93  -> supports       predicted supports
+  not-a-service supports     supports     0.99  -> supports       predicted supports
+  needs-callers supports     supports     1.00  -> supports       predicted supports
+  no-file-sync supports     supports     1.00  -> supports       predicted supports
+  finer-rule supports     supports     0.85  -> supports       predicted supports
+  rule-twice supports     supports     0.99  -> supports       predicted supports
+  ceiling-cause contradicts  contradicts  1.00  -> contradicts    predicted contradicts
+  test-only  supports     supports     0.99  -> supports       predicted supports
+  auth-and-plan supports     supports     0.74  -> needs a person predicted supports  <- differs
+  synced-write supports     supports     0.92  -> supports       predicted supports
+  control-1  contradicts  contradicts  0.36  -> needs a person predicted contradicts  <- differs
+  control-2  says_nothing says_nothing 1.00  -> says_nothing   predicted says_nothing
+requests 23, input tokens 26267, cost about $0.0011

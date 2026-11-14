@@ -46,6 +46,7 @@ Checked in Mo's code and documents on 2026-11-14:
 - Every call that changes the state is logged, and the state is saved. A read is not logged (`replacement` and `persist` in `src/vm/service.c`; a reviewer found this on 2026-11-14). A snapshot deletes the log (`src/host/store.c`), so the log is not a history.
 - Each handler may do about a million steps of work (`MO_LIMIT_SERVICE_WORK` in `src/base/limits.h`).
 - Changing a running service is a compiled upgrade with a migration from the old state.
+- A caller's own function can be run over an exported copy of a service's state, with `mo query`. It runs outside the service, under a limit of 2^30 instructions (`MO_LIMIT_QUERY_WORK`), 1,024 times what a call to a service gets. Its parameters and result hold no capability and no function. A reviewer pointed out on 2026-11-14 that these notes had missed it.
 - Promises and examples are checked by `mo test`, which also simulates a service and its recovery from a crash.
 - Every outside effect goes through a capability, and each capability has a real and a fake version. A `Files` capability can already be narrowed with `within` and `read_only` (`src/base/hostops.def`).
 - Values never change once made, and the heap never holds a cycle (`docs/design/bytecode.md`).
@@ -66,7 +67,7 @@ What a service lacks to be a database:
 An agent sends a small Mo program instead of a query. The database checks its types against the data's, checks what it may touch, limits its work, runs it on a snapshot, and logs the program itself. A past question can then be re-run against the data as it was.
 
 - **Mo today:** the compiler and checker, the work limit, and bytecode that is verified when loaded.
-- **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds (the upgrade path is the nearest thing Mo has); a snapshot to run it on.
+- **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds (`mo query` already runs a caller's function over an exported copy of the state, outside the service; inside a running service the upgrade path is the nearest thing Mo has); a snapshot to run it on.
 - **Earlier work and risk:** the wiki records [stored procedures and triggers](wiki/ideas/stored-procedures-and-triggers.md) as a trap for agents. Nearer relatives are [deterministic functions as transactions](wiki/ideas/deterministic-functions-inside-transactions.md), [Convex](wiki/systems/convex.md) and [SpacetimeDB](wiki/systems/spacetimedb.md). A program arriving from an agent has to be compiled, and Mo's compiler child runs with the server's own access today ([How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md)).
 - **Open:** do agents write a correct small program as reliably as a query? Nobody has measured it; the experiments under `learnability/` in Mo measure how well agents write Mo and could measure this. What stops a program that walks everything?
 - **Standing:** chosen by Robert on 2026-11-14 as the first idea to explore. He added that it could help with FERPA, HIPAA and other compliance rules, and asked whether it needs Lean, TLA+ or another formal method.
@@ -671,7 +672,7 @@ What follows for the order: worlds, history and kept versions do not wait for th
 
 **Decided by Robert on 2026-11-14: vertical slices.** "Yes to vertical slices." Neither half is built first, and the order of the halves is no longer a question ([Which half comes first?](issues/36-which-half-comes-first.md)).
 
-**Claude's proposed slices.** Not decided by Robert. They are also on [Which vertical slices, in what order, and what must each show?](issues/38-which-vertical-slices-in-what-order.md).
+**Claude's proposed slices.** Not decided by Robert. They are also on [Which vertical slices, in what order, and what must each show?](issues/38-which-vertical-slices-in-what-order.md). Replaced the same day by the revised proposal below, after the council.
 
 | # | Slice | What an agent does | How the data is kept | What it must show | From Mo |
 | --- | --- | --- | --- | --- | --- |
@@ -685,6 +686,33 @@ What follows for the order: worlds, history and kept versions do not wait for th
 - **Recommended first: slice 1.** Every other slice hangs on what an agent sees and does, and it needs nothing from Mo. Slice 2 comes next because slice 1 is only honest at size once a rule does not read every row.
 - **Slice 4 is the storage half's real question.** The sketch showed that versions are not: every write costs in proportion to all of the state. Building slice 4 for real means changing Mo, which this map rules out, so here it can only be measured and modelled.
 - **A stop rule.** Slices are experiments and the map's destination is a decision. Claude's worry is a string of sketches that never ends in one. After these five, or sooner if two in a row change nothing, the decision is written.
+
+**Decided by Robert on 2026-11-14: the council and Jev before the slices are chosen.** "Use the council and jev before we decide and choose." Three reviewers from three providers read this repository as it stood before the proposal above was written. The full account, with every claim that was checked, is on [the ticket](issues/38-which-vertical-slices-in-what-order.md); the reviews are in [raw/council-2026-11-14-which-vertical-slices](raw/council-2026-11-14-which-vertical-slices/).
+
+**What the council found.**
+
+- **All three chose the same first slice, and it is not Claude's.** An agent's real questions (a sum, a filter, a count) are answered by read programs, recorded, and checked again when the world lands. Claude had put worlds on a running service first. The reason given: "every question counts, by its answer" is decided, and its only test asks for single keys, which cost almost nothing to ask again. Landing runs inside a call's limit of about a million instructions.
+- **All three named the same risk:** slices that each pass alone and do not fit together. Their guard is one sketch carried through every slice. One reviewer adds a list of stand-ins at the end of each slice: whatever simpler thing stood in for the real one, and what would replace it.
+- **All three tie the stop rule to the map's destination:** stop when each of its five items rests on a slice's result.
+- **All three have a slice Claude did not:** what an agent is allowed to do changes while its world is open.
+- **They split on real data.** Two put it in the first slice. One puts it in the second, once the choice of data is made.
+- **A gap in these notes.** Mo's `mo query` was missing from them; see "What Mo has today".
+- **Claude's predictions of the reviews were poor:** 7 of 22 came out as predicted, 7 differed and 8 were not settled.
+
+**Claude's revised proposal.** Not decided by Robert.
+
+| # | Slice | What it must show |
+| --- | --- | --- |
+| 1 | Questions asked again at landing | Whether asking a sum, a filter and a count again fits inside one call at 1,000, 10,000 and 50,000 made-up rows, and what the same questions cost through `mo query` |
+| 2 | Two agents on real data through a running service | The share of send-backs that were needless. It waits for the choice of real data |
+| 3 | What an agent may do changes while its world is open | A grant withdrawn or a proposed function approved between opening and landing; checking authority only at the opening must wrongly land withdrawn work |
+| 4 | The kept log | Taking one agent's calls out and replaying the rest; a lost reply tried again without landing twice |
+| 5 | Storage: writing only what changed, and freeing versions nobody holds | Measured or modelled, since a Mo service does neither today |
+
+- **Only the first slice needs choosing now.** Its result reshapes the rest.
+- **Keeping totals, Claude's old slice 2, is no longer a slice of its own.** It is one of three ways out if asking again does not fit in a call. The others are a write function that names the facts it relies on, and checking outside the call.
+- **Guards:** one sketch through every slice; a list of stand-ins at the end of each; the decision cites only results whose stand-ins it names.
+- **The stop rule:** the decision is written when each of the map's five items rests on a slice's result, or after five slices, whichever comes first.
 
 ## Deep dives for later
 
@@ -716,7 +744,12 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
-- **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md).
+- **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal.
+- **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call.
+- **Authority that changes while a world is open:** a grant withdrawn, or approved code replaced, between a world's opening and its landing. Raised by all three reviewers on 2026-11-14.
+- **A lost reply and a second try,** which must not land twice. Mo does not remove duplicate requests.
+- **An agent that has never seen the database,** as the test of whether read programs can be written without help.
+- **Read programs through `mo query`:** it runs a caller's function today, outside the service and on an exported copy.
 - **Freeing the nodes of a version nobody keeps.** The tree by number never frees a node; a long-lived one grows until the library can.
 - **A map in a record is copied on every change.** A matter for Mo: where it belongs, and whether a library should have to work around it.
 - **A call's instruction limit against a library collection.** 400 tree inserts fit in one call and 1,000 do not.

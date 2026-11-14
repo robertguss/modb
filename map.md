@@ -44,12 +44,15 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 **Decided on 2026-11-14: vertical slices.** After the sketch reported, Robert chose them: "Yes to vertical slices." Neither half is built first. Which slices, and in what order, is [Which vertical slices, in what order, and what must each show?](issues/38-which-vertical-slices-in-what-order.md), which holds Claude's proposal of five.
 
+**Decided on 2026-11-14: the council and Jev before the slices are chosen.** Robert asked for both. Three reviewers read the repository as it stood before Claude's proposal. All three chose the same first slice, which was not Claude's: an agent's real questions, asked again when its world lands. Their slates, what was checked, and Claude's revised proposal are on the same ticket. No slice is chosen yet.
+
 **Raised on 2026-11-14, not decided: Mo with batteries included.** Robert asked whether Mo could be a framework as well as a language, with the database and storage as parts that ship with it. He thinks it "has serious legs" and is not yet sure. It would change the destination from a database beside Mo to Mo's first battery. He is not dogmatic about what is written in Mo. The idea, a picture of it and a list of deep dives owed are in [design-ideas.md](design-ideas.md). He deferred the framework the same day and returned the work to the database.
 
 **Mo on 2026-11-13 (v0.2 and part of Phase 6).**
 
 - Runs command-line programs (arguments, environment, console, files, clock, random) and services (state saved to SQLite, crash recovery, timers, typed live upgrades, reached as MCP tools over HTTP).
 - Lacks byte writes, seek and sync on files; any connection other than `mo serve`; an HTTP client and TLS; parallel execution. Speed is unmeasured.
+- Added on 2026-11-14: `mo query` runs a caller's own function over an exported copy of a service's state, outside the service. A reviewer pointed out that this map had missed it.
 - Sources in `~/code/mo`: `src/base/hostops.def`, `docs/agent-guide.md`, `docs/design/services.md`, `docs/ROADMAP.md`.
 
 **Standing preferences.**

@@ -1,0 +1,2460 @@
+{
+ "positions-sol": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "vertical slice": "A small experiment that carries one job the whole way down: something an agent does, the rule that guards it, and the way its data is kept.",
+     "slate": "The ordered list of vertical slices that the review proposes.",
+     "world": "An agent's own version of the data. It sees its own changes and nobody else's until it lands.",
+     "landing": "Applying a world's calls to the shared data, all of them or none.",
+     "view": "A function that narrows which data an agent may read or change.",
+     "read program": "A small program or function an agent writes to read the data, in place of a fixed query.",
+     "Mo": "The language and runtime the database is written in. A Mo service keeps its whole state in memory and saves the whole state on every write."
+    },
+    "review": "I recommend four slices, each extending the same small job. These are proposed experiments, not database implementation. Before each run, freeze predictions, expected answers, workload bounds and a control that must fail. A failed result should narrow the candidate or trigger one targeted follow-up before proceeding.\n\n1. Ask, decide, land.\n\nAn agent asks an unplanned question through a restricted view, then proposes approved calls in its world. Use a small, representative extract of the owner\u2019s data, expressed as ordinary Mo records and collections.\n\nGuard: read programs only compute; every answer is recorded; landing replays questions in their original positions, checks the rule after each call, and publishes the whole world atomically. Keep data in the existing numbered-node collection.\n\nExperiment: test point reads, absence, aggregates, an intervening own write, and a concurrent change that alters underlying data while preserving the answer. Include a small agent exercise with answers written independently beforehand.\n\nRequired result: does this job work with correct answers and landings without widening the view or adding an operation for every question? Removing answer validation must admit a deliberately stale decision.\n\nMo today: use separately compiled read functions over exported snapshots; [the reference, \u00a713.4](mo/docs/reference/README.md) documents offline queries. Live submission remains modelled: [design-ideas.md, \u201cThe request is a program\u201d](modb/design-ideas.md) identifies accepting programs while running as missing. The existing [worlds.mo, ask and land](modb/sketches/kept-versions/worlds.mo) records only keyed integer answers.\n\n2. Authority changes while an agent thinks.\n\nAn agent delegates a narrower task; a person withdraws its grant or replaces an approved function before landing.\n\nGuard: explicitly model which current authority must authorize each replayed call and release. Keep grant ancestry, approval identities, program versions and world roots as data beside the proposed changes.\n\nRequired result: can revocation prevent every subsequent unauthorized landing and release while unrelated authorized work still succeeds? The control checks authority only when the world opens and must wrongly accept withdrawn work.\n\nMo today: model the protocol; do not claim caller separation from a simulated caller identifier. [Design-ideas.md, \u201cMany agents working together\u201d](modb/design-ideas.md) names caller identity and derived grants as needs. [The reference, \u00a711.5](mo/docs/reference/README.md) prohibits capabilities and functions in service state, inputs and results, so store identifiers rather than executable grants.\n\n3. Lose the reply, recover the accountable change.\n\nAn agent lands, loses its connection, retries, and later asks what happened\u2014even after an approved function changes.\n\nGuard: one durable outcome binds request identity, caller, approval, questions, calls and relevant code version. Model an append record plus published root, with failures between every persistence step.\n\nRequired result: does recovery produce a complete accountable landing or none, with retries unable to repeat its effect? Include historical replay under the original definition. Publishing success before durability must fail the control.\n\nMo today: ordinary service recovery is a baseline, not this experiment\u2019s proof. [The reference, \u00a712.5](mo/docs/reference/README.md) says generated crashes occur between steps, never inside commits. [Saved-state.md, \u201cOwnership and transactions\u201d](mo/docs/design/saved-state.md) documents uncertain commit outcomes, absent request deduplication, unlogged successful reads and snapshot deletion of covered recovery logs. Model these stronger requirements without changing Mo.\n\n4. Keep working, then forget abandoned worlds.\n\nRun the same job repeatedly with fast and slow agents, abandoned worlds, retained history and increasing data sizes.\n\nGuard: reclaim only unreachable versions; preserve every retained answer and approved landing. Compare today\u2019s numbered-node representation with a model of fetching immutable nodes by identifier.\n\nRequired result: does a declared retention policy keep space and work within the chosen workload budget, including retries and slow-agent completion? Disabling reclamation must breach the budget; reclaiming a pinned version must corrupt a checked answer.\n\nMo today: [issue 37, \u201cNot shown\u201d](modb/issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md) leaves reclamation and service-hosted worlds untested. Measure against MO_LIMIT_SERVICE_WORK, MO_LIMIT_SERVICE_MESSAGE_MEMORY and MO_LIMIT_SAVED_NODES in [limits.h](mo/src/base/limits.h). Paging needs modelling because service handlers cannot receive storage capabilities (\u00a711.5); whole-state copying remains in [service.c, encoded_copy](mo/src/vm/service.c).\n\nRun slice 1 first. It tests the distinctive agent experience and whether useful questions produce a tractable replay record. Cheap roots alone cannot answer that.\n\nStop when the evidence supports all five fields in [map.md, \u201cDestination\u201d](modb/map.md): database kind and novelty, borrowed ideas and costs, first real-data job, general Mo capabilities required, and relationship to Phases 6\u20138. Failures count if the decision explicitly excludes the failed promise. Continue only for an uncertainty that could reverse that decision.\n\nI deliberately omit distribution, optimizers, framework packaging and general information-flow proofs. None is necessary to decide this bounded candidate. Retention experiments must not become claims of complete personal-data erasure.\n\nThe largest risk is separately successful slices hiding incompatible assumptions. Reuse one recorded scenario across all four, including authority changes, recovery and retention.\n\nConfidence in slice 1 first: 80%. I would move recovery first if losing an answer makes the selected real-data job unacceptable even experimentally.\n\nI read the specified snapshot and inspected Mo sources; I ran no experiments, independently reproduced no timings, and changed no files.\n"
+   },
+   "questions": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that runs worlds and their landing as a running service?",
+     "criteria": {
+      "true": "One of the review's slices runs worlds, with their landing, as a service that agents call.",
+      "false": "No slice in the review runs worlds as a service that agents call."
+     }
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that checks a rule, or answers a narrowed read, over many rows without reading every row?",
+     "criteria": {
+      "true": "One of the review's slices keeps a total or an index up to date so that a check or a read does not go through every row.",
+      "false": "No slice in the review is about avoiding a pass over every row for a rule or a read."
+     }
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent writes a read program?",
+     "criteria": {
+      "true": "One of the review's slices has an agent write a program or function that reads the data.",
+      "false": "No slice in the review has an agent write a program to read the data."
+     }
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about saving only what a write changed?",
+     "criteria": {
+      "true": "One of the review's slices measures, models or builds saving only the changed part of the data on a write.",
+      "false": "No slice in the review is about saving only the changed part of the data."
+     }
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent proposes a change and a person approves it?",
+     "criteria": {
+      "true": "One of the review's slices has an agent propose a new call or a change that a person then approves.",
+      "false": "No slice in the review has a person approve something an agent proposed."
+     }
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which the data does not all sit in memory?",
+     "criteria": {
+      "true": "One of the review's slices keeps data that is larger than memory, or loads parts of it when they are needed.",
+      "false": "Every slice in the review keeps all of its data in memory."
+     }
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about dropping old versions of the data?",
+     "criteria": {
+      "true": "One of the review's slices drops versions nobody needs and frees what only they held.",
+      "false": "No slice in the review drops old versions or frees what they held."
+     }
+    },
+    "slice_history": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about reading the history of the data?",
+     "criteria": {
+      "true": "One of the review's slices has someone read back who changed something, or why, from a kept history.",
+      "false": "No slice in the review is about reading back the history of changes."
+     }
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that tests whether an agent with no prior knowledge of the database can use it correctly?",
+     "criteria": {
+      "true": "One of the review's slices gives the database to an agent that has not seen it and checks what it does.",
+      "false": "No slice in the review tests an agent that has not seen the database before."
+     }
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about what an agent is allowed to read or change?",
+     "criteria": {
+      "true": "One of the review's slices tests a grant or a view that narrows what an agent may read or change.",
+      "false": "No slice in the review is about limiting what an agent may read or change."
+     }
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that its first slice needs something Mo does not have today?",
+     "criteria": {
+      "true": "The review says its first slice cannot be built in Mo as it is.",
+      "false": "The review says its first slice can be built in Mo as it is, or names nothing Mo lacks for it."
+     }
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that at least one of its slices cannot be built without a change to Mo?",
+     "criteria": {
+      "true": "The review names a slice that Mo as it is cannot carry, so it is measured or modelled and not built.",
+      "false": "The review says every one of its slices can be built in Mo as it is."
+     }
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "instructions": "Does `review` state how the owner knows that enough slices have been run?",
+     "criteria": {
+      "true": "The review gives a rule for stopping the slices and writing the decision.",
+      "false": "The review gives no rule for when to stop running slices."
+     }
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "instructions": "Does `review` tie stopping to named open questions being answered?",
+     "criteria": {
+      "true": "The review's rule for stopping lists the questions that must have answers.",
+      "false": "The review's rule for stopping does not list questions, or the review has no such rule."
+     }
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that the slices never end in a decision?",
+     "criteria": {
+      "true": "The review warns that experiments could pile up without a decision being written.",
+      "false": "The review does not warn that the slices might never end in a decision."
+     }
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that a result from a small experiment does not hold for the real system?",
+     "criteria": {
+      "true": "The review warns that what a small sketch shows may not hold at real size or in the real system.",
+      "false": "The review does not warn that small experiments may mislead about the real system."
+     }
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that slices built apart do not fit together?",
+     "criteria": {
+      "true": "The review warns that separate slices may each work and still not make one design.",
+      "false": "The review does not warn that the slices may fail to fit together."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for any choice?",
+     "criteria": {
+      "true": "The review prefers something because it would be usable or delivered sooner.",
+      "false": "The review does not use being usable sooner as a reason."
+     }
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "instructions": "Does any slice in `review` assume SQL or the relational model?",
+     "criteria": {
+      "true": "A slice in the review relies on SQL, or on tables related by keys and joined.",
+      "false": "No slice in the review relies on SQL or on the relational model."
+     }
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "instructions": "Does `review` argue for building one half of the database before the other?",
+     "criteria": {
+      "true": "The review argues that the part agents touch, or the storage, should be built first as a whole.",
+      "false": "The review keeps to vertical slices and does not argue for one half first."
+     }
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "instructions": "Does `review` ask for a slice to use real data in place of made-up rows?",
+     "criteria": {
+      "true": "The review asks that at least one slice runs on real data the owner has.",
+      "false": "The review does not ask for real data in any slice."
+     }
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` require a slice to measure a cost at more than one size of data?",
+     "criteria": {
+      "true": "The review asks for a time or a size to be measured at two or more sizes of data.",
+      "false": "The review does not ask for a cost to be measured at more than one size."
+     }
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about read programs whose answers are checked again at landing?",
+     "criteria": {
+      "true": "The review's first slice has an agent's questions answered by programs, and those answers are checked again when the world lands.",
+      "false": "The review's first slice does not check the answers of read programs again at landing."
+     }
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which a grant is withdrawn, or approved code is replaced, while a world is open?",
+     "criteria": {
+      "true": "One of the review's slices changes what an agent is allowed to do, or the approved code, while that agent's world is still open.",
+      "false": "No slice in the review changes a grant or the approved code while a world is open."
+     }
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent loses a reply and tries again?",
+     "criteria": {
+      "true": "One of the review's slices has an agent retry after a lost reply or a crash and checks that the change is not made twice.",
+      "false": "No slice in the review is about a lost reply, a crash or a retry."
+     }
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "instructions": "Does `review` ask that the slices build on one shared sketch or scenario?",
+     "criteria": {
+      "true": "The review asks that each slice extends the same code or the same recorded scenario as the others.",
+      "false": "The review does not ask for the slices to share one sketch or scenario."
+     }
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo can already run a caller's own function over a service's exported state?",
+     "criteria": {
+      "true": "The review says Mo already has a way to run a function the caller wrote over an exported state.",
+      "false": "The review does not say that Mo can run a caller's function over an exported state."
+     }
+    },
+    "first_slice": {
+     "type": "choice",
+     "instructions": "Which slice does `review` run first?",
+     "criteria": {
+      "worlds_on_a_running_service": "Agents' worlds and their landing, run as a service that agents call.",
+      "rule_or_read_over_many_rows": "A rule check or a narrowed read over many rows that does not read every row.",
+      "read_program": "An agent writes a program or function that reads the data.",
+      "saving_only_what_changed": "A write that saves only what it changed, not the whole state.",
+      "data_larger_than_memory": "Data that is larger than memory, or is loaded when it is needed.",
+      "proposal_and_approval": "An agent proposes a change and a person approves it.",
+      "agent_learns_the_tools": "An agent that has not seen the database before tries to use it."
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about worlds on a running service, a rule or read over many rows, a read program, saving only what changed, data larger than memory, a proposal and its approval, or an agent that has not seen the database?",
+     "criteria": {
+      "true": "The review's first slice is about one of those seven things.",
+      "false": "The review's first slice is about something else."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "noul": 0.27
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "noul": 0.08
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "noul": 0.38
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "noul": 0.1
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "noul": 0.8
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "noul": 0.22
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slice_history": {
+     "type": "noul",
+     "noul": 0.89
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "noul": 0.23
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.65
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.89
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "noul": 0.83
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "noul": 0.09
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "noul": 0.69
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.14
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "noul": 0.32
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "noul": 0.58
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "noul": 0.84
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "noul": 0.92
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "noul": 0.72
+    },
+    "first_slice": {
+     "type": "choice",
+     "choice": "worlds_on_a_running_service",
+     "confidence": 0.28,
+     "probabilities": {
+      "worlds_on_a_running_service": 0.38,
+      "rule_or_read_over_many_rows": 0.05,
+      "read_program": 0.38,
+      "saving_only_what_changed": 0.0,
+      "data_larger_than_memory": 0.0,
+      "proposal_and_approval": 0.12,
+      "agent_learns_the_tools": 0.07
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "noul": 0.89
+    }
+   },
+   "usage": {
+    "input_tokens": 4130,
+    "output_tokens": 671
+   }
+  }
+ },
+ "positions-opus": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "vertical slice": "A small experiment that carries one job the whole way down: something an agent does, the rule that guards it, and the way its data is kept.",
+     "slate": "The ordered list of vertical slices that the review proposes.",
+     "world": "An agent's own version of the data. It sees its own changes and nobody else's until it lands.",
+     "landing": "Applying a world's calls to the shared data, all of them or none.",
+     "view": "A function that narrows which data an agent may read or change.",
+     "read program": "A small program or function an agent writes to read the data, in place of a fixed query.",
+     "Mo": "The language and runtime the database is written in. A Mo service keeps its whole state in memory and saves the whole state on every write."
+    },
+    "review": "I've read the snapshot and the Mo docs it depends on. I didn't run anything.\n\n**The finding that most shapes my slate.** No file in the snapshot mentions `mo query`. design-ideas.md idea 1 calls the upgrade path \"the nearest thing Mo has\" to accepting a program. In fact Mo already runs a caller's own function over an exported state: `docs/agent-guide.md`, the `mo query` section, with export available through the `mo-export` MCP tool. It has a work limit (`MO_LIMIT_QUERY_WORK`, 2^30 instructions, in `src/base/limits.h`) and refuses capabilities or functions in parameters (E1411). It runs offline, not inside a live service. A call to a service gets only `MO_LIMIT_SERVICE_WORK`, 2^20 instructions, about a thousandth of that.\n\n**1. Slate, in order**\n\n**S1: questions asked again at landing.**\n- **Agent does:** inside a world, runs two or three real read programs (a sum, a filter, a count by group) instead of the key lookups in `worlds.mo` `ask`. Each program's name, arguments and answer are recorded, and `land` runs them again on the main line.\n- **Guard:** \"every question counts, by its answer.\" Control: a world whose relied-on total changed must be sent back.\n- **Data kept:** the tree by number (`tree.mo`).\n- **Result, either way:** does re-running the recorded programs fit inside one landing call at 1k, 10k and 50k rows? The prediction gives the largest size at which it fits. Also measure the same programs through `mo query` on an export.\n- **Mo in the way:** the 2^20 instruction limit per call; reference \u00a711.5 forbids function values in state, so the programs must be a fixed set of named functions (a stand-in); new code arrives only by whole-service upgrade (`src/tools/protocol-upgrade.c`).\n\n**S2: two real agents, one real dataset, through a running service.**\n- **Agent does:** two model-driven agents work on the same data over MCP. Issue 12 must answer first which dataset.\n- **Guard:** worlds land whole, with the rule checked after every call.\n- **Data kept:** worlds as service state. Issue 37 \"Not shown\" says they have only run under `mo test`.\n- **Result:** the needless send-back rate, the number design-ideas.md (\"Which reads count as relied on\") says the finer rule waits for. Prediction: above or below a threshold written in advance.\n- **Mo in the way:** one token per service (`docs/design/services.md`), so callers are told apart only by an unauthenticated argument (a stand-in); `MO_LIMIT_MCP_RATE` of 20 calls a second; the 16 KiB request limit (I did not re-verify that number).\n\n**S3: an agent proposes, a person approves, with a world open across it.**\n- **Agent does:** proposes a new write function. It goes through the upgrade tools (`mo-upgrade-open/page/commit`) while another agent's world, recorded under the old code, is still open.\n- **Guard:** \"narrower is free, wider needs a person.\" Control: a widened view must not land without approval.\n- **Result:** when the open world lands, does replaying it under the new code keep or break the replay rule? Either can happen.\n- **Mo in the way:** upgrades replace the whole service; I did not check how a state migration interacts with the node map.\n\n**S4: the kept log, and taking one agent's work out.**\n- **Agent does:** every call carries a caller and a reason. Remove one agent's calls and replay what came after.\n- **Guard:** the accountable write.\n- **Data kept:** the log inside the state, because Mo deletes its own log at each snapshot, every 100 messages (`MO_LIMIT_SERVICE_SNAPSHOT_MESSAGES`).\n- **Result:** the calls predicted to be refused or changed by the removal, against those actually found; and the log length at which the memory ceiling stops writes.\n- **Mo in the way:** no caller identity; the log is not kept.\n\n**S5: write only what changed (a measurement or model, not a build).**\n- **Result:** with only changed nodes written, does a write's cost become flat as the state grows?\n- **Mo in the way:** `encoded_copy` in `src/vm/service.c` encodes the whole state; \u00a711.5 forbids capabilities in a handler; files have no byte writes, seek or sync (map.md, \"Mo on 2026-11-13\"). So this can only be measured outside a service.\n\n**2. Run S1 first.** \"Every question counts, by its answer\" is decided and is the newest idea here. Yet the only test of it, `worlds.mo`, uses single-key questions, which are nearly free to ask again. Read programs are what make it expensive, and landing runs inside the smallest work limit. If S1 fails at modest sizes, the decided rule needs another mechanism, such as answer 6 or re-checking outside the call. That would change S2 through S4. S1 also builds directly on existing code and needs nobody's data.\n\n**3. Stop rule.** Write the decision when all three hold:\n- (a) each of the map's five destination items cites at least one slice result. Item 3 must come from a slice on the owner's real data; every gap under item 4 must have been hit by a slice, not inferred from reading.\n- (b) two slices in a row have added no new Mo gap and have not changed the one-sentence statement of what is new (map.md \"Not yet specified\").\n- (c) the library-or-runtime question for storage has a measured answer (S5).\n\nIf five slices run without meeting all three, write the decision anyway and list the gaps that are still open.\n\n**4. Deliberately left out.**\n- Sensitivity labels in types (idea 9): Mo has nothing for them, so they can't be sliced. They need a type-system design and Lean.\n- Views kept current and indexes (ideas 8 and storage): left until S2 shows read programs are actually slow.\n- Erasing data from history, and chains of helper grants: they need S4's log first.\n- Fairness between fast and slow agents, and the 10 ms HTTP layer: the first is a later deep dive; the second is Mo's own matter.\n- Batteries and memory safety: deferred and parked by the owner.\n\n**5. Largest risk: stand-ins pile up until they become the design.** So far the slices have used:\n- views written as key predicates;\n- the rule written twice, as a promise and as `rule?`;\n- a bare map in place of a record;\n- named functions in place of submitted programs;\n- self-declared callers.\n\nEach slice passes on its own, and nobody runs them together. Guards:\n- each slice extends the previous slice's code in one sketch, instead of starting fresh;\n- a slice isn't done until its stand-ins are listed, each with what would replace it;\n- the decision may only cite results whose stand-ins it names.\n\n**6. Confidence that S1 should be first: about 65%.** I would change my mind if issue 12's answer names data that agents mostly append to and rarely re-read; S2 would then go first. I would also change it if one look at real agent transcripts shows their questions are nearly all single-key lookups, which would make S1's cost moot.\n\nWhat I didn't check: I did not run the sketches or `mo query`, did not read `models/` or the council's raw files, and did not verify the 16 KiB request limit.\n"
+   },
+   "questions": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that runs worlds and their landing as a running service?",
+     "criteria": {
+      "true": "One of the review's slices runs worlds, with their landing, as a service that agents call.",
+      "false": "No slice in the review runs worlds as a service that agents call."
+     }
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that checks a rule, or answers a narrowed read, over many rows without reading every row?",
+     "criteria": {
+      "true": "One of the review's slices keeps a total or an index up to date so that a check or a read does not go through every row.",
+      "false": "No slice in the review is about avoiding a pass over every row for a rule or a read."
+     }
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent writes a read program?",
+     "criteria": {
+      "true": "One of the review's slices has an agent write a program or function that reads the data.",
+      "false": "No slice in the review has an agent write a program to read the data."
+     }
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about saving only what a write changed?",
+     "criteria": {
+      "true": "One of the review's slices measures, models or builds saving only the changed part of the data on a write.",
+      "false": "No slice in the review is about saving only the changed part of the data."
+     }
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent proposes a change and a person approves it?",
+     "criteria": {
+      "true": "One of the review's slices has an agent propose a new call or a change that a person then approves.",
+      "false": "No slice in the review has a person approve something an agent proposed."
+     }
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which the data does not all sit in memory?",
+     "criteria": {
+      "true": "One of the review's slices keeps data that is larger than memory, or loads parts of it when they are needed.",
+      "false": "Every slice in the review keeps all of its data in memory."
+     }
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about dropping old versions of the data?",
+     "criteria": {
+      "true": "One of the review's slices drops versions nobody needs and frees what only they held.",
+      "false": "No slice in the review drops old versions or frees what they held."
+     }
+    },
+    "slice_history": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about reading the history of the data?",
+     "criteria": {
+      "true": "One of the review's slices has someone read back who changed something, or why, from a kept history.",
+      "false": "No slice in the review is about reading back the history of changes."
+     }
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that tests whether an agent with no prior knowledge of the database can use it correctly?",
+     "criteria": {
+      "true": "One of the review's slices gives the database to an agent that has not seen it and checks what it does.",
+      "false": "No slice in the review tests an agent that has not seen the database before."
+     }
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about what an agent is allowed to read or change?",
+     "criteria": {
+      "true": "One of the review's slices tests a grant or a view that narrows what an agent may read or change.",
+      "false": "No slice in the review is about limiting what an agent may read or change."
+     }
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that its first slice needs something Mo does not have today?",
+     "criteria": {
+      "true": "The review says its first slice cannot be built in Mo as it is.",
+      "false": "The review says its first slice can be built in Mo as it is, or names nothing Mo lacks for it."
+     }
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that at least one of its slices cannot be built without a change to Mo?",
+     "criteria": {
+      "true": "The review names a slice that Mo as it is cannot carry, so it is measured or modelled and not built.",
+      "false": "The review says every one of its slices can be built in Mo as it is."
+     }
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "instructions": "Does `review` state how the owner knows that enough slices have been run?",
+     "criteria": {
+      "true": "The review gives a rule for stopping the slices and writing the decision.",
+      "false": "The review gives no rule for when to stop running slices."
+     }
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "instructions": "Does `review` tie stopping to named open questions being answered?",
+     "criteria": {
+      "true": "The review's rule for stopping lists the questions that must have answers.",
+      "false": "The review's rule for stopping does not list questions, or the review has no such rule."
+     }
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that the slices never end in a decision?",
+     "criteria": {
+      "true": "The review warns that experiments could pile up without a decision being written.",
+      "false": "The review does not warn that the slices might never end in a decision."
+     }
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that a result from a small experiment does not hold for the real system?",
+     "criteria": {
+      "true": "The review warns that what a small sketch shows may not hold at real size or in the real system.",
+      "false": "The review does not warn that small experiments may mislead about the real system."
+     }
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that slices built apart do not fit together?",
+     "criteria": {
+      "true": "The review warns that separate slices may each work and still not make one design.",
+      "false": "The review does not warn that the slices may fail to fit together."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for any choice?",
+     "criteria": {
+      "true": "The review prefers something because it would be usable or delivered sooner.",
+      "false": "The review does not use being usable sooner as a reason."
+     }
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "instructions": "Does any slice in `review` assume SQL or the relational model?",
+     "criteria": {
+      "true": "A slice in the review relies on SQL, or on tables related by keys and joined.",
+      "false": "No slice in the review relies on SQL or on the relational model."
+     }
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "instructions": "Does `review` argue for building one half of the database before the other?",
+     "criteria": {
+      "true": "The review argues that the part agents touch, or the storage, should be built first as a whole.",
+      "false": "The review keeps to vertical slices and does not argue for one half first."
+     }
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "instructions": "Does `review` ask for a slice to use real data in place of made-up rows?",
+     "criteria": {
+      "true": "The review asks that at least one slice runs on real data the owner has.",
+      "false": "The review does not ask for real data in any slice."
+     }
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` require a slice to measure a cost at more than one size of data?",
+     "criteria": {
+      "true": "The review asks for a time or a size to be measured at two or more sizes of data.",
+      "false": "The review does not ask for a cost to be measured at more than one size."
+     }
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about read programs whose answers are checked again at landing?",
+     "criteria": {
+      "true": "The review's first slice has an agent's questions answered by programs, and those answers are checked again when the world lands.",
+      "false": "The review's first slice does not check the answers of read programs again at landing."
+     }
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which a grant is withdrawn, or approved code is replaced, while a world is open?",
+     "criteria": {
+      "true": "One of the review's slices changes what an agent is allowed to do, or the approved code, while that agent's world is still open.",
+      "false": "No slice in the review changes a grant or the approved code while a world is open."
+     }
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent loses a reply and tries again?",
+     "criteria": {
+      "true": "One of the review's slices has an agent retry after a lost reply or a crash and checks that the change is not made twice.",
+      "false": "No slice in the review is about a lost reply, a crash or a retry."
+     }
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "instructions": "Does `review` ask that the slices build on one shared sketch or scenario?",
+     "criteria": {
+      "true": "The review asks that each slice extends the same code or the same recorded scenario as the others.",
+      "false": "The review does not ask for the slices to share one sketch or scenario."
+     }
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo can already run a caller's own function over a service's exported state?",
+     "criteria": {
+      "true": "The review says Mo already has a way to run a function the caller wrote over an exported state.",
+      "false": "The review does not say that Mo can run a caller's function over an exported state."
+     }
+    },
+    "first_slice": {
+     "type": "choice",
+     "instructions": "Which slice does `review` run first?",
+     "criteria": {
+      "worlds_on_a_running_service": "Agents' worlds and their landing, run as a service that agents call.",
+      "rule_or_read_over_many_rows": "A rule check or a narrowed read over many rows that does not read every row.",
+      "read_program": "An agent writes a program or function that reads the data.",
+      "saving_only_what_changed": "A write that saves only what it changed, not the whole state.",
+      "data_larger_than_memory": "Data that is larger than memory, or is loaded when it is needed.",
+      "proposal_and_approval": "An agent proposes a change and a person approves it.",
+      "agent_learns_the_tools": "An agent that has not seen the database before tries to use it."
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about worlds on a running service, a rule or read over many rows, a read program, saving only what changed, data larger than memory, a proposal and its approval, or an agent that has not seen the database?",
+     "criteria": {
+      "true": "The review's first slice is about one of those seven things.",
+      "false": "The review's first slice is about something else."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "noul": 0.13
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "noul": 0.9
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "slice_history": {
+     "type": "noul",
+     "noul": 0.63
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "noul": 0.09
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "noul": 0.9
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.49
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "noul": 0.56
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "noul": 0.21
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.33
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "noul": 0.12
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "noul": 0.07
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "first_slice": {
+     "type": "choice",
+     "choice": "read_program",
+     "confidence": 0.85,
+     "probabilities": {
+      "worlds_on_a_running_service": 0.0,
+      "rule_or_read_over_many_rows": 0.13,
+      "read_program": 0.87,
+      "saving_only_what_changed": 0.0,
+      "data_larger_than_memory": 0.0,
+      "proposal_and_approval": 0.0,
+      "agent_learns_the_tools": 0.0
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "noul": 0.92
+    }
+   },
+   "usage": {
+    "input_tokens": 4636,
+    "output_tokens": 667
+   }
+  }
+ },
+ "positions-gemini": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "vertical slice": "A small experiment that carries one job the whole way down: something an agent does, the rule that guards it, and the way its data is kept.",
+     "slate": "The ordered list of vertical slices that the review proposes.",
+     "world": "An agent's own version of the data. It sees its own changes and nobody else's until it lands.",
+     "landing": "Applying a world's calls to the shared data, all of them or none.",
+     "view": "A function that narrows which data an agent may read or change.",
+     "read program": "A small program or function an agent writes to read the data, in place of a fixed query.",
+     "Mo": "The language and runtime the database is written in. A Mo service keeps its whole state in memory and saves the whole state on every write."
+    },
+    "review": "1. SLATE (FOUR SLICES, IN ORDER)\n\nSlice 1: Cold-agent read programs, narrowed views, and answer-checked landing.\nAgent: Cold agents (given types, signatures, and examples) write pure Mo read functions over a narrowed View on issues/12-what-real-data-goes-in-first.md (\"Candidate datasets\") data, concurrently asking, calling writes, and landing (design-ideas.md, \"1. The request is a program\").\nGuard/control: mo_check_query_entry (src/check/services.c) rejects effects/hidden fields; land replays reads in place (issues/35-what-lands-together-when-a-world-holds-more-than-one-call.md, \"Answer\") and checks rules per call. Control: expose hidden fields or skip replay; bad reads compile or races land.\nKept: sketches/kept-versions/tree.mo (put, keep, open) plus in-state log, queried via mo fetch (src/tools/fetch.c) and query (src/tools/offline.c).\nResult: Cold agents pass a pre-set validity bar without SQL AND coarse-read send-backs (design-ideas.md, \"Which reads count as relied on\") stay below ceiling, OR one fails.\nMo blockers: Offline-only query (src/tools/offline.c); whole-service mo_live_start (src/tools/upgrade-live.c); mo_check_service_purity (src/check/services.c; docs/reference/README.md, \"11.5 Purity\") barring function values; struct-Map copy in borrow_walk (src/codegen/ownership.c; sketches/kept-versions/in-place.mo).\n\nSlice 2: Delegated helper worlds, O(log N) checks, and selective undo on mo serve.\nAgent: Over mo serve MCP, parents mint narrower grants (view, writes, call cap, Time expiry) for helpers, and an operator undoes one misled agent's calls by replay (design-ideas.md, \"Many agents working together\", \"4. The log is the truth\").\nGuard/control: Helpers only narrow parent grants and die on revocation; rules read summaries instead of O(N) Tree.entries in sketches/kept-versions/worlds.mo (total); undo flags later calls with broken guards or changed answers. Control: omit narrowing or undo checks; escalation or drift lands.\nKept: service.sqlite (src/host/store.c) with tree.mo nodes, summaries, grants, and in-state call/read log.\nResult: Delegation, O(log N) checks, and undo fit mo serve, OR hit MO_LIMIT_SERVICE_WORK (1,048,576), MO_LIMIT_MCP_RATE (20/s), 16/32 KiB MCP caps (src/base/limits.h), ~10 ms HTTP CPU (authenticate/plan, src/tools/protocol-request.c; issues/11-how-fast-and-large-is-a-mo-service.md, \"Added later\"), or 56 MiB call memory (mo_service_limits, src/vm/service.c).\nMo blockers: Single token (token_source, src/check/services.c; MO_LISTENER_AUTH, src/tools/protocol-request.c); no capabilities in state/messages (mo_check_service_purity); MO_STORE_SNAPSHOT (mo_store_call, src/host/store.c) deleting log; mo_service_step (src/vm/service.c) blocking reads behind writes.\n\nSlice 3: Agent write/schema proposal, replay rehearsal, and human intent gate.\nAgent: Blocked by a mid-world rule (issues/35-what-lands-together-when-a-world-holds-more-than-one-call.md, \"Answer\"), an agent proposes a composite write and migration, rehearses on Simulation and kept history, and submits an intent diff (design-ideas.md, \"The ideas\").\nGuard/control: Must pass mo check --upgrade-from, mo test promises/recovery (src/tools/recovery.c), replay, and mo intent --against (src/tools/intent.c) gated on mo review (docs/agent-guide.md, \"Review intent\"). Control: push an unapproved or promise-weakening bundle; gate refuses.\nKept: service.sqlite via mo push --migrate (mo_live_admit, src/tools/upgrade-live.c) and program digests (src/host/store-programs.c).\nResult: Phase 6 intent diffs and promises support human approval without duplicated rules, OR show test/runtime promise drift (sketches/land-whole/main.mo, rule? vs promise) and opaque diffs.\nMo blockers: Promises run only in mo test (src/tools/recovery.c), not mo_service_step (src/vm/service.c; docs/design/intent.md, \"Service promises\"); mo_live_admit ignores mo review (src/host/store-review.c); MO_LIMIT_UPGRADE_PREVIOUS=2 (src/base/limits.h); closed enum Call (sketches/README.md, \"land-whole\").\n\nSlice 4: Path-only persistence, dead-world reclamation, and faulted-disk recovery versus service.sqlite.\nAgent: Agents churn 90%-abandoned worlds and 10%-landed writes over 50k-500k records under sweeps and injected torn/lost writes (design-ideas.md, \"Storage underneath\"; issues/11-how-fast-and-large-is-a-mo-service.md, \"Answer\"; issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md, \"Not shown\").\nGuard/control: Recovery restores the last synced root with valid checksums, zero leaked nodes, and intact pinned roots. Control: write root before path sync or sweep live worlds; recovery or reads fail.\nKept: mo run sketch plus fault-injecting page/log harness writing dirty path nodes, beside yardstick.py and sketches/kept-versions/by-number.mo.\nResult: Path-only writes and reclamation hold latency/memory near yardstick.py's ~3 ms floor, backing a custom engine, OR reclamation/hop costs favor fixing encoded_copy (src/vm/service.c) over service.sqlite.\nMo blockers: Files (src/base/hostops.def) lacks write_bytes, pread/pwrite, atomic rename, fsync; Files.in_memory and Simulation (docs/reference/README.md, \"12.5 Simulation\") inject no torn writes; src/base/prims.def lacks byte hash; services bar capabilities and force encoded_copy (MO_LIMIT_SAVED_BYTES 16 MiB, MO_LIMIT_SAVED_NODES 1,048,576, src/base/limits.h).\n\n2. FIRST SLICE AND WHY\nRun Slice 1 first. sketches/kept-versions/worlds.mo (ask, land) proved versioned trees in memory (issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md, \"Answer\"), and TLA+ settled multi-call landing (issues/35-what-lands-together-when-a-world-holds-more-than-one-call.md, \"Answer\"). The sharpest untested bet is agent-facing: whether cold agents write pure Mo read functions over narrowed views without SQL, and whether answer-checked landing hits the 92-95% needless send-back rate in design-ideas.md (\"What the first model and the research found\"). (I listed mo/learnability/ folders without reading prompts; this snapshot has no DB query evals.) Failing either reshapes Slices 2-4.\n\n3. STOP RULE\nStop once every map.md (\"Destination\", \"Not yet specified\") item has measured answers: query learnability and send-backs (Slice 1); multi-agent grants, O(log N) checks, and undo (Slice 2); human-gated proposals beside Phase 6 (Slice 3; issues/13-does-phase-6-finish-first.md, issues/18-how-does-it-sit-beside-phases-6-to-8.md); and saved-state versus custom storage plus general Mo additions passing issues/14-what-rule-keeps-the-database-from-bending-mo.md and issues/17-what-must-mo-gain.md (Slice 4)\u2014stopping early if any core bet fails.\n\n4. LEFT OUT AND WHY\nMulti-machine replication (non-goal: design-ideas.md, \"Open questions\" #8); query optimizers/auto-indexes (premature before seeing agent read programs, unneeded at issues/12-what-real-data-goes-in-first.md scale); and re-testing HTTP parsing in src/tools/protocol-request.c (~10 ms CPU already isolated in issues/11-how-fast-and-large-is-a-mo-service.md, \"Added later\").\n\n5. LARGEST SLICE RISK AND GUARD\nRisk: toy-scale illusions where slices pass alone while hiding cross-slice breaks (O(N) rules in sketches/kept-versions/worlds.mo hitting MO_LIMIT_SERVICE_WORK at 1,000 inserts in issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md, duplicated rules in sketches/land-whole/main.mo, or snapshot log deletion in src/host/store.c breaking undo). Guard: carry one issues/12-what-real-data-goes-in-first.md schema across all slices, pre-write numeric thresholds and controls, and vet each Mo ask against issues/14-what-rule-keeps-the-database-from-bending-mo.md.\n\n6. CONFIDENCE IN FIRST SLICE\n82%. I would run Slice 4 first if the chosen issues/12-what-real-data-goes-in-first.md dataset (\"Candidate datasets\") immediately exceeds encoded_copy's ~125,000-row / 16 MiB MO_LIMIT_SAVED_BYTES ceiling (issues/11-how-fast-and-large-is-a-mo-service.md, \"Answer\"), or if uninspected learnability/ runs already prove cold-agent Mo query fluency.\n"
+   },
+   "questions": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that runs worlds and their landing as a running service?",
+     "criteria": {
+      "true": "One of the review's slices runs worlds, with their landing, as a service that agents call.",
+      "false": "No slice in the review runs worlds as a service that agents call."
+     }
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that checks a rule, or answers a narrowed read, over many rows without reading every row?",
+     "criteria": {
+      "true": "One of the review's slices keeps a total or an index up to date so that a check or a read does not go through every row.",
+      "false": "No slice in the review is about avoiding a pass over every row for a rule or a read."
+     }
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent writes a read program?",
+     "criteria": {
+      "true": "One of the review's slices has an agent write a program or function that reads the data.",
+      "false": "No slice in the review has an agent write a program to read the data."
+     }
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about saving only what a write changed?",
+     "criteria": {
+      "true": "One of the review's slices measures, models or builds saving only the changed part of the data on a write.",
+      "false": "No slice in the review is about saving only the changed part of the data."
+     }
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent proposes a change and a person approves it?",
+     "criteria": {
+      "true": "One of the review's slices has an agent propose a new call or a change that a person then approves.",
+      "false": "No slice in the review has a person approve something an agent proposed."
+     }
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which the data does not all sit in memory?",
+     "criteria": {
+      "true": "One of the review's slices keeps data that is larger than memory, or loads parts of it when they are needed.",
+      "false": "Every slice in the review keeps all of its data in memory."
+     }
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about dropping old versions of the data?",
+     "criteria": {
+      "true": "One of the review's slices drops versions nobody needs and frees what only they held.",
+      "false": "No slice in the review drops old versions or frees what they held."
+     }
+    },
+    "slice_history": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about reading the history of the data?",
+     "criteria": {
+      "true": "One of the review's slices has someone read back who changed something, or why, from a kept history.",
+      "false": "No slice in the review is about reading back the history of changes."
+     }
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice that tests whether an agent with no prior knowledge of the database can use it correctly?",
+     "criteria": {
+      "true": "One of the review's slices gives the database to an agent that has not seen it and checks what it does.",
+      "false": "No slice in the review tests an agent that has not seen the database before."
+     }
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice about what an agent is allowed to read or change?",
+     "criteria": {
+      "true": "One of the review's slices tests a grant or a view that narrows what an agent may read or change.",
+      "false": "No slice in the review is about limiting what an agent may read or change."
+     }
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that its first slice needs something Mo does not have today?",
+     "criteria": {
+      "true": "The review says its first slice cannot be built in Mo as it is.",
+      "false": "The review says its first slice can be built in Mo as it is, or names nothing Mo lacks for it."
+     }
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "instructions": "Does `review` say that at least one of its slices cannot be built without a change to Mo?",
+     "criteria": {
+      "true": "The review names a slice that Mo as it is cannot carry, so it is measured or modelled and not built.",
+      "false": "The review says every one of its slices can be built in Mo as it is."
+     }
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "instructions": "Does `review` state how the owner knows that enough slices have been run?",
+     "criteria": {
+      "true": "The review gives a rule for stopping the slices and writing the decision.",
+      "false": "The review gives no rule for when to stop running slices."
+     }
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "instructions": "Does `review` tie stopping to named open questions being answered?",
+     "criteria": {
+      "true": "The review's rule for stopping lists the questions that must have answers.",
+      "false": "The review's rule for stopping does not list questions, or the review has no such rule."
+     }
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that the slices never end in a decision?",
+     "criteria": {
+      "true": "The review warns that experiments could pile up without a decision being written.",
+      "false": "The review does not warn that the slices might never end in a decision."
+     }
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that a result from a small experiment does not hold for the real system?",
+     "criteria": {
+      "true": "The review warns that what a small sketch shows may not hold at real size or in the real system.",
+      "false": "The review does not warn that small experiments may mislead about the real system."
+     }
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "instructions": "Does `review` name as a risk that slices built apart do not fit together?",
+     "criteria": {
+      "true": "The review warns that separate slices may each work and still not make one design.",
+      "false": "The review does not warn that the slices may fail to fit together."
+     }
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "instructions": "Does `review` give being usable sooner as a reason for any choice?",
+     "criteria": {
+      "true": "The review prefers something because it would be usable or delivered sooner.",
+      "false": "The review does not use being usable sooner as a reason."
+     }
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "instructions": "Does any slice in `review` assume SQL or the relational model?",
+     "criteria": {
+      "true": "A slice in the review relies on SQL, or on tables related by keys and joined.",
+      "false": "No slice in the review relies on SQL or on the relational model."
+     }
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "instructions": "Does `review` argue for building one half of the database before the other?",
+     "criteria": {
+      "true": "The review argues that the part agents touch, or the storage, should be built first as a whole.",
+      "false": "The review keeps to vertical slices and does not argue for one half first."
+     }
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "instructions": "Does `review` ask for a slice to use real data in place of made-up rows?",
+     "criteria": {
+      "true": "The review asks that at least one slice runs on real data the owner has.",
+      "false": "The review does not ask for real data in any slice."
+     }
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` require a slice to measure a cost at more than one size of data?",
+     "criteria": {
+      "true": "The review asks for a time or a size to be measured at two or more sizes of data.",
+      "false": "The review does not ask for a cost to be measured at more than one size."
+     }
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about read programs whose answers are checked again at landing?",
+     "criteria": {
+      "true": "The review's first slice has an agent's questions answered by programs, and those answers are checked again when the world lands.",
+      "false": "The review's first slice does not check the answers of read programs again at landing."
+     }
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which a grant is withdrawn, or approved code is replaced, while a world is open?",
+     "criteria": {
+      "true": "One of the review's slices changes what an agent is allowed to do, or the approved code, while that agent's world is still open.",
+      "false": "No slice in the review changes a grant or the approved code while a world is open."
+     }
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "instructions": "Does the slate in `review` include a slice in which an agent loses a reply and tries again?",
+     "criteria": {
+      "true": "One of the review's slices has an agent retry after a lost reply or a crash and checks that the change is not made twice.",
+      "false": "No slice in the review is about a lost reply, a crash or a retry."
+     }
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "instructions": "Does `review` ask that the slices build on one shared sketch or scenario?",
+     "criteria": {
+      "true": "The review asks that each slice extends the same code or the same recorded scenario as the others.",
+      "false": "The review does not ask for the slices to share one sketch or scenario."
+     }
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo can already run a caller's own function over a service's exported state?",
+     "criteria": {
+      "true": "The review says Mo already has a way to run a function the caller wrote over an exported state.",
+      "false": "The review does not say that Mo can run a caller's function over an exported state."
+     }
+    },
+    "first_slice": {
+     "type": "choice",
+     "instructions": "Which slice does `review` run first?",
+     "criteria": {
+      "worlds_on_a_running_service": "Agents' worlds and their landing, run as a service that agents call.",
+      "rule_or_read_over_many_rows": "A rule check or a narrowed read over many rows that does not read every row.",
+      "read_program": "An agent writes a program or function that reads the data.",
+      "saving_only_what_changed": "A write that saves only what it changed, not the whole state.",
+      "data_larger_than_memory": "Data that is larger than memory, or is loaded when it is needed.",
+      "proposal_and_approval": "An agent proposes a change and a person approves it.",
+      "agent_learns_the_tools": "An agent that has not seen the database before tries to use it."
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "instructions": "Is the first slice in `review` about worlds on a running service, a rule or read over many rows, a read program, saving only what changed, data larger than memory, a proposal and its approval, or an agent that has not seen the database?",
+     "criteria": {
+      "true": "The review's first slice is about one of those seven things.",
+      "false": "The review's first slice is about something else."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "slice_worlds_on_service": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "slice_rule_without_reading_all": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "slice_read_program": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "slice_save_only_changes": {
+     "type": "noul",
+     "noul": 0.79
+    },
+    "slice_proposal_approval": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "slice_data_beyond_memory": {
+     "type": "noul",
+     "noul": 0.88
+    },
+    "slice_freeing_versions": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "slice_history": {
+     "type": "noul",
+     "noul": 0.67
+    },
+    "slice_agent_learns_tools": {
+     "type": "noul",
+     "noul": 0.64
+    },
+    "slice_grant_as_view": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "first_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.64
+    },
+    "some_slice_needs_mo_change": {
+     "type": "noul",
+     "noul": 0.97
+    },
+    "gives_stop_rule": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "stop_rule_names_questions": {
+     "type": "noul",
+     "noul": 0.94
+    },
+    "risk_never_decides": {
+     "type": "noul",
+     "noul": 0.08
+    },
+    "risk_small_scale_misleads": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "risk_slices_do_not_join": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "argues_from_speed": {
+     "type": "noul",
+     "noul": 0.2
+    },
+    "presupposes_sql": {
+     "type": "noul",
+     "noul": 0.1
+    },
+    "argues_for_a_half_first": {
+     "type": "noul",
+     "noul": 0.57
+    },
+    "uses_real_data": {
+     "type": "noul",
+     "noul": 0.79
+    },
+    "measures_cost_at_sizes": {
+     "type": "noul",
+     "noul": 0.74
+    },
+    "first_checks_programs_at_landing": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "slice_authority_withdrawn": {
+     "type": "noul",
+     "noul": 0.7
+    },
+    "slice_lost_reply_retry": {
+     "type": "noul",
+     "noul": 0.17
+    },
+    "slices_extend_one_sketch": {
+     "type": "noul",
+     "noul": 0.93
+    },
+    "says_mo_runs_callers_function": {
+     "type": "noul",
+     "noul": 0.13
+    },
+    "first_slice": {
+     "type": "choice",
+     "choice": "read_program",
+     "confidence": 0.88,
+     "probabilities": {
+      "worlds_on_a_running_service": 0.0,
+      "rule_or_read_over_many_rows": 0.01,
+      "read_program": 0.9,
+      "saving_only_what_changed": 0.0,
+      "data_larger_than_memory": 0.0,
+      "proposal_and_approval": 0.0,
+      "agent_learns_the_tools": 0.09
+     }
+    },
+    "first_slice_is_listed": {
+     "type": "noul",
+     "noul": 0.95
+    }
+   },
+   "usage": {
+    "input_tokens": 5036,
+    "output_tokens": 667
+   }
+  }
+ },
+ "citation-query-command": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Mo has a command that runs a function over an exported state of a service.",
+    "evidence": [
+     {
+      "file": "docs/reference/README.md",
+      "lines": "1534-1541",
+      "text": "reproduced and the revision succeeded. `mo query FILE FUNCTION` runs a\nfunction of the program over an exported state (`--export ARTIFACT`) or over a\nretained failure's inputs (`--failure ID` with `--data DIR` or `--export\nARTIFACT`). The function takes the state type of `FILE`'s service, then for a\nfailure `Time` and the handler's arguments in order, and its parameters and\nresult hold no capability or function. A query takes `mo run`'s limits and\n`--max-work`, the instructions it may run, by default 1,073,741,824. Each of\nthese commands refuses an input it cannot use before anything runs, naming"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 686,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-no-functions": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A service's state, its handlers' inputs and its handlers' results may hold neither capabilities nor functions.",
+    "evidence": [
+     {
+      "file": "docs/reference/README.md",
+      "lines": "1104-1108",
+      "text": "its state type, then requires that signature to contain no unresolved generic\nparameters. Generic helpers can be called through concrete wrappers. A service\nblock has no explicit generic-specialization syntax. The state, handler inputs\nand handler results must contain neither capabilities nor function values,\nincluding inside records, choices, tuples and collections."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 598,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-crash-between": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The crashes that the recovery check generates fall between steps and never inside a commit.",
+    "evidence": [
+     {
+      "file": "docs/reference/README.md",
+      "lines": "1387-1391",
+      "text": "or crashes the service and then restarts it. Tool arguments are generated from\nthe tool's parameter types, as a promise's inputs are, and often reuse values\nan earlier reply returned, keeping the values of one reply together, so a\nsequence can acknowledge the job it leased. Every sequence ends with a crash\nand a restart. Crashes fall between steps, never inside a commit."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.0,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.01,
+      "contradicts": 0.0,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 608,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-retry-unsafe": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The outcome of a commit can be unknown after a failed write, and duplicate requests are not removed.",
+    "evidence": [
+     {
+      "file": "docs/design/saved-state.md",
+      "lines": "88-94",
+      "text": "For each successful state-changing handler, the runtime encodes the message,\ncommits it, and takes a snapshot when due before publishing state or replying.\nRead-only successful replies and application `Error` replies write nothing. Failed handlers may write a separate diagnostic pair, including read-only failures; they never advance the recovery head or write the recovery log. A write failure stops the service with `MO_SERVICE_STORE`; it does\nnot increment D308's handler-failure counter. The commit outcome can be\nuncertain. Reopening recovers any committed message, so callers cannot assume\nthat retrying the same request is idempotent. Request deduplication is not\npart of this format."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 676,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-reads-unlogged": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A successful call that only reads writes nothing to the store.",
+    "evidence": [
+     {
+      "file": "docs/design/saved-state.md",
+      "lines": "88-90",
+      "text": "For each successful state-changing handler, the runtime encodes the message,\ncommits it, and takes a snapshot when due before publishing state or replying.\nRead-only successful replies and application `Error` replies write nothing. Failed handlers may write a separate diagnostic pair, including read-only failures; they never advance the recovery head or write the recovery log. A write failure stops the service with `MO_SERVICE_STORE`; it does"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 604,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-log-deleted": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Taking a snapshot deletes the log records that the snapshot covers.",
+    "evidence": [
+     {
+      "file": "docs/design/saved-state.md",
+      "lines": "81-86",
+      "text": "`SNAPSHOT` replaces the snapshot at the current head and deletes the covered\nlog in one transaction. `MO_LIMIT_SERVICE_SNAPSHOT_MESSAGES` is 100. Recovery\nallows a 100-message tail because a crash or write failure can occur between\nthat append and the corresponding snapshot commit. An open that recovers to a\ndue sequence whose snapshot is missing takes it then; an open whose snapshot\nalready covers the head writes nothing."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 616,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-body-limit": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The body of an MCP request is limited to 16 KiB.",
+    "evidence": [
+     {
+      "file": "src/base/limits.h",
+      "lines": "518-518",
+      "text": "#define MO_LIMIT_MCP_BODY_BYTES (16 << 10)"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.0,
+      "says_nothing": 0.01
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 539,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-one-token": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A service declares exactly one token.",
+    "evidence": [
+     {
+      "file": "docs/design/services.md",
+      "lines": "132-133",
+      "text": "The clauses have a strict order (D312): exactly one `state`, exactly one `tools`\nnaming at least one function, zero or more `every` clauses, and exactly one `token` last."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.94,
+     "probabilities": {
+      "supports": 0.96,
+      "contradicts": 0.02,
+      "says_nothing": 0.02
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 559,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-nearest-thing": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The design notes call the upgrade path the nearest thing Mo has to accepting a program while the database runs.",
+    "evidence": [
+     {
+      "file": "design-ideas.md",
+      "lines": "69-69",
+      "text": "- **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds (the upgrade path is the nearest thing Mo has); a snapshot to run it on."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.89,
+     "probabilities": {
+      "supports": 0.93,
+      "contradicts": 0.05,
+      "says_nothing": 0.02
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.94,
+     "probabilities": {
+      "says_nothing": 0.01,
+      "contradicts": 0.03,
+      "supports": 0.96
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 572,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-not-a-service": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The worlds in the sketch ran as functions under a test command and not as a running service.",
+    "evidence": [
+     {
+      "file": "issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md",
+      "lines": "131-138",
+      "text": "### Not shown\n\n- Freeing the nodes of a version nobody keeps. Mo does not do it, and the sketch has no function for it. A long-lived tree grows until that exists.\n- Removing a row.\n- The worlds running as a service. They ran as functions under `mo test`.\n- The largest tree by number a service will hold.\n- A quiet machine throughout. The load was 2.1 falling to 1.5 while the services were measured, 1.0 to 1.4 for the inserts and lookups, and 0.6 to 1.0 for `in-place.mo`.\n- The rule in the workload sums every row after every call, which costs in proportion to the rows. A real rule over many rows needs a total that is kept up to date."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 709,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-needs-callers": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The design notes list telling callers apart, and grants made from grants, among what is needed.",
+    "evidence": [
+     {
+      "file": "design-ideas.md",
+      "lines": "324-326",
+      "text": "**Mo today.** One caller for each service, with one token. One call at a time. Calls are logged and repeat exactly. Simulation controls time, randomness and the order of events.\n\n**Needs.** Telling callers apart. Grants for each caller, and grants made from grants. Worlds, which need the tree from the storage section. A record of what each world read. Running reads alongside the one writer."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 612,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-no-file-sync": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Mo's files lack byte writes, seek and sync.",
+    "evidence": [
+     {
+      "file": "map.md",
+      "lines": "50-50",
+      "text": "- Lacks byte writes, seek and sync on files; any connection other than `mo serve`; an HTTP client and TLS; parallel execution. Speed is unmeasured."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.0,
+      "supports": 1.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 550,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-finer-rule": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The design notes say the finer rule is chosen once needless send-backs have been counted.",
+    "evidence": [
+     {
+      "file": "design-ideas.md",
+      "lines": "554-554",
+      "text": "**Decided by the owner on 2026-11-14: start simple and measure.** Every question counts, answers are compared, and the database counts needless send-backs. The finer rule is chosen when there is a number. The first model and the research both named this as the first problem of many agents. Landing whole worlds makes it sharper: a world with more calls has asked more questions, so more can change under it."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.79,
+     "probabilities": {
+      "supports": 0.86,
+      "contradicts": 0.09,
+      "says_nothing": 0.05
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.77,
+     "probabilities": {
+      "says_nothing": 0.06,
+      "contradicts": 0.09,
+      "supports": 0.85
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 619,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-rule-twice": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The earlier sketch states its rule twice, once as a promise and once as a function.",
+    "evidence": [
+     {
+      "file": "sketches/land-whole/main.mo",
+      "lines": "25-29",
+      "text": "  token from env \"LAND_TOKEN\"\n\n  promise \"the total never changes\"\n    after.a + after.b == before.a + before.b\n    allows before: start, after: moved, now: t0"
+     },
+     {
+      "file": "sketches/land-whole/main.mo",
+      "lines": "54-58",
+      "text": "fn rule?(before: Accounts, after: Accounts) : Bool\n  after.a + after.b == before.a + before.b\nend\n\n## Lands every call in the list, or none of them."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "supports": 0.99,
+      "contradicts": 0.01,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 651,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-ceiling-cause": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "The 16 MiB limit on saved state is what stops a service at about 125,000 rows.",
+    "evidence": [
+     {
+      "file": "issues/11-how-fast-and-large-is-a-mo-service.md",
+      "lines": "46-48",
+      "text": "- At 100,000 rows the service reported 7,588,082 bytes of encoded state, 19.2 MB of heap in use and a peak of 51.3 MB. The limit for one call is 58,718,816 bytes: 64 MiB less the 8 MiB stack and less 1,440 bytes for the process record (`mo_process_new` in `src/vm/process.c`).\n- At 125,000 rows it reported 9,488,082 bytes encoded (9.05 MiB) and a peak of 58,455,547 bytes. A write still worked. Adding 5,000 rows was refused three times with `memory_limit`: \"the call ran out of memory; service state is unchanged\".\n- For small rows, then, the ceiling is the memory one call may use, reached at about 9 MiB of saved state. The 16 MiB limit on saved state is not what stops it. Each added row cost 76 bytes saved, 128 bytes of heap at rest and 287 bytes of heap at the peak of a write."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 0.0,
+      "contradicts": 1.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 1.0,
+      "supports": 0.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 812,
+    "output_tokens": 91
+   }
+  }
+ },
+ "citation-test-only": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A promise is checked by the test command and cannot be called when a write lands.",
+    "evidence": [
+     {
+      "file": "sketches/README.md",
+      "lines": "17-17",
+      "text": "What it does not show: forks, recorded reads, or a replay on a main line that has moved. The rule is written twice, as the promise and as the function `rule?`, because a promise is checked by `mo test` and cannot be called when a write lands."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 1.0,
+      "contradicts": 0.0,
+      "says_nothing": 0.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.98,
+     "probabilities": {
+      "says_nothing": 0.0,
+      "contradicts": 0.01,
+      "supports": 0.99
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 583,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-auth-and-plan": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Most of the time spent reading a request goes to the functions that authenticate it and plan it.",
+    "evidence": [
+     {
+      "file": "issues/11-how-fast-and-large-is-a-mo-service.md",
+      "lines": "114-120",
+      "text": "*The fixed 10 ms of every call is the layer that reads the HTTP request.*\n\n- Reads ran at the usual pace, 60 ms apart: 1,225 calls, none refused, 300 samples, 43 of them busy.\n- 42 of the 43 were inside the VM (`mo_vm_execute`). 88% were under `mo_protocol_read`, which reads the request, and 9% under `mo_protocol_complete`.\n- Handling the head of the request (`head_complete`) was in 72%: `authenticate` in 47% and `plan`, which decides what the request is, in 26%.\n- What `authenticate` spends that time on is turning the request's headers into a Mo list of bytes and parsing them in Mo. The token itself is checked in C (`MO_LISTENER_AUTH`). `plan` then converts the headers a second time. A reviewer found both on 2026-11-14 (`src/tools/protocol-request.c`).\n- That layer is Mo bytecode that the VM runs under a work budget. `authenticate` calls `mo_protocol_invoke(s, c, PF_INSPECT, args, &value)` (`src/tools/protocol-request.c`)."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.67,
+     "probabilities": {
+      "supports": 0.78,
+      "contradicts": 0.2,
+      "says_nothing": 0.02
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.61,
+     "probabilities": {
+      "says_nothing": 0.03,
+      "contradicts": 0.23,
+      "supports": 0.74
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 805,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-synced-write": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A synced write to SQLite by itself takes about 3 ms.",
+    "evidence": [
+     {
+      "file": "issues/11-how-fast-and-large-is-a-mo-service.md",
+      "lines": "97-97",
+      "text": "- A synced write takes about 3 ms and a read a few thousandths of a millisecond, from one row to ten million."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.88,
+     "probabilities": {
+      "supports": 0.92,
+      "contradicts": 0.01,
+      "says_nothing": 0.07
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "supports",
+     "confidence": 0.91,
+     "probabilities": {
+      "says_nothing": 0.06,
+      "contradicts": 0.0,
+      "supports": 0.94
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 558,
+    "output_tokens": 87
+   }
+  }
+ },
+ "citation-control-1": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "A call to a service may run 1,073,741,824 instructions.",
+    "evidence": [
+     {
+      "file": "src/base/limits.h",
+      "lines": "333-333",
+      "text": "#define MO_LIMIT_SERVICE_WORK (1 << 20)"
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 0.04,
+     "probabilities": {
+      "supports": 0.31,
+      "contradicts": 0.36,
+      "says_nothing": 0.33
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "contradicts",
+     "confidence": 0.14,
+     "probabilities": {
+      "says_nothing": 0.31,
+      "contradicts": 0.43,
+      "supports": 0.26
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 544,
+    "output_tokens": 91
+   }
+  }
+ },
+ "citation-control-2": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "claim": "Taking a snapshot deletes the log records that the snapshot covers.",
+    "evidence": [
+     {
+      "file": "docs/design/services.md",
+      "lines": "132-133",
+      "text": "The clauses have a strict order (D312): exactly one `state`, exactly one `tools`\nnaming at least one function, zero or more `every` clauses, and exactly one `token` last."
+     }
+    ]
+   },
+   "questions": {
+    "forward": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "supports": "The evidence shows that the claim is true.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "says_nothing": "The evidence does not show whether the claim is true or false."
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "instructions": "How does `evidence` relate to `claim`?",
+     "criteria": {
+      "says_nothing": "The evidence does not show whether the claim is true or false.",
+      "contradicts": "The evidence shows that the claim is false.",
+      "supports": "The evidence shows that the claim is true."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "forward": {
+     "type": "choice",
+     "choice": "says_nothing",
+     "confidence": 1.0,
+     "probabilities": {
+      "supports": 0.0,
+      "contradicts": 0.0,
+      "says_nothing": 1.0
+     }
+    },
+    "reversed": {
+     "type": "choice",
+     "choice": "says_nothing",
+     "confidence": 1.0,
+     "probabilities": {
+      "says_nothing": 1.0,
+      "contradicts": 0.0,
+      "supports": 0.0
+     }
+    }
+   },
+   "usage": {
+    "input_tokens": 564,
+    "output_tokens": 95
+   }
+  }
+ }
+}
