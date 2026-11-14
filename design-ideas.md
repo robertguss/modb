@@ -282,7 +282,7 @@ Explored on 2026-11-14 at Robert's request, after the storage underneath. Nothin
 Replaying is not new. [Bayou](wiki/systems/bayou.md) did it in 1995 and [Zero](wiki/systems/zero.md) does it today. What the other ideas in this file add to it:
 
 - **Each call checks itself again.** A write function already refuses when its conditions do not hold. Replayed on the newer state, it reads the newer state. When two agents approve the same form, the second replay is refused with a typed reason the agent can act on. Bayou needed a hand-written check on every write; here the function is the check.
-- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second.
+- **The promises are the rule over the merged result.** They are checked after every replayed call, so two changes that are each fine alone and wrong together stop at the second. Open since 2026-11-14: for a world with more than one call this cannot be right as stated, because a transfer written as two calls breaks "the total stays the same" in between ([predictions](models/replay-predictions.md)).
 - **The database already knows what the agent read.** Every question the agent asked was a read program the database ran, so the world's record holds each program and its answer. At replay the database runs them again. A different answer means the agent decided on something that is no longer true. [Writes that carry their assumptions](wiki/ideas/writes-that-carry-their-assumptions.md) found that agents rarely state what they assumed. Here they do not have to.
 - **Giving up is free.** Dropping a world is dropping a root.
 - **Two worlds reconcile the same way.** Replaying one world's calls onto another world is the same step. The main line is only the world everyone agrees is real, and its log is the final order.
@@ -298,7 +298,7 @@ A replay ends one of three ways. It lands. It is refused, by its own function or
 - Every call in the log names the whole chain: the person who approved the function, the agent, the helper.
 - Taking back an agent's grant ends every grant made from it.
 
-**Take one agent's work back out.** The log holds every call with its caller. To remove what one agent did, because injected text misled it or because it was wrong, replay the log from before its first call and leave its calls out. The later calls that are now refused, or whose recorded answers now differ, are the ones that depended on the removed work. This is an answer to the open question under idea 4. It cannot recall anything that already left through a release function.
+**Take one agent's work back out.** The log holds every call with its caller. To remove what one agent did, because injected text misled it or because it was wrong, replay the log from before its first call and leave its calls out. The later calls that are now refused, or whose recorded answers now differ, are the ones that depended on the removed work. This is an answer to the open question under idea 4. It cannot recall anything that already left through a release function. Research on 2026-11-14 warns that this is not a plain replay in practice: the systems that do it re-run only what was affected, still paid 24% to 127% more running time and gigabytes of log a day, and sometimes need a person ([findings](research/30-earlier-work-on-merging-by-replay.md)).
 
 **Agents see each other through data.**
 
@@ -313,7 +313,7 @@ A replay ends one of three ways. It lands. It is refused, by its own function or
 
 **What would be checked, and with what.** The replay rule is a protocol, so a TLA+ model. "A helper's grant never shows more than the grant it was made from" is a claim about the language, so Lean. Many agents in random orders, checked against the promises, is simulation, and it could be offered to users for their own data ([simulating the user's own workload](wiki/ideas/simulating-the-users-own-workload.md)).
 
-**Earlier work.** In the survey: [Bayou](wiki/systems/bayou.md) and [Zero](wiki/systems/zero.md) replay named writes against an authority that orders them; [Datomic](wiki/systems/datomic.md) and [XTDB](wiki/systems/xtdb.md) send a check with the write; [Chronos](wiki/systems/chronos.md) merges across several stores at once; a Berkeley paper reports that at [Neon](wiki/systems/neon.md) agents made 20 times more branches than people and rolled back 50 times more often; Biscuit tokens narrow a grant without asking its issuer ([narrowed grants](wiki/ideas/attenuated-capabilities.md)). From Claude's own knowledge and not in the survey: Macaroons (2014) narrow a credential the same way; Retro (2010) repaired a system after a break-in by re-running everything except the attacker's actions.
+**Earlier work.** In the survey: [Bayou](wiki/systems/bayou.md) and [Zero](wiki/systems/zero.md) replay named writes against an authority that orders them; [Datomic](wiki/systems/datomic.md) and [XTDB](wiki/systems/xtdb.md) send a check with the write; [Chronos](wiki/systems/chronos.md) merges across several stores at once; a Berkeley paper reports that at [Neon](wiki/systems/neon.md) agents made 20 times more branches than people and rolled back 50 times more often; Biscuit tokens narrow a grant without asking its issuer ([narrowed grants](wiki/ideas/attenuated-capabilities.md)). Checked on 2026-11-14 by research: Macaroons (NDSS 2014) let a holder narrow a credential, but checking one needs the issuer's secret key, which Biscuit does not ([findings](research/32-earlier-work-on-grants-as-views-and-requests-as-programs.md)); Retro (OSDI 2010) repaired a system after a break-in by undoing the attacker's actions and re-running only the legitimate actions they had affected ([findings](research/30-earlier-work-on-merging-by-replay.md)). An earlier version of this line described both wrongly from memory.
 
 **Costs and limits.**
 
@@ -356,7 +356,7 @@ Raised by Robert on 2026-11-14. Not decided.
 - An agent with no memory does better with one documented way than with a choice of libraries. `mo guide` already ships in the binary.
 - One compiler sees the whole program. The joins a framework holds together by convention can be checked: a change to a type that breaks a question, a view or an upgrade is an error before anything runs. Mo already does this for upgrades.
 
-**Earlier work.** In the survey: [Mnesia](wiki/systems/mnesia.md), a database shipped with Erlang; [GemStone](wiki/systems/gemstone.md); [Prevayler](wiki/systems/prevayler.md); [Convex](wiki/systems/convex.md); [SpacetimeDB](wiki/systems/spacetimedb.md); [Cloudflare Durable Objects](wiki/systems/cloudflare-durable-objects.md); the family page [code inside the database](wiki/families/code-inside-the-database.md). [Code inside the database, and databases inside a language](issues/07-code-inside-the-database.md) found that stored procedures failed on version control, testing and deployment, not on code sitting next to data. From Claude's own knowledge and not in the survey: MUMPS (1966), a language with a database built in that still runs large hospital systems; the business languages of the 1980s and 1990s such as dBase and FoxPro; Smalltalk; Meteor; Dark; Unison.
+**Earlier work.** In the survey: [Mnesia](wiki/systems/mnesia.md), a database shipped with Erlang; [GemStone](wiki/systems/gemstone.md); [Prevayler](wiki/systems/prevayler.md); [Convex](wiki/systems/convex.md); [SpacetimeDB](wiki/systems/spacetimedb.md); [Cloudflare Durable Objects](wiki/systems/cloudflare-durable-objects.md); the family page [code inside the database](wiki/families/code-inside-the-database.md). [Code inside the database, and databases inside a language](issues/07-code-inside-the-database.md) found that stored procedures failed on version control, testing and deployment, not on code sitting next to data. Checked on 2026-11-14 by research ([findings](research/32-earlier-work-on-grants-as-views-and-requests-as-programs.md)): MUMPS (1967; work began in 1966), a language with a database built in that still runs large hospital systems; Dark, a language with storage built in whose code and data could not leave its hosted service, and whose company ran out of money. An earlier version of this line also named Meteor and Unison from memory; Meteor's storage is MongoDB, an outside database, and Unison's storage comes with Unison Cloud, not the language. Not checked: the business languages of the 1980s and 1990s such as dBase and FoxPro; Smalltalk.
 
 **Costs.**
 
@@ -450,6 +450,58 @@ The made-up lines say: who may call and what each caller holds; what each caller
 - What a component is exactly, and how components are shared.
 - What belongs in the language, what in the batteries and what in a component.
 
+## What the first model and the research found
+
+On 2026-11-14 Robert agreed to start with a TLA+ model of the replay rule. He asked for subagents to try the tools Claude had only read about and to search more widely for papers and tools. Seven research tickets and one model followed. The findings files are sources and are not yet compiled into the wiki ([ticket](issues/34-compile-the-checking-and-earlier-work-research-into-the-wiki.md)). Except where a line says Claude checked it, what follows is as the researchers reported it.
+
+**The replay model** ([results](models/README.md)). The predictions were committed before the model, and all 48 settings came out as predicted.
+
+- The recorded reads alone caught all five mistakes. The function's own check and the promises caught three, the ones that break a declared rule.
+- A call that says what it means, such as "add 2", needs no check, and the recorded reads send it back for nothing.
+- The model is tiny and leaves out worlds with more than one call.
+
+**Many agents** ([findings](research/30-earlier-work-on-merging-by-replay.md)).
+
+- The replay rule is not new. It is known parts in a combination nobody was found shipping. The least precedented part is capturing an agent's reads automatically.
+- **Recorded reads are complete and imprecise. Declared rules are precise and incomplete.** A 2026 preprint measured it for agents: guards that block when what was read has changed "needlessly block 92–95% of benign races", a guard that checks a declared rule "blocks none", and deleting one declared clause lets exactly its kind of error through (https://arxiv.org/abs/2609.29522; small local models, one preprint, not reviewed; Claude checked the quotes against its abstract). The model above shows the same two halves. This makes "which reads count as relied on" the first problem of many agents.
+- Landing first come, first served starves slow agents. The oldest answer is to fall back to a claim after repeated failure.
+- Taking an agent's work out is not a plain replay (see the note under that idea above).
+
+**Storage** ([findings](research/31-earlier-work-on-write-once-trees-and-views-kept-current.md)).
+
+- The shape is proven at the scale of a terabyte by Dolt.
+- Garbage grows fast, and every kept version holds it in place. One Datomic user reached over 900 GB on disk for about 40 GB of live data. Dolt reports about 500 GB of garbage a week on a 650 GB database (vendor's own figure).
+- History named by hashes pulls against erasing one person's data.
+- Views written as arbitrary code cannot be kept current cheaply. Maps, filters, joins and reduces that can be undone can.
+- To copy: Dolt's tree, written once for each batch of changes, and CouchDB's contract for views.
+
+**Requests as programs and grants as views** ([findings](research/32-earlier-work-on-grants-as-views-and-requests-as-programs.md)).
+
+- "The request is a program" is an old idea in a new combination. Earlier attempts lost because their data was closed to other tools, unplanned questions were slow, money or programmers ran out, and running foreign code safely was hard. None lost because a program is a worse request than a query.
+- A grant as a view function is sound at its core; SpacetimeDB ships read permissions as view functions. It leaks through errors, timing and the order of evaluation inside the view; through allowed totals that combine into facts about one person; and through termination and work limits.
+- An earlier system proved a guarantee "for any and all uses" of callers' programs (PINQ, 2009), and it was broken through timing and shared state. The Lean theorem should say that equal views give the same reply, the same error and the same amount of work.
+
+**How to check all this** ([findings](research/29-how-have-storage-engines-and-databases-been-checked.md)).
+
+- Small models written in the code's own language and checked against the code with generated calls give the most for each line. Amazon's later paper reports models under 2% of a 259,000-line system, with three layers of tests finding 20, 46 and 10 bugs the layer before had missed.
+- Mo's recovery check restarts a service "on an in-memory store" (Mo's reference, section 12.5; Claude checked the wording). It does not test a disk that loses or tears writes.
+- A database that writes down its own order can check its history by replaying it.
+- The researcher's plan disagrees with step 3 of the order above: check the real code under simulated crashes, and skip a TLA+ model of the order of writes to disk.
+
+**Tools** (findings: [Veil](research/26-is-veil-a-good-home-for-the-protocol-models.md), [Bend2](research/27-what-is-bend2-and-what-would-proved-laws-mean-for-promises.md), [the others](research/28-which-other-specification-languages-fit.md)).
+
+- **Veil: later.** It built, checked the small protocol, and in about fifteen minutes proved it for any number of agents, which TLC cannot do. It needs Lean 4.35 and Mo pins 4.34 (Claude checked both files). It is young.
+- **Bend2: not for checking this design.** Tests and proofs caught different errors: Mo's tests found a counterexample the researcher had missed, and passed a wrong function that the proof refused. The idea to borrow for promises is a law a person writes and freezes, with a proof an agent writes.
+- **Alloy 6: add it for rules about grants.** A 31-line model found a narrowing error in one second.
+- Quint, P and the rest add nothing here beside TLA+.
+
+**What Claude would change in the order proposed above.** Robert has not accepted this.
+
+1. Next, a model of worlds with more than one call, to settle what lands whole and when promises are checked.
+2. Treat the precision of recorded reads as the first design question for many agents.
+3. Put off the TLA+ model of disk writes until the storage design is firmer.
+4. Use Alloy when grants are designed.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -468,6 +520,8 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **Code stored by hash.**
 - **Storage laid out by type,** and a key for each sensitive field.
 - **Many agents:** the replay rule, which reads count as relied on, fairness, taking one agent's work out.
+- **Worlds with more than one call:** what lands whole, and when promises are checked.
+- **Clearing old versions,** given how fast garbage grows.
 - **One write at a time** in place of one operation at a time. This changes a settled rule.
 - **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.
 - **Batteries:** which, in what order, and what keeps the list short.
