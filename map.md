@@ -44,7 +44,9 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 **Decided on 2026-11-14: vertical slices.** After the sketch reported, Robert chose them: "Yes to vertical slices." Neither half is built first. Which slices, and in what order, is [Which vertical slices, in what order, and what must each show?](issues/38-which-vertical-slices-in-what-order.md), which holds Claude's proposal of five.
 
-**Decided on 2026-11-14: the council and Jev before the slices are chosen.** Robert asked for both. Three reviewers read the repository as it stood before Claude's proposal. All three chose the same first slice, which was not Claude's: an agent's real questions, asked again when its world lands. Their slates, what was checked, and Claude's revised proposal are on the same ticket. No slice is chosen yet.
+**Decided on 2026-11-14: the council and Jev before the slices are chosen.** Robert asked for both. Three reviewers read the repository as it stood before Claude's proposal. All three chose the same first slice, which was not Claude's: an agent's real questions, asked again when its world lands. Their slates, what was checked, and Claude's revised proposal are on the same ticket.
+
+**Decided on 2026-11-14: the first slice.** Robert chose it: asked whether the first slice should be "questions asked again at landing", on made-up rows, he answered "Yes". It is [Can a landing ask an agent's questions again inside one call?](issues/39-can-a-landing-ask-an-agents-questions-again.md). The other slices and their order are not decided; that ticket waits for this slice's result.
 
 **Raised on 2026-11-14, not decided: Mo with batteries included.** Robert asked whether Mo could be a framework as well as a language, with the database and storage as parts that ship with it. He thinks it "has serious legs" and is not yet sure. It would change the destination from a database beside Mo to Mo's first battery. He is not dogmatic about what is written in Mo. The idea, a picture of it and a list of deep dives owed are in [design-ideas.md](design-ideas.md). He deferred the framework the same day and returned the work to the database.
 

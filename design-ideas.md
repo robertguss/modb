@@ -714,6 +714,8 @@ What follows for the order: worlds, history and kept versions do not wait for th
 - **Guards:** one sketch through every slice; a list of stand-ins at the end of each; the decision cites only results whose stand-ins it names.
 - **The stop rule:** the decision is written when each of the map's five items rests on a slice's result, or after five slices, whichever comes first.
 
+**Decided by Robert on 2026-11-14: the first slice.** Asked whether the first slice should be "questions asked again at landing", on made-up rows, he answered "Yes". It is the ticket [Can a landing ask an agent's questions again inside one call?](issues/39-can-a-landing-ask-an-agents-questions-again.md). His answer covers the first slice only: slices 2 to 5, their order, the guards and the stop rule are still Claude's proposal, and are looked at again when the first slice reports.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -744,8 +746,8 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
-- **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal.
-- **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call.
+- **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal. Robert chose the first slice on 2026-11-14; the rest waits for its result.
+- **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call. The first slice, [a ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md) since 2026-11-14.
 - **Authority that changes while a world is open:** a grant withdrawn, or approved code replaced, between a world's opening and its landing. Raised by all three reviewers on 2026-11-14.
 - **A lost reply and a second try,** which must not land twice. Mo does not remove duplicate requests.
 - **An agent that has never seen the database,** as the test of whether read programs can be written without help.

@@ -2,6 +2,7 @@
 
 Type: grilling
 Status: open
+Blocked by: [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md)
 
 ## Question
 
@@ -104,3 +105,7 @@ Missing from Claude's list: authority that changes while a world is open (all th
 - **Real data starts at slice 2,** as Opus has it. Slice 1 asks what a rule costs, which made-up rows answer, and it should not wait for a choice of data. Sol and Gemini would put real data in slice 1.
 - **Guards taken from the council.** One sketch is carried through every slice, starting from `sketches/kept-versions`. Each slice ends with its list of stand-ins and what would replace each. The decision cites only results whose stand-ins it names.
 - **The stop rule, replacing Claude's.** The decision is written when each of the five items of the map's destination rests on at least one slice's result, or after five slices, whichever comes first. Whatever is still open is listed in it.
+
+**Decided by Robert on 2026-11-14: the first slice.** Asked "Shall the first slice be 'questions asked again at landing', on made-up rows?", he answered "Yes". It is [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md), opened the same day with its predictions written before any code.
+
+His answer covers the first slice only. The other four slices, their order, the guards and the stop rule are still Claude's proposal. This ticket waits for the first slice's result, which all three reviewers said reshapes the rest.
