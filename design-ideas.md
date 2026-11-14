@@ -194,6 +194,35 @@ The same method has been used for an authorization language: Cedar's authors "fo
 
 The limits: a proof is about the model, and the implementation is compared with the model, not proved. No tool shows that the rules themselves are the right ones.
 
+### Which instrument comes first
+
+Robert proposed on 2026-11-14 to write small Lean and TLA+ models, "like we did for pieces of Mo", invited pushback, and said to keep performance in mind with optimisation later. What follows is Claude's proposal. Robert has not accepted it.
+
+**What each has cost in Mo.** Checked on 2026-11-14: the three TLA+ models are 257 lines together, and each has configurations that are meant to fail. The Lean model is 12,049 lines.
+
+| Instrument | Good for | Not good for | Use here |
+| --- | --- | --- | --- |
+| TLA+ | A protocol whose steps interleave or crash | Whether the design can be written in Mo; what it costs | First: the replay rule, then the order of writes to disk |
+| A throwaway sketch in Mo, with generated tests | Whether Mo can express the design; cost counted in steps; finding Mo's gaps | Orders of events the tests never generate | Second: the same rule, in memory |
+| Lean | Claims about the language that hold for every program | Protocols and data structures, where tests find the same errors for far less | Write the statements early; prove them once the feature is in the reference |
+| Measurement | Base numbers | Errors in the design | Once, early |
+
+**Order proposed.**
+
+1. A TLA+ model of the replay rule from [Many agents working together](#many-agents-working-together). Predictions are written first. The cases are the three the survey says merges get wrong (two agents book the last seat; a meeting that ends before it starts; a discount worked out from prices that have since changed), two agents changing the same value, and two changes that are each allowed and together break a rule. The model shows which mechanism catches each case: the function's own check, the promises, or the recorded reads. A configuration with recorded reads switched off must fail.
+2. A throwaway sketch of the same rule in today's Mo, in memory: a state, a write function, a promise, a world and replay, with the same cases as tests. Every place where Mo gets in the way goes on a list. Steps are counted.
+3. A TLA+ model of the order of writes to disk from [Storage underneath](#storage-underneath), with a crash at every step.
+4. Lean statements, without proofs, for "a read program cannot change data" and "a helper's grant never shows more than the grant it was made from".
+
+**Performance, kept in mind.** Some costs come from the shape and cannot be optimised away later: one writer on the main line; each change rewrites and hashes a path of nodes; each merge runs the agent's reads again; a read hops from node to node. Each model and sketch counts these. [How fast and large is a Mo service?](issues/11-how-fast-and-large-is-a-mo-service.md) would give the base numbers and has not been run.
+
+**Other tools looked at on 2026-11-14.**
+
+- **Bend2** (https://bend2.dev/notes/what-is-bend2/). A typed functional language in which a program states laws and proves them in the same language, and "the compiler checks every proof before execution". A third-party status report dates its launch to 2026-09-17 (https://deliberus.com/docs/research/bend-and-deliberus/bend-hvm-status-report-2026-09-29.md). It does not model steps that interleave, so it is not an instrument for the protocols here, and using it would mean writing the database's pieces again in a language two months old. Its interest is as a relative of Mo's promises: a law is a promise that is proved, not tested.
+- **Veil** (https://veil.dev/). "A foundational framework for specifying, model checking, and proving safety and liveness properties of state transition systems, built using Lean." It could put protocol models in the toolchain Mo already uses. Not tried, and whether it works with Mo's pinned Lean version is unknown.
+- **Small executable models checked with generated tests.** Amazon checked a storage node of S3 this way: the models were "1% of the implementation code", the checks "prevented 16 issues from reaching production", and the authors "accept weaker correctness guarantees than full formal verification" (https://www.amazon.science/publications/using-lightweight-formal-methods-to-validate-a-key-value-storage-node-in-amazon-s3). This is the second instrument above.
+- From Claude's own knowledge and not looked up: Quint (TLA+'s logic in a syntax closer to code), P (protocols as state machines), Alloy (rules about shapes of data, such as whether one grant is narrower than another), and Elle with [Jepsen](wiki/systems/jepsen.md) (checking the history of a running system), which needs something running.
+
 ## Storage underneath
 
 Explored on 2026-11-14 at Robert's request, before "many agents". Nothing here is decided.
@@ -346,6 +375,8 @@ Raised by Robert on 2026-11-14. Not decided.
 
 Asked by Robert on 2026-11-14. He thinks the idea "has serious legs" and is not yet sure of it. Nothing here is decided.
 
+**Deferred by Robert the same day.** He was thinking out loud and is not proposing a web framework now. When the time comes, the framework should be kept out of the application's way, and it should learn from frameworks that are proven, since what most web applications need is well known. The work goes back to the database battery.
+
 **Three rings.**
 
 1. **The language.** Values, types, functions, capabilities, promises, services. Mo has this.
@@ -445,6 +476,8 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **Reaching the outside:** a web client, the encryption library, calling a model, outgoing effects that happen once.
 - **Work that takes days.**
 - **Whether the database is a separate product or Mo's first battery.**
+- **Promises that are proved, not only tested,** as Bend2's laws are.
+- **The framework and its batteries,** deferred by Robert on 2026-11-14.
 - **The first real program** that pulls all of this.
 - Parked on tickets: [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md) and [Earlier work on purpose and approval](issues/25-earlier-work-on-purpose-and-approval.md).
 
