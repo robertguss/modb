@@ -66,7 +66,7 @@ What a service lacks to be a database:
 An agent sends a small Mo program instead of a query. The database checks its types against the data's, checks what it may touch, limits its work, runs it on a snapshot, and logs the program itself. A past question can then be re-run against the data as it was.
 
 - **Mo today:** the compiler and checker, the work limit, and bytecode that is verified when loaded.
-- **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds; a snapshot to run it on.
+- **Needs:** a way to accept, check and run a program that arrives while the database is running, holding only what its caller holds (the upgrade path is the nearest thing Mo has); a snapshot to run it on.
 - **Earlier work and risk:** the wiki records [stored procedures and triggers](wiki/ideas/stored-procedures-and-triggers.md) as a trap for agents. Nearer relatives are [deterministic functions as transactions](wiki/ideas/deterministic-functions-inside-transactions.md), [Convex](wiki/systems/convex.md) and [SpacetimeDB](wiki/systems/spacetimedb.md). A program arriving from an agent has to be compiled, and Mo's compiler child runs with the server's own access today ([How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md)).
 - **Open:** do agents write a correct small program as reliably as a query? Nobody has measured it; the experiments under `learnability/` in Mo measure how well agents write Mo and could measure this. What stops a program that walks everything?
 - **Standing:** chosen by Robert on 2026-11-14 as the first idea to explore. He added that it could help with FERPA, HIPAA and other compliance rules, and asked whether it needs Lean, TLA+ or another formal method.
@@ -83,7 +83,18 @@ An agent sends a small Mo program instead of a query. The database checks its ty
 
 **Where it stops.** Once a reply has left, the database cannot follow it. A count over a small group can still identify someone ([how hidden data is recovered](wiki/ideas/re-identification-by-linking.md), [k-anonymity](wiki/ideas/k-anonymity.md), [differential privacy](wiki/ideas/differential-privacy.md)).
 
-**Open fork.** May a request program change data, or only read it? Claude's lean: reads are free-form programs; writes go only through functions a person approved, so the accountable write stays strict.
+**Decided by Robert on 2026-11-14: a request program only reads.** Questions are free-form programs. Data changes only through functions a person approved, so the accountable write stays strict, and a program that cannot change anything is far easier to prove things about.
+
+**A grant can be a view function.** What a caller may see is itself a Mo function a person approved, from the full data to a narrower type. The agent's program takes that narrower type as its input, and the database runs the program on the view's result. Nothing new is needed in the type system: the narrower type is an ordinary type, and a program that mentions a field the view left out does not compile. The cost is computing the view for each request, which matters once the data is large.
+
+**The shape this gives the whole database.** Four kinds of Mo function, each approved by a person, plus free-form programs that only read:
+
+- types and promises say what the data is and what must stay true (idea 2);
+- view functions say what a caller may read;
+- write functions say how the data may change, and each call is an accountable write;
+- release functions say what may leave (idea 9).
+
+**Mo is closer to this than it looks.** Mo's upgrade path already takes source sent to a running service, compiles it in a child process, verifies the result and loads it (`src/host/compile.c` in `~/code/mo`). Accepting a read program is a cousin of that.
 
 ### 2. Promises as the schema
 
