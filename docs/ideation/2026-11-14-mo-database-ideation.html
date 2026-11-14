@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideation: a database for Mo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: var(--foreground, CanvasText);
+    --quiet: var(--muted-foreground, color-mix(in srgb, CanvasText 62%, Canvas));
+    --line: var(--border, color-mix(in srgb, CanvasText 16%, Canvas));
+    --panel: var(--card, color-mix(in srgb, CanvasText 4%, Canvas));
+    --tint: var(--secondary, color-mix(in srgb, CanvasText 8%, Canvas));
+    --codebg: var(--code-background, color-mix(in srgb, CanvasText 6%, Canvas));
+    --mark: var(--primary, #2f6f5e);
+    --round: var(--radius, 8px);
+  }
+  body {
+    color: var(--ink);
+    font-family: var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  main { max-width: 76ch; margin: 0 auto; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 1.2rem 0 0.3rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 0.8rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1.12rem; margin: 0 0 0.6rem; line-height: 1.3; }
+  h4 { font-size: 0.82rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--quiet); margin: 1.3rem 0 0.4rem; }
+  p { margin: 0.6rem 0; }
+  ul, ol { padding-left: 1.3rem; margin: 0.5rem 0; }
+  li { margin: 0.3rem 0; }
+  a { color: var(--mark); }
+  code, pre { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 0.86em; }
+  code { background: var(--codebg); padding: 0.08em 0.32em; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--codebg); padding: 0.8rem 1rem; border-radius: var(--round); overflow-x: auto; line-height: 1.45; }
+  pre code { background: none; padding: 0; overflow-wrap: normal; }
+  .lede { color: var(--quiet); margin-top: 0; }
+  .focus { margin: 0.8rem 0; }
+  details.meta { margin: 0.8rem 0 0; color: var(--quiet); font-size: 0.9rem; }
+  details.meta dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0.5rem 0 0; }
+  details.meta dt { font-family: var(--font-mono, ui-monospace, monospace); }
+  details.meta dd { margin: 0; }
+  .jump { background: var(--panel); border: 1px solid var(--line); border-radius: var(--round); padding: 0.7rem 1rem 0.7rem 2.2rem; }
+  .jump li { margin: 0.2rem 0; }
+  .jump span { color: var(--quiet); font-size: 0.88rem; }
+  article.idea { background: var(--panel); border: 1px solid var(--line); border-radius: var(--round); padding: 1.2rem 1.3rem; margin: 1.3rem 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.6rem; padding: 0; list-style: none; }
+  .chips li { background: var(--tint); border-radius: 999px; padding: 0.1rem 0.7rem; font-size: 0.82rem; margin: 0; }
+  .chips b { font-weight: 600; }
+  dl.fields { margin: 0; }
+  dl.fields dt { font-size: 0.82rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--quiet); margin: 1.1rem 0 0.25rem; font-weight: 600; }
+  dl.fields dd { margin: 0; }
+  .note { background: var(--tint); border-radius: var(--round); padding: 0.7rem 1rem; margin: 0.8rem 0; }
+  .note b { color: var(--mark); }
+  figure { margin: 1rem 0; overflow-x: auto; }
+  figure svg { display: block; min-width: 560px; width: 100%; height: auto; }
+  figcaption { color: var(--quiet); font-size: 0.86rem; margin-top: 0.3rem; }
+  svg text { fill: currentColor; font-family: var(--font-sans, system-ui, sans-serif); font-size: 13px; }
+  svg .bx { fill: currentColor; fill-opacity: 0.05; stroke: currentColor; stroke-opacity: 0.55; stroke-width: 1.2; }
+  svg .dash { stroke-dasharray: 5 4; }
+  svg .ln { stroke: currentColor; stroke-opacity: 0.7; stroke-width: 1.4; fill: none; }
+  svg .hd { fill: currentColor; fill-opacity: 0.7; }
+  svg .sm { font-size: 12px; fill-opacity: 0.75; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+  th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--line); }
+  th { font-size: 0.8rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--quiet); }
+  footer.composition-signal { margin: 3rem 0 2rem; padding-top: 0.8rem; border-top: 1px solid var(--line); color: var(--quiet); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Ideation: a database for Mo</h1>
+  <p class="lede"><time datetime="2026-11-14">14 November 2026</time></p>
+  <p class="focus"><strong>Focus:</strong> database and storage ideas for Mo, either written in Mo or built into the language. Outside the box, novel and ambitious.</p>
+</header>
+
+<details class="meta">
+  <summary>Document metadata</summary>
+  <dl>
+    <dt>topic</dt><dd>mo-database</dd>
+    <dt>mode</dt><dd>repo-grounded</dd>
+  </dl>
+</details>
+
+<section id="grounding-context">
+<h2>Grounding Context</h2>
+<h4>Codebase Context</h4>
+
+<p>Seven ideas survived out of 45 raw ones. Five generators produced the 45, they merged into 24, and a verifier with no view of how they were made tried to break each. Nine held. Fifteen were cut. Two of the seven were kept against the verifier's verdict, and each says so.</p>
+
+<p><strong>What the ideas were measured against.</strong></p>
+<ul>
+  <li><strong>The draft.</strong> <code>design.md</code> has four layers: Mo, a data store (a tree of nodes written once and named by hash, a log of calls, views kept current), a database (types are the schema, write functions are the only way data changes, promises are checked after each write) and a layer for outside callers (grants, read programs, worlds that land by replay).</li>
+  <li><strong>Robert's decisions.</strong> No SQL is presupposed. The ordinary Mo application is the base case and agents are a layer on top. The accountable write is the centre. A read program only reads. Agents propose and a person approves. A world lands whole or not at all.</li>
+  <li><strong>Robert's steer.</strong> "Extremely ambitious." The work had become "too focused on what can Mo do today and not what Mo needs to be able to do". Anything Mo gains must be an ability other programs would also use.</li>
+  <li><strong>Already written down.</strong> 36 ideas in <code>design-ideas.md</code>. An idea that restated one was cut.</li>
+</ul>
+
+<p><strong>Gaps the draft itself names.</strong></p>
+<ul>
+  <li>No form of a question that the compiler can match to an index. The draft calls this "the largest gap for an ordinary application".</li>
+  <li>Only Mo programs can read the data. Object databases lost to relational ones on this.</li>
+  <li>Erasing a person's data fights history that is named by hash and kept for good.</li>
+  <li>Fairness for an agent that thinks slowly, and which of an agent's reads count as relied on.</li>
+  <li>Sensitivity carried in types has no design.</li>
+  <li>What an agent with no memory is shown first.</li>
+  <li>Whether the store is a library written in Mo or part of the runtime.</li>
+</ul>
+
+<p><strong>Mo as it is today</strong> (read from <code>~/code/mo</code>, branch <code>feat/phase6-review-door</code>).</p>
+<ul>
+  <li>All values are immutable and cannot form cycles. Heap objects are reference counted. A value with one holder is edited in place, and a shared one is copied whole. A <code>Map</code> is one allocation with no sharing between copies.</li>
+  <li>A service is one state type plus pure handlers. A handler holds no capability and gets the arrival time as an argument, so replay is exact.</li>
+  <li>The log stores each call's inputs and a checksum of the state it produced. A whole snapshot is written every 100 messages, and the covered log is deleted. An upgrade also deletes the log's tail.</li>
+  <li>A promise is checked by <code>mo test</code> on generated inputs, not at run time. <code>mo test --strength</code> scores promises against wrong versions of the program.</li>
+  <li>The review door (Phase 6, in progress) checks a pushed candidate's own promises in a child process and holds it for a person unless every approved intent item is unchanged and no migration is named.</li>
+  <li>Mo Core is defined in Lean. The runtime is C. The HTTP layer is written in Mo.</li>
+</ul>
+
+<p><strong>What the research and the web search added.</strong></p>
+<ul>
+  <li>No surveyed database works out what code will read and write before it runs. All learn it by watching the code run.</li>
+  <li>Every store that kept unbounded history later had to add a way to forget.</li>
+  <li>Guards on read freshness needlessly block 92 to 95% of harmless races.</li>
+  <li>Models write SQL correctly from a schema 47% of the time and SPARQL 3.3% of the time. Worked examples lifted SPARQL to 76%.</li>
+  <li>Documented agent incidents came from broad credentials and no approval step, not from missing concurrency features.</li>
+  <li>Earlier work that came closest: Napier88 and Motoko (persistence in the language), Unison (code by hash), Cozy and Chestnut (layouts made from the program's own code), Salsa and Skip (recompute only what changed), Froid and QBS (ordinary code lifted into query form).</li>
+</ul>
+</section>
+
+<section id="topic-axes">
+<h2>Topic Axes</h2>
+<ol>
+  <li><strong>The store underneath.</strong> Bytes, layout, versions, memory and disk, forgetting.</li>
+  <li><strong>Asking.</strong> How a question gets answered with no query language: indexes, views, saved answers, readers that are not Mo.</li>
+  <li><strong>Changing and keeping true.</strong> Writes, promises, history, changing the shape of data.</li>
+  <li><strong>Sharing among many callers.</strong> Worlds, landing, grants, sensitivity, agents and people together.</li>
+  <li><strong>The language boundary.</strong> What the compiler, the type system and the runtime can do for data that no library could.</li>
+</ol>
+</section>
+
+<section id="ranked-ideas">
+<h2>Ranked Ideas</h2>
+
+<ol class="jump">
+  <li><a href="#idea-1">Plain Mo is the query language</a> <span>Asking</span></li>
+  <li><a href="#idea-2">One history across upgrades, and a door that replays it</a> <span>Changing and keeping true</span></li>
+  <li><a href="#idea-3">Held(T): absence as a type</a> <span>The language boundary</span></li>
+  <li><a href="#idea-4">Footprints: every run yields what it read</a> <span>The language boundary</span></li>
+  <li><a href="#idea-5">Recall notices: trace a bad write forward</a> <span>Sharing among many callers</span></li>
+  <li><a href="#idea-6">The store is the heap</a> <span>The store underneath</span></li>
+  <li><a href="#idea-7">The data teaches by example</a> <span>Asking</span></li>
+</ol>
+
+<div class="note"><b>How the seven fit together.</b> Idea 2 keeps the log whole. Idea 4 records what each read depended on. Idea 5 needs both. Ideas 1 and 4 share one compiler pass over Mo Core. Idea 6 is the floor the others would stand on if the store became part of the runtime. Ideas 3 and 7 stand alone.</div>
+
+<article class="idea" id="idea-1">
+  <h3>1. Plain Mo is the query language</h3>
+  <ul class="chips"><li><b>Axis:</b> Asking</li><li><b>Confidence:</b> 70%</li><li><b>Complexity:</b> High</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>Add no query language. In time, drop the <code>index</code> lines too. The compiler lowers every read function, and every read program an agent sends, to Mo Core and rewrites it to one normal form. Filters are fused. A filter of the shape "key of the row equals a value" becomes "group by that key, then get the value".</p>
+      <p>Each piece of the normal form that reads a stored table is named by its hash. The same piece then has the same name wherever it appears: in a page handler, in an agent's program, or in an <code>index</code> line. The store keeps a named piece current as a view, and every read that contains the piece uses the view. A declared index is a piece the programmer pinned. A piece that keeps coming back is kept without anyone asking.</p>
+      <p>The plain walk stays the specification. <code>mo test</code> runs each rewritten query and its plain form on generated data and requires the same answer, the way it already runs the recovery check with nothing written by the author.</p>
+      <p>Promises go through the same pass. The compiler works out how each write function can change each promise and builds what makes the check cheap. A per-row promise is checked on changed rows only. "Email is unique" creates the index by email. "The sum of balances equals what was issued" becomes a sum kept current. The compiler says which promises it could make cheap and which still walk.</p>
+<pre><code>fn orders_of(shop: Shop, b: Int) : List(Order)
+  shop.orders.filter(fn(o) o.buyer == b end)    # normal form: G#a91c.get(b)
+end
+
+index orders_by_buyer: orders by buyer           # the same G#a91c, pinned</code></pre>
+      <figure>
+        <svg viewBox="0 0 720 172" role="img" aria-label="Three pieces of code reduce to one named normal form, which the store keeps as one view">
+          <rect class="bx" x="10" y="12" width="230" height="36" rx="6"/>
+          <text x="125" y="35" text-anchor="middle">a page handler's filter</text>
+          <rect class="bx" x="10" y="68" width="230" height="36" rx="6"/>
+          <text x="125" y="91" text-anchor="middle">an agent's read program</text>
+          <rect class="bx" x="10" y="124" width="230" height="36" rx="6"/>
+          <text x="125" y="147" text-anchor="middle">a declared index line</text>
+          <path class="ln" d="M240 30 L318 70"/>
+          <path class="ln" d="M240 86 L318 86"/>
+          <path class="ln" d="M240 142 L318 102"/>
+          <path class="hd" d="M326 74 L314 74 L319 64 Z"/>
+          <path class="hd" d="M328 86 L318 81 L318 91 Z"/>
+          <path class="hd" d="M326 98 L319 108 L314 98 Z"/>
+          <rect class="bx" x="330" y="56" width="170" height="60" rx="6"/>
+          <text x="415" y="81" text-anchor="middle">one normal form,</text>
+          <text x="415" y="100" text-anchor="middle">one name by hash</text>
+          <path class="ln" d="M500 86 L548 86"/>
+          <path class="hd" d="M558 86 L548 81 L548 91 Z"/>
+          <rect class="bx" x="560" y="56" width="150" height="60" rx="6"/>
+          <text x="635" y="81" text-anchor="middle">one view the store</text>
+          <text x="635" y="100" text-anchor="middle">keeps current</text>
+        </svg>
+        <figcaption>A sketch of the direction, not a design.</figcaption>
+      </figure>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "A question nobody declared an index for walks everything. Nothing chooses a fast route, as a query planner does." (<code>design.md:107</code>). "Only some views can be kept current." (<code>design.md:152</code>). "A promise is checked by <code>mo test</code> only, so a rule is written twice" (<code>design.md:279</code>). The research found that agents' queries repeat heavily: distinct sub-plans are often under 10 to 20% of queries.</p>
+      <p><code>external:</code> Value numbering in compilers (Alpern, Wegman and Zadeck, 1988). View matching in SQL Server (Goldstein and Larson, 2001). Froid and QBS, which lift ordinary code into query form. Cozy and Chestnut, which make layouts from a program's own collection code. Models write SQL correctly 47% of the time from a schema and a new language far less.</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>Robert asked how an ordinary web application's data "get[s] queried", and the draft calls this its largest gap. Agents already write Mo, and a new language would cost them accuracy. A declared index and a question nobody planned meet at one name, so there is no planner to build and no second language to teach. The verifier found this the hardest idea to break. The conserved-sum half of a cut idea (a sum that must not change, checked on the changed rows) lives on here.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <ul>
+        <li>Splitting a closure into "the key" and "the value it is compared with" will not always work. Code outside the shapes the rewriter knows still walks. The compiler must say which shape it missed, or the walk is silent.</li>
+        <li>Knowing which pieces come back needs reads in the log. Today a read is not logged, and the log holds no instruction counts. The verifier caught a claim that it did.</li>
+        <li>View matching is old in SQL engines. What is new is doing it over a general language's core, with the plain walk as a tested oracle.</li>
+        <li>Joins, minimum and maximum are costly to keep current. A promise with no cheap form still walks.</li>
+        <li>Mo must gain a normaliser over Mo Core, an ordered index and names by hash. Every Mo program would get shared sub-expressions and fused loops from the same pass.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-2">
+  <h3>2. One history across upgrades, and a door that replays it</h3>
+  <ul class="chips"><li><b>Axis:</b> Changing and keeping true</li><li><b>Confidence:</b> 75%</li><li><b>Complexity:</b> High</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>Two statements in the draft contradict each other today. "The log is the truth." And "a change of shape is an upgrade of the program". In Mo an upgrade writes a snapshot and deletes the log's tail, so every deploy cuts the truth short. No replay can cross one.</p>
+      <p>Make an upgrade one more entry in the log of calls. It runs like a write: whole or not at all, promises checked after, who and why recorded. With it comes a <em>call migration</em>: a pure function, checked by the compiler, that turns a call to an old write function into calls to the new ones, or refuses it. A world opened before an upgrade then lands by replaying its calls through that migration. Audit, undo and taking one agent's work out all work across deploys.</p>
+      <p>Once the log is whole, the review door can use it. Its check child replays the last N real calls through the candidate, on a fork of the current root, and compares each reply and each resulting root with what the old code produced. The person reads what would now behave differently, not a text diff.</p>
+<pre><code>9041 place_order@a1f3(buyer: 7, item: 3, count: 2)     by web:ana
+9042 upgrade a1f3 -> c77e                                by robert "split stock by warehouse"
+
+fn migrate_call(old: UpgradeOld.PlaceOrder) : PlaceOrder
+  PlaceOrder(buyer: old.buyer, item: old.item, count: old.count, warehouse: 1)
+end
+
+door: replayed 18,204 real calls. 18,161 identical.
+      43 differ: place_order now refuses count = 0 (was: stored an empty order)</code></pre>
+      <figure>
+        <svg viewBox="0 0 720 150" role="img" aria-label="Today an upgrade cuts the log. Proposed: the upgrade is an entry in one unbroken log">
+          <text x="10" y="41">Today</text>
+          <rect class="bx" x="100" y="20" width="150" height="34" rx="6"/>
+          <text x="175" y="42" text-anchor="middle">calls</text>
+          <rect class="bx dash" x="290" y="20" width="250" height="34" rx="6"/>
+          <text x="415" y="42" text-anchor="middle">upgrade: snapshot, log deleted</text>
+          <rect class="bx" x="580" y="20" width="130" height="34" rx="6"/>
+          <text x="645" y="42" text-anchor="middle">calls</text>
+          <text x="10" y="111">Proposed</text>
+          <rect class="bx" x="100" y="90" width="150" height="34" rx="6"/>
+          <text x="175" y="112" text-anchor="middle">calls</text>
+          <path class="ln" d="M250 107 L290 107"/>
+          <rect class="bx" x="290" y="90" width="250" height="34" rx="6"/>
+          <text x="415" y="112" text-anchor="middle">upgrade, as a call in the log</text>
+          <path class="ln" d="M540 107 L580 107"/>
+          <rect class="bx" x="580" y="90" width="130" height="34" rx="6"/>
+          <text x="645" y="112" text-anchor="middle">calls</text>
+        </svg>
+        <figcaption>Top: the log stops at each upgrade. Bottom: one log runs through it. A sketch of the direction, not a design.</figcaption>
+      </figure>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "The new typed host operation performs, in one SQLite transaction: new snapshot at the current head, tail deletion, program replacement" (<code>~/code/mo/docs/design/upgrades.md:118-119</code>). "The log is the truth." (<code>design.md:189</code>). Mo's Phase 6 plan lists "Checking promises against a live service's recorded messages." as left out (<code>~/code/mo/docs/plans/2026-11-12-1604-feat-phase6-intent-autonomy-plan.md:173</code>). The research records that <code>mo test</code> passed a duplicate-key bug because its generator never made a duplicate key.</p>
+      <p><code>external:</code> Napier88's own papers name the evolution of data and programs as the unsolved part of persistence in a language. Golem replays a log of effects against new code. Shadow-traffic comparison (Diffy, Scientist) is the close earlier work for the diff.</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>It removes a contradiction at the centre of the draft. It also gets stronger every day the service runs, because the test inputs are the real calls. It is the clearest case of the database giving something back to the language: Mo's door, which is being built now, would gain a check no generated input can match. Ideas 4 and 5 need the unbroken log this provides.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <ul>
+        <li>Old code must stay runnable, by hash, for as long as the history is kept.</li>
+        <li>Replaying a long history through many migrations is slow.</li>
+        <li>The same answers on recorded calls is evidence, not proof. The diff informs a person and never replaces the approval. A variant that let a refactor pass the door unattended on this evidence was refuted for that reason.</li>
+        <li>One old call may need to become several new ones, or be refused. The first sketch typed it as one to one.</li>
+        <li>Replies are not in the log today, and a snapshot deletes the log it covers.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-3">
+  <h3>3. Held(T): absence as a type</h3>
+  <ul class="chips"><li><b>Axis:</b> The language boundary</li><li><b>Confidence:</b> 70%</li><li><b>Complexity:</b> Medium</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>A field typed <code>Held(T)</code> is stored in history as a reference. The bytes live in a small vault outside the hash-named tree, keyed by the person they belong to. Reading the field gives <code>Present(v)</code> or <code>Erased</code>, and the compiler requires both arms.</p>
+      <p>Erasing a person deletes their vault entries. Every hash, every root and every log entry stays valid, because history only ever held the reference. <code>mo test</code> generates <code>Erased</code> among a type's extreme values, so every promise is also checked on erased data.</p>
+      <p>The same type can carry how long a value is kept (<code>For(90.days)</code>, <code>Until(erased)</code>, <code>Kept</code>), and only a release function a person approved may open many <code>Held</code> values at once. That gives sensitivity a first design that needs no tracking of how data flows through a computation.</p>
+<pre><code>struct Student
+  id: Int
+  email: Held(Text)
+end
+
+fn greeting(s: Student) : Text
+  case s.email.open()
+    Present(e): "Hi " + e
+    Erased: "Hi, former student"
+  end
+end</code></pre>
+      <figure>
+        <svg viewBox="0 0 720 130" role="img" aria-label="History holds a reference. The bytes sit in a vault outside the tree. Erasing removes the vault entry only">
+          <rect class="bx" x="10" y="14" width="300" height="76" rx="6"/>
+          <text x="160" y="38" text-anchor="middle">history: tree and log, named by hash</text>
+          <rect class="bx" x="40" y="50" width="240" height="28" rx="5"/>
+          <text x="160" y="69" text-anchor="middle" class="sm">reference: student 42, email</text>
+          <path class="ln" d="M280 64 L428 64"/>
+          <path class="hd" d="M438 64 L428 59 L428 69 Z"/>
+          <rect class="bx dash" x="440" y="14" width="270" height="76" rx="6"/>
+          <text x="575" y="38" text-anchor="middle">vault, outside the tree</text>
+          <text x="575" y="69" text-anchor="middle" class="sm">student 42, email: the bytes</text>
+          <text x="10" y="116" class="sm">Erasing deletes the entry on the right. Nothing on the left changes.</text>
+        </svg>
+        <figcaption>A sketch of the direction, not a design.</figcaption>
+      </figure>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "Names by hash fight erasing. Erasing a row from an old version changes the hashes above it. The store can leave a marked hole where a node was. This is not designed yet." (<code>design.md:151</code>). "Need 5. Sensitivity that travels in the types is an idea with no design, and Mo has nothing for it." (<code>design.md:248</code>).</p>
+      <p><code>external:</code> The research found that every system with unbounded history later added a way to forget, and that guidance points to personal data held outside the history, by reference. Destroying a key to erase data ("crypto-shredding") is the known answer in event-sourced systems (<code>research/05-databases-that-keep-history.md</code>).</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>The usual fix is a hole that every reader must remember to handle, and readers forget. Mo has no null and no exceptions, so a forced <code>Erased</code> arm fits the language as it is. Two gaps the draft lists apart, erasure and sensitivity, share one cause: the data sits inside the history. Four of the five generators arrived at this idea separately.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <ul>
+        <li><strong>Replay.</strong> A write function that opened a held value and branched on it gives a different state after the value is erased, so the logged checksum no longer matches. The verifier noted that "every checksum stays valid" holds only if no write depends on an opened value. One rule that would make it hold: a write function may move a held value but not open it. Uniqueness checks would then need a stable token in the reference. This is the main open design question.</li>
+        <li>Derived data still holds what was erased: indexes, saved answers, and anything that already left.</li>
+        <li>Retention on every field is friction, and flows through control (not only through values) are hard to check.</li>
+        <li>Mo must gain a wrapper type that user code cannot forge or unwrap except through <code>open</code>, and a place outside the tree. Any program that holds tokens, keys or credentials that can be revoked would use it.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-4">
+  <h3>4. Footprints: every run yields what it read</h3>
+  <ul class="chips"><li><b>Axis:</b> The language boundary</li><li><b>Confidence:</b> 60%</li><li><b>Complexity:</b> High</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>A run of a pure function over stored data gives two things: its result and its <em>footprint</em>, the set of rows and key ranges it read. There are two ways to get one. The compiler works out a cautious footprint from the code before it runs. The runtime records the exact one while it runs.</p>
+      <p>The store can keep a footprint, compare it with the rows a write changed, and intersect it with another. A program cannot look inside one, so no program can branch on how the data is laid out.</p>
+<pre><code>$ mo footprint place_order
+reads   stock[item]
+writes  stock[item], orders.add
+
+world 7 (agent b): a premise moved   stock[17]: 4 -> 2   (asked at root 41, now root 58)</code></pre>
+      <p>What follows from the one mechanism:</p>
+      <ul>
+        <li>A saved answer or a view is reused when no changed row falls in its footprint.</li>
+        <li>A promise is rechecked only where its footprint was hit.</li>
+        <li>At landing, a question whose footprint no landed write touched keeps its answer without being asked again.</li>
+        <li>An open world is told while it thinks that something it relied on has moved, not forty minutes later at landing.</li>
+        <li>Two write functions whose footprints never meet can be applied in either order. Later, Mo could run such messages on separate cores.</li>
+      </ul>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "A question whose answer those rows cannot have changed needs no second reading." (<code>design.md:240</code>). "Which reads count. An agent reads much that it does not rely on." (<code>design.md:251</code>). The research: "a whole-program compiler deriving conservative read/write sets and checking effects BEFORE execution is done by no production DB found."</p>
+      <p><code>external:</code> Salsa, Skip and Adapton track what a computation depended on and recompute only when that changed. Calvin and Aria order work by read and write sets.</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>Four items the draft leaves open share one cause: nothing records what a read depended on. They are asking again at landing, which reads count, views kept current, and the cost of checking a promise after each write. One primitive turns all four into consequences. Mo has an advantage here that Convex and Calvin lack: the code is known before it runs.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <div class="note"><b>Kept against the verifier.</b> It ruled this weak. Its points: the run-time half restates "ask again only about what changed"; a footprint made of node hashes would let a program branch on layout and break replay; and the 92 to 95% over-blocking would apply to a cautious footprint too. The second is met by making a footprint opaque. The third does not apply, because a footprint is used only to <em>skip</em> asking again. When it is hit, the question is asked again and judged by its answer, as Robert decided. The verifier itself called the compile-time half "the genuinely open one".</div>
+      <ul>
+        <li>A key computed from data, or a walk over a table, widens the footprint to the whole table, and the gain is gone. Agents' read programs often walk.</li>
+        <li>Sums, minimum, maximum and joins need coarse footprints that are right without being hit by every write.</li>
+        <li>Mo's heap has no names for nodes today. A footprint is cheap only once it has.</li>
+        <li>A footprint stored for every read makes the log grow faster than the data.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-5">
+  <h3>5. Recall notices: trace a bad write forward</h3>
+  <ul class="chips"><li><b>Axis:</b> Sharing among many callers</li><li><b>Confidence:</b> 55%</li><li><b>Complexity:</b> High</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>A factory cannot un-sell a bad lot. It can name every buyer, because each shipment recorded its lot, and send a notice. Treat every answer that left the store the same way: the result of a read program, a release, a reply to a page.</p>
+      <p>The store keeps each answered question with its caller, its version and its footprint. When a write function is found faulty, or one agent's work is taken out, the store builds the corrected history. It then asks again each shipped answer the correction could have touched, on the corrected version. Every answer that comes out different becomes a typed recall record: who received it, what they were told, what is now true, and which of their later calls relied on it.</p>
+      <p>The same records answer two other questions by lookup. "Who has ever read this student's record?" is the disclosure record that school and health privacy law asks for. "This row was written by an agent that had been tricked. Which later answers and writes read it?" is the spread of the damage.</p>
+<pre><code>r = shop.recall(code: hash#4f2e)            # or shop.recall(caller: agent_17)
+for n in r.notices
+  notify(n.receiver, n.was, n.now, n.later_calls)
+end</code></pre>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "It cannot recall anything that already left through a release function." (<code>design-ideas.md:316</code>). "The program, its caller, the version and the answer are recorded." (<code>design.md:229</code>). "Taking one caller's work out is replaying the log without its calls" (<code>design.md:189</code>).</p>
+      <p><code>external:</code> Warp (SOSP 2011) re-runs new code on old inputs but repairs only stored state. Retro and Warp paid 24 to 127% overhead to track dependencies. EU food law (Regulation 178/2002) requires tracing "one step back, one step forward".</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>The project wrote this down as something that cannot be done and stopped. A recall turns "cannot unsend" into a list of everyone who was told something false and what to tell them now. It completes the accountable write: who, under which grant, why, and what they saw. That is what a person needs before trusting what agents did.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <ul>
+        <li>It needs reads in the log with their footprints, and a log that is never cut. So it needs ideas 2 and 4 first.</li>
+        <li>Asking every shipped answer again costs as much as all of them together, unless footprints skip most.</li>
+        <li>A footprint per read makes the log grow faster than the data.</li>
+        <li>A notice says what was wrong. It cannot undo what the receiver did with the answer outside the store.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-6">
+  <h3>6. The store is the heap</h3>
+  <ul class="chips"><li><b>Axis:</b> The store underneath</li><li><b>Confidence:</b> 40%</li><li><b>Complexity:</b> High</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>Do not build a store beside Mo's heap. Let Mo's own collections live on disk. A large <code>Map</code>, <code>Set</code> or <code>List</code> gets a tree form whose nodes are written once and carry a hash of their contents. The runtime reads a node in when a program touches it.</p>
+      <p>A service's saved state is then already a tree with versions. The checksum of the whole state that every log record carries today becomes the hash of the root. A write costs one path, not the whole state. Every existing Mo service gains this with no database library, and the database becomes a thin layer of types on top.</p>
+      <p>Two things follow from what Mo already guarantees.</p>
+      <ul>
+        <li><strong>Garbage is exact.</strong> A Mo value cannot reach itself, so a count of holders frees everything. Kept on disk, the count frees a dropped world or an old version at once, with no collector that traces the whole store.</li>
+        <li><strong>A read from disk stays pure.</strong> Reading a node named by its hash always gives the same value. It needs no capability and cannot disturb replay. The runtime sees the program's loops, which no database server can, so it may fetch the next nodes before the loop asks.</li>
+      </ul>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "So no value can reach itself, reference counting reclaims everything, and no cycle collector is needed." (<code>~/code/mo/docs/design/architecture.md:1392-1393</code>). A log record holds "the FNV-1a checksum of the saved state the message produced" (<code>~/code/mo/src/base/log-record.h:6-10</code>). "Reads hop from node to node" (<code>design.md:109</code>). The draft leaves "library or runtime" open and leans to the library (<code>design.md</code>, section 9).</p>
+      <p><code>external:</code> Btrfs keeps a count per block (Rodeh). A Datomic user held over 900 GB of garbage for about 40 GB of live data. Napier88 made data persist by being reachable. Motoko keeps main memory across upgrades and checks its shape at each one.</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>This is the plainest answer to "built into the language". It turns four lines of the draft's list of what Mo must gain (a hash, data outside the one saved state, collections that share what did not change, reads during a write) into one change to what a Mo collection is. Every store that keeps versions was hurt by garbage, and Mo's values make garbage a local, exact step. It takes the opposite side from the draft's lean to a library, which is why it is worth a meeting.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <div class="note"><b>Kept against the verifier, and narrowed.</b> It ruled the first version weak, and three of its points stand. The heap's cached hash is keyed with a secret for each process, and FNV is not a hash that can name content, so Mo needs a real one. Rewriting an unshared node in place across commits would break the order that makes a crash safe, so that part is dropped. A read from disk can fail and Mo has no exceptions, so a failed read must fail the whole message, as a handler failure does now. The thesis passed the verifier's meeting test and the bundle did not.</div>
+      <ul>
+        <li>Counts on disk that survive a crash took Btrfs years.</li>
+        <li>A tree form may lose the speed Mo gets from a small <code>Map</code> being one allocation edited in place.</li>
+        <li>The steps that touch the disk move out of Mo code, where they can be simulated, into the C runtime.</li>
+        <li>It extends "library versus runtime" in <code>design-ideas.md</code>. It does not replace it.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+
+<article class="idea" id="idea-7">
+  <h3>7. The data teaches by example</h3>
+  <ul class="chips"><li><b>Axis:</b> Asking</li><li><b>Confidence:</b> 60%</li><li><b>Complexity:</b> Medium</li></ul>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>
+      <p>The store records every read program with its answer, its cost and its caller. It promotes good ones into <code>example</code> rows on the types. A good one has run several times for at least two callers, is cheap, has a shape unlike the ones already kept, and passes under the grant's view alone.</p>
+      <p>Mo already compiles example rows, names them by digest and runs them under <code>mo test</code>. So a promoted example is checked again at every upgrade, and one that no longer compiles is withdrawn. An agent with no memory is shown the types in plain words, the promises as sentences, a few rows of each table as its grant sees them, and the top worked questions run again with today's answers.</p>
+<pre><code>example "orders for one email"
+  orders_of(shop, "ana@example.test") -> [Order(buyer: 4, item: 9, count: 2)]
+end
+
+$ modb orient --as agent-b
+types, promises in plain words, 3 rows per table, 12 worked questions with answers as of root 58</code></pre>
+    </dd>
+    <dt>Basis</dt>
+    <dd>
+      <p><code>direct:</code> "Need 6. What an agent with no memory is shown first." is listed as not designed (<code>design.md:249</code>). "An intent item is one promise, one service promise, or one example row" (<code>~/code/mo/docs/design/intent.md:145</code>).</p>
+      <p><code>external:</code> The research found that models write correct queries from a schema alone 47% of the time for SQL and 3.3% for SPARQL, and that worked examples lifted SPARQL to 76%.</p>
+    </dd>
+    <dt>Rationale</dt>
+    <dd>Every new agent works out the shape of the data again, and a guide written by hand goes stale. Here the guide is made of programs that are compiled and run, so one that has drifted fails loudly. <code>mo guide</code> teaches the language. This teaches the data, which is what an agent with no memory meets. The verifier judged it new for this gap.</dd>
+    <dt>Downsides</dt>
+    <dd>
+      <ul>
+        <li>A real row promoted into an example becomes part of a source bundle, which is named by hash and kept. That defeats erasure. Examples must use made-up rows, or held values that stay behind their reference (idea 3).</li>
+        <li>"A good example" is a judgment nobody has measured.</li>
+        <li>Mo must be able to accept a caller's program while running and promote it to an intent item.</li>
+      </ul>
+    </dd>
+  </dl>
+</article>
+</section>
+
+<section id="rejection-summary">
+<h2>Rejection Summary</h2>
+<p>Two of these are sound and were cut only for being the least new. They are worth doing as a matter of course: rows 1 and 2.</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>#</th><th>Idea</th><th>Reason Rejected</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Published copies for readers that are not Mo: an approved release kept current as a read-only SQLite file, stamped with its root</td><td>Sound, and it answers what sank object databases. Cut on the stricter pass as the least novel: it is the known "relational copy beside the store" pattern with a stamp.</td></tr>
+    <tr><td>2</td><td>A grant says what must stay unchanged: a <code>changes</code> filter checked against the rows a write changed</td><td>Sound, and it answers an open question in <code>design-ideas.md</code>. Cut as close to SQL row security with a check clause. The new part is small.</td></tr>
+    <tr><td>3</td><td>Landing slots and leases on answers</td><td>Brings locks back under another name. A footprint is known only after a world has read, so order by filing does not help the slow thinker it is for.</td></tr>
+    <tr><td>4</td><td>Speed is intent: a query's cost class checked at the review door</td><td>Contradicts itself. An intent digest is equal or not, with no direction, so the door would hold the index that makes a query faster.</td></tr>
+    <tr><td>5</td><td>The walk is a capability, and every question gets a quote</td><td>Below the floor. A walk is not an effect on the outside world, and the instruction limit already bounds every walk.</td></tr>
+    <tr><td>6</td><td>An engine compiled for each program, checked against a reference store</td><td>Too costly for its likely value. Years of research with no decision to make now, and a cited number was wrong.</td></tr>
+    <tr><td>7</td><td>Upgrade by node, each distinct node migrated once and remembered</td><td>The claim that a bad upgrade is undone by switching the root back is unsound: it discards every write since. Converting on first read is old.</td></tr>
+    <tr><td>8</td><td>Identity that follows behaviour: a refactor passes the door unattended if it matches on all recorded calls</td><td>Basis refuted. The same answers on history is evidence, not proof, and it would weaken "a person approves".</td></tr>
+    <tr><td>9</td><td>Promises mined from history</td><td>Below the floor. It is data profiling, a known tool, and the strength score has nothing to measure for a mined promise.</td></tr>
+    <tr><td>10</td><td>Worlds live in a nursery: a world's changes stay in memory until landing</td><td>An optimisation of something that already costs one root. No open decision.</td></tr>
+    <tr><td>11</td><td>History as checkpoints plus replay, on a stated budget</td><td>Basis refuted. The checkpoint schedule it borrows serves one backward pass, not reading any past version, and the stated bound cannot hold for history without end.</td></tr>
+    <tr><td>12</td><td>Mo Core as the archive format</td><td>The "few hundred lines" evaluator is not credible, and it would not serve a reporting tool.</td></tr>
+    <tr><td>13</td><td>"Since I last looked": a hash-chained log as a unit of review</td><td>Duplicates known practice and "the log is the truth". The proof it offers is the entries themselves.</td></tr>
+    <tr><td>14</td><td>What you may write depends on what you have read</td><td>The right question, the wrong mechanism. A trust class taken from the last writer is laundered by any trusted function, and Mo cannot yet tell callers apart.</td></tr>
+    <tr><td>15</td><td>Approve answers, not diffs: standing questions</td><td>Weaker than what it replaces. The research says approval should bind to the changed rows. Anything no standing question watches goes through.</td></tr>
+    <tr><td>16</td><td>Conserved quantities and linear rows as types</td><td>Linear rows need a large change to a language whose values are freely shared, and the cited basis was about memory, not logic. The conserved-sum half lives on in idea 1.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>Every axis has at least one survivor. Not every basis got the same scrutiny: the two generators that held the most ideas spent their reads across more of them.</p>
+</section>
+
+<footer class="composition-signal">Composed 2026-11-14T20:34Z by ce-ideate from the user's request: "ideate on database and storage ideas for Mo ... a db either written in Mo or directly built into the language ... outside the box, novel, and ambitious ideas", grounded in <code>design.md</code>, <code>design-ideas.md</code>, <code>research/</code>, <code>wiki/</code> and the Mo source at <code>~/code/mo</code>.</footer>
+
+</main>
+</body>
+</html>

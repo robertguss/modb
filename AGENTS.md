@@ -17,6 +17,7 @@ the map that led to it, which Robert stopped on 2026-11-14.
 | `sketches/` | Small Mo programs that check a claim about what Mo can do today, each with a control that must fail, and scripts that measure it; not database code | The session making the claim |
 | `design.md` | The data store and the database designed from what they need, and what Mo must gain; a draft until Robert accepts it | The session working on the design with Robert |
 | `design-ideas.md` | Our own candidate ideas for the database while they are explored; each says what Mo has, what it needs, earlier work and what is open | The session exploring them with Robert |
+| `docs/ideation/` | Ranked idea sets from `ce-ideate` runs, one dated file each, with what was cut and why; candidates, not decisions | The `ce-ideate` skill |
 
 `research/` and `raw/` are sources. `wiki/` is what gets read. A correction to a source goes in the
 wiki, never in the source.
