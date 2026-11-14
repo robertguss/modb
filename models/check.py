@@ -37,7 +37,7 @@ def observed(case, on):
                        f"INVARIANT {invariant}\nCHECK_DEADLOCK FALSE\n")
         run = subprocess.run(
             ["java", "-XX:+UseParallelGC", "-Xmx512m", "-cp", str(JAR), "tlc2.TLC",
-             "-workers", "1", "-metadir", str(BUILD / "states" / name), "-config", str(cfg),
+             "-noGenerateSpecTE", "-workers", "1", "-metadir", str(BUILD / "states" / name), "-config", str(cfg),
              "Replay.tla"], cwd=HERE, capture_output=True, text=True, check=False)
         (BUILD / f"{name}.log").write_text(run.stdout + run.stderr)
         if f"Invariant {invariant} is violated" in run.stdout:
