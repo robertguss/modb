@@ -317,7 +317,8 @@ Raised by Robert on 2026-11-14. Not decided.
 **What it would change here.**
 
 - The database stops being a separate product and becomes the first and largest battery: what `state` means once it outgrows memory. This is Picture 2 taken all the way. Picture 1 stays reachable through shared stores (idea 7) and tools.
-- One rule for every battery: it is written in Mo and ships with Mo. The runtime gains only what Mo code cannot express, such as bytes on a disk, a network connection and a hash. This keeps the settled rule that Mo must not become a language for one database: the language gains general abilities, and the database is a program.
+- A default for every battery: it is written in Mo and ships with Mo. The runtime gains only what Mo code cannot express, such as bytes on a disk, a network connection and a hash. This keeps the settled rule that Mo must not become a language for one database: the language gains general abilities, and the database is a program.
+- **Robert on 2026-11-14: this is a default, not a doctrine.** "Not everything should be or even has to be written in Mo." Each part is built in whatever is best for the job.
 - Each battery is a driver project. Their order is Mo's roadmap.
 
 **Why it may suit agents.** This is Claude's reasoning, not a finding.
@@ -340,6 +341,112 @@ Raised by Robert on 2026-11-14. Not decided.
 - Which batteries, and in what order.
 - Whether the database is part of the language, as `state` is, or a library a program chooses to use.
 - What keeps the list short.
+
+### What a language with its own framework could look like
+
+Asked by Robert on 2026-11-14. He thinks the idea "has serious legs" and is not yet sure of it. Nothing here is decided.
+
+**Three rings.**
+
+1. **The language.** Values, types, functions, capabilities, promises, services. Mo has this.
+2. **The batteries.** What every program needs, shipped with Mo and used the same way everywhere: keeping data, answering requests, acting on a schedule, knowing who is calling, reaching the outside, testing, changing while running.
+3. **Components.** Ready-made pieces of an application that anyone can build and share, such as accounts, a queue, approvals or notes. A component is a module that brings its own types, promises, tools, views and upgrade path. A service names the components it uses and the compiler checks them together. Adding one to a running service is a proposal a person approves, like any other change to the definition.
+
+**A service file, as a picture.** The first five lines are real Mo from the task queue. The four below them are made up to show what could be declared the same way. The words are not a design.
+
+```
+service
+  state Queue = JobQueue.empty
+  tools submit, lease, heartbeat, acknowledge, fail, list, stats
+  every 1.minute expire
+  token from env "QUEUE_TOKEN"
+
+  callers from Accounts
+  view mine for each caller
+  on mail to "queue@example.org" submit
+  sends mail
+```
+
+The made-up lines say: who may call and what each caller holds; what each caller may see; an event from outside that becomes a call; and that this service is allowed to send something out. Each would be checked by the compiler, faked in tests, and shown to a person when it changes.
+
+**The batteries, by what every program needs.** "Mo today" was checked on 2026-11-14 against `~/code/mo/docs/agent-guide.md` and this file's earlier sections.
+
+| Need | Mo today | Missing |
+| --- | --- | --- |
+| Keep data | A service's state, saved whole, at most 16 MiB, with crash recovery | The database: everything else in this file |
+| State the rules | Promises, which `mo test` checks with generated inputs | Promises over data larger than memory, checked when worlds merge |
+| Answer requests | Tools over MCP | Plain web requests; events from outside, such as mail or another system calling in |
+| Act on a schedule | `every` timers | Nothing found |
+| Work that takes days | A log of calls that repeat exactly; the task queue sample | A standard way to write steps that wait for a person or try again |
+| Reach the outside | Files, clock, random numbers and environment for command-line programs; no network | A web client, encryption (an outside library), mail, calling a model. Each a capability with a fake, and each outgoing effect recorded so that it happens once |
+| Know who is calling | One token for each service | Callers, grants and views (ideas 1 and 7) |
+| Show things to people | Nothing | Unknown. Three options: none, because people talk to their agent; screens made from the types; a full web layer |
+| Test | `mo test`, generated inputs, a recovery check for every service, `Simulation` for timers and saved state | Disk and network faults; many agents; users simulating their own workload (idea 6) |
+| Change while running | Typed upgrades, `mo push`, `mo review`, `mo intent`. Approvals are recorded and do not yet gate an upgrade | Approvals that gate; agents proposing (idea 1) |
+| See what happened | `mo history`, `mo replay` | A log kept for good (idea 4) |
+| Learn it with no memory | `mo guide` inside the binary, `mo fix` | Worked examples served by the running service |
+| Several services together | Services are islands | Shared stores (idea 7); one service calling another |
+| Share pieces with others | Modules inside one program | Components, and a way to fetch them, perhaps by hash |
+
+**How this differs from Rails and its kin.** Claude's reasoning.
+
+- **The reader is an agent.** "Convention over configuration" saved a person's memory. For an agent with none, the equal is one declared way, a guide inside the binary, and a running service that says what a caller may do.
+- **The application is alive.** The central loop of a web framework is request and reply. Here it is propose, check, approve, swap, while the service keeps running.
+- **Everything outside is a capability with a fake,** so the whole application can be simulated, with time, crashes and other agents, and no mocks are written.
+- **One compiler sees data, rules, code, views and upgrades.** The joins a framework holds by convention are checked.
+- **Every call is in the log,** so every application gets audit, replay and undo without building them.
+
+**Earlier work.** All from Claude's own knowledge unless a page is linked.
+
+- Erlang with OTP is the closest relative: a language that ships with the standard way to build long-running services, a database written for it ([Mnesia](wiki/systems/mnesia.md)) and upgrades while running.
+- Rails was pulled out of one real product, Basecamp. Its author later called it a framework one person can build a whole product with. Rails 8 moved background jobs, caching and live updates onto the database and treats SQLite as fit for production.
+- Django was pulled out of a newspaper's website. It makes administration screens from the data definitions.
+- PocketBase is one binary holding a database, accounts, file storage, live updates and an administration screen.
+- Wing is a language in which cloud resources are ordinary values, with a simulator.
+- In the survey: [Convex](wiki/systems/convex.md), [SpacetimeDB](wiki/systems/spacetimedb.md) and [Cloudflare Durable Objects](wiki/systems/cloudflare-durable-objects.md) each put code and its data in one unit.
+
+**Costs and risks.**
+
+- **Frameworks that lasted were pulled out of one real application,** not designed first: Rails, Django and OTP (from a telephone switch). A framework designed ahead of its first application tends to fit none. Each battery should be pulled by a real program that needs it.
+- **Size.** A language, a runtime, a database and a framework are each a large project. The danger is spreading thin so that no part gets deep enough to be real.
+- **Screens for people are the largest unknown** and the most crowded field.
+- The costs listed for batteries above also apply.
+
+**Open.**
+
+- Which real program pulls the first batteries.
+- Whether people see screens, and who makes them.
+- What a component is exactly, and how components are shared.
+- What belongs in the language, what in the batteries and what in a component.
+
+## Deep dives for later
+
+Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
+
+- **Request programs** (idea 1): limits on cost, what a read program may compute, how answers leave.
+- **Grants as view functions** (ideas 1 and 7): how "only these rows" is written and checked.
+- **Proposals** (idea 1): what a person is shown, as "what becomes possible".
+- **Promises as the schema** (idea 2).
+- **Upgrades as migrations** (idea 3), for data larger than memory.
+- **The log** (idea 4): kept for good, erasing a person's data, replaying after code changes.
+- **Simulation offered to users** (idea 6).
+- **Unplanned questions** (idea 8).
+- **Sensitivity in the types** (idea 9), and whether data that protects itself is in the first version.
+- **Storage:** the tree of write-once nodes, what a change costs, clearing old versions, library or runtime.
+- **Views the database keeps current,** and which form of view allows it.
+- **Code stored by hash.**
+- **Storage laid out by type,** and a key for each sensitive field.
+- **Many agents:** the replay rule, which reads count as relied on, fairness, taking one agent's work out.
+- **One write at a time** in place of one operation at a time. This changes a settled rule.
+- **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.
+- **Batteries:** which, in what order, and what keeps the list short.
+- **Components:** what one is and how they are shared.
+- **Screens for people.**
+- **Reaching the outside:** a web client, the encryption library, calling a model, outgoing effects that happen once.
+- **Work that takes days.**
+- **Whether the database is a separate product or Mo's first battery.**
+- **The first real program** that pulls all of this.
+- Parked on tickets: [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md) and [Earlier work on purpose and approval](issues/25-earlier-work-on-purpose-and-approval.md).
 
 ## How these sit with what is already decided
 
