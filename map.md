@@ -25,6 +25,8 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 - For the first version, coordination comes before speed: one operation executes at a time, and speed needs only to be fast enough that an agent never waits. The research then found evidence against this; [Which problems of agents sharing data is this database for?](issues/15-which-problems-is-this-database-for.md) must weigh it.
 - Mo must not become a language for one database.
 
+**Decided after outside review (2026-11-14).** Robert asked models from two other providers to review the direction. Both advised building a Mo service he uses first. One said to build a storage engine only if a guarantee needs it; the other said never to build one. Robert's decision: he still wants the database, and it stays the destination. The reviews are recorded on [Which problems of agents sharing data is this database for?](issues/15-which-problems-is-this-database-for.md) and [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md). What the reviews changed is the order of the work and the first slice, not the destination.
+
 **Mo on 2026-11-13 (v0.2 and part of Phase 6).**
 
 - Runs command-line programs (arguments, environment, console, files, clock, random) and services (state saved to SQLite, crash recovery, timers, typed live upgrades, reached as MCP tools over HTTP).
