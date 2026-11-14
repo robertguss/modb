@@ -40,6 +40,8 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 **Reopened on 2026-11-14 after the measurements: which half first.** Robert said the order does not matter to him and that he is in no rush. He asked for the trade-offs of each order and for a review by models of three providers. The trade-offs are in [design-ideas.md](design-ideas.md) under "Which half first". The review came back the same day and is on [Which half comes first?](issues/36-which-half-comes-first.md): none of the three chose either half outright, and each asked for an experiment first. Not decided.
 
+**Decided on 2026-11-14: a sketch before the order.** Robert asked for the experiment the reviewers named to be built before he chooses: [Can a Mo library keep old versions cheaply today?](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md). The same day he raised vertical slices, part of the upper half and part of the storage built together as small experiments, in place of one half and then the other. That idea is in [design-ideas.md](design-ideas.md) under "Which half first" and is not decided.
+
 **Raised on 2026-11-14, not decided: Mo with batteries included.** Robert asked whether Mo could be a framework as well as a language, with the database and storage as parts that ship with it. He thinks it "has serious legs" and is not yet sure. It would change the destination from a database beside Mo to Mo's first battery. He is not dogmatic about what is written in Mo. The idea, a picture of it and a list of deep dives owed are in [design-ideas.md](design-ideas.md). He deferred the framework the same day and returned the work to the database.
 
 **Mo on 2026-11-13 (v0.2 and part of Phase 6).**

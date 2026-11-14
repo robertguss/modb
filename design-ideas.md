@@ -648,6 +648,14 @@ Its issues:
 3. Run one workload on it: two worlds that overlap, a narrowed view, and a landing with the rule checked after every call.
 4. Decide the order after that. The sketch is what tells a library apart from a change to Mo's runtime.
 
+**Decided by Robert on 2026-11-14: the sketch comes before the order.** "I think you should open a prototype ticket and build that sketch. Before we choose the order." It is [Can a Mo library keep old versions cheaply today?](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md), with its predictions written before any code.
+
+**Robert's idea on 2026-11-14: vertical slices, not one half and then the other.** Raised while the sketch was being built, and kept for a follow-up at his request. Not decided.
+
+- His words: "Instead of developing out the whole front half and then the storage." He would rather design part of the upper half and part of the storage together, as several small spikes and experiments, and see which seems to work best.
+- A vertical slice is one small job carried the whole way down: something an agent does, the rule that guards it, and the way its data is kept.
+- Claude's note: this is close to what GPT Sol recommended, one thin slice through both halves, and it removes the question of which half comes first. What it leaves open is which slices, in what order, and what each must show before the next. The workload in the sketch is a first small slice: worlds, a view and a landing on a collection that keeps versions.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -678,6 +686,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
+- **Vertical slices** (Robert, 2026-11-14): which slices, in what order, and what each must show before the next.
 - **Which half first,** reopened on 2026-11-14.
 - **The seam between the halves:** the collection the data lives in, and what a version costs.
 - **How a write function reaches data that is not in memory:** fetching by name, paging by the runtime, or views kept ready. Each asks something different of Mo.
@@ -703,6 +712,6 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
 - Every question an agent asked counts at landing, by its answer, and needless send-backs are counted ([decided on 2026-11-14](#which-reads-count-as-relied-on)).
 - A world lands whole, with the rule checked after every call ([decided on 2026-11-14](#what-the-second-model-found)). This keeps the accountable write: a world can do only what approved calls can do one at a time.
-- Robert accepted building the upper half first. Every idea above belongs to the upper half. He reopened the order on 2026-11-14 ([Which half first](#which-half-first)).
+- Robert accepted building the upper half first. Every idea above belongs to the upper half. He reopened the order on 2026-11-14 ([Which half first](#which-half-first)), decided that a sketch comes before the order, and raised vertical slices as a way not to choose a half at all.
 - [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.
 - The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
