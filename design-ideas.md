@@ -96,6 +96,16 @@ An agent sends a small Mo program instead of a query. The database checks its ty
 
 **Mo is closer to this than it looks.** Mo's upgrade path already takes source sent to a running service, compiles it in a child process, verifies the result and loads it (`src/host/compile.c` in `~/code/mo`). Accepting a read program is a cousin of that.
 
+**Decided by Robert on 2026-11-14: agents may propose.** An agent may propose a new view, write function, release function, type or promise, as Mo code, and a person approves it.
+
+What follows from that. These are ideas, not decisions:
+
+- **A proposal is an accountable write to the database's own definition.** Who proposed it, who approved it and why sit in the same log as the data.
+- **The machine checks first and the person comes last.** A proposal reaches a person only after it compiles, keeps every promise, and has been tried: in the proposer's own world (idea 5), under simulation (idea 6), or replayed over past calls (idea 4).
+- **The person reviews what becomes possible, not code.** For example: "this view newly shows field X to caller Y", with examples. Phase 6's `mo intent` already lists a program's intent and shows how it changed.
+- **Narrower is free; wider needs a person.** A view built on an approved view can only show less. It is the same thing as a read program, so it needs no approval, and an agent can hand a helper a narrower view without asking anyone. Approval is needed only to widen what can be read, to add a way to change data, or to add a way for data to leave.
+- **The risk this is built around.** Both outside reviews warned that approved rules give false assurance and that the person's attention is the scarce thing. This spends that attention only on widening.
+
 ### 2. Promises as the schema
 
 There are no tables and constraints. The database holds Mo types and promises, and checks every write against them before it commits. A refused write comes back with the example it broke. A person approves the promises.
