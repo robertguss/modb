@@ -214,7 +214,7 @@ Robert proposed on 2026-11-14 to write small Lean and TLA+ models, "like we did 
 3. A TLA+ model of the order of writes to disk from [Storage underneath](#storage-underneath), with a crash at every step.
 4. Lean statements, without proofs, for "a read program cannot change data" and "a helper's grant never shows more than the grant it was made from".
 
-**Performance, kept in mind.** Some costs come from the shape and cannot be optimised away later: one writer on the main line; each change rewrites and hashes a path of nodes; each merge runs the agent's reads again; a read hops from node to node. Each model and sketch counts these. [How fast and large is a Mo service?](issues/11-how-fast-and-large-is-a-mo-service.md) would give the base numbers and has not been run.
+**Performance, kept in mind.** Some costs come from the shape and cannot be optimised away later: one writer on the main line; each change rewrites and hashes a path of nodes; each merge runs the agent's reads again; a read hops from node to node. Each model and sketch counts these. The base numbers were measured on 2026-11-14, on a busy machine ([How fast and large is a Mo service?](issues/11-how-fast-and-large-is-a-mo-service.md)). A read takes about 8 ms at any size of state. A write takes about 17 ms plus 0.76 ms for every 1,000 small rows, because every write encodes the whole state; at 100,000 rows that is about a tenth of a second, and a read behind it waits as long. The state stops taking writes at about 125,000 small rows, 9 MiB saved, because of the memory one call may use. One writer on the main line and a whole-state cost on each write are therefore measured facts of a Mo service today, not guesses.
 
 **Other tools looked at on 2026-11-14.**
 

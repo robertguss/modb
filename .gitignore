@@ -1,2 +1,3 @@
 build/
 *_TTrace_*
+__pycache__/

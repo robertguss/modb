@@ -13,7 +13,7 @@ MoDB is the research and the decisions toward a database for many AI agents, to 
 | `wiki/` | The compiled knowledge base | Agents only |
 | `GLOSSARY.md` | The project's vocabulary | The `domain-modeling` skill |
 | `models/` | TLA+ models of the design's protocols, each with predictions written before the model and settings that must fail | The session working a prototype ticket |
-| `sketches/` | Small Mo programs that check a claim about what Mo can do today, each with a control that must fail; not database code | The session making the claim |
+| `sketches/` | Small Mo programs that check a claim about what Mo can do today, each with a control that must fail, and scripts that measure it; not database code | The session making the claim |
 | `design-ideas.md` | Our own candidate ideas for the database while they are explored; each says what Mo has, what it needs, earlier work and what is open | The session exploring them with Robert |
 
 `research/` and `raw/` are sources. `wiki/` is what gets read. A correction to a source goes in the
