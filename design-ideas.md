@@ -740,6 +740,8 @@ Claude's reading of it. Robert has not confirmed it.
 
 What Claude proposed in reply, not decided: stop the slices; design the data store and the database from what they need, as if Mo had it; then write what Mo must gain, each as a capability other programs would also use, with the measurement that shows the gap. Whether the map's rule against changing Mo is lifted is Robert's decision.
 
+**Decided by Robert on 2026-11-14: the slices stop, and the design is written from what the database needs.** He answered "Yes" to that proposal. Claude's draft is [design.md](design.md): what the data store must do and its design, what the database must do and its design, and thirteen things Mo must gain, each with who else would use it. He has not yet read or accepted it. The ideas in this file stay as its source and history.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -770,7 +772,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
-- **Designing from what the database needs, not from what Mo does today.** Robert's steer of 2026-11-14 after the first slice. What replaces the slices is not decided.
+- **Designing from what the database needs, not from what Mo does today.** Robert's steer of 2026-11-14 after the first slice. The slices stopped the same day; the draft that replaces them is [design.md](design.md).
 - **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal. Robert chose the first slice on 2026-11-14; the rest waits for its result.
 - **Asking a question again at landing,** when the question is a sum or a filter and not one key: what it costs, and what replaces it if it does not fit in a call. The first slice, [a ticket](issues/39-can-a-landing-ask-an-agents-questions-again.md), answered on 2026-11-14: it fits up to about 1,400 rows for three questions.
 - **Authority that changes while a world is open:** a grant withdrawn, or approved code replaced, between a world's opening and its landing. Raised by all three reviewers on 2026-11-14.

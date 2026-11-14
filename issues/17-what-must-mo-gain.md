@@ -7,3 +7,5 @@ Blocked by: [How fast and how large is a Mo service today?](11-how-fast-and-larg
 ## Question
 
 For the chosen starting point and first slice, which capabilities does Mo lack, each stated the way the rule from "What rule keeps the database from bending Mo?" requires, and in what order?
+
+**A draft list, 2026-11-14.** [design.md](../design.md) ends with thirteen things Mo must gain, each with what the design uses it for, who else would use it, and what Mo has today. It is Claude's draft, written after Robert asked for the design to come from what the database needs. He has not accepted it, and this ticket stays open.

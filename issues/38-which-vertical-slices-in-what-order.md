@@ -1,7 +1,7 @@
 # Which vertical slices, in what order, and what must each show?
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md)
 
 ## Question
@@ -126,3 +126,9 @@ His answer covers the first slice only. The other four slices, their order, the 
 **Robert's steer, 2026-11-14, on reading the first slice's result.** "I think we are getting to focused on what can Mo do today and not what Mo needs to be able to do. We are trying to figure out what creating a data store and db in Mo and I wonder how valuable these slices actually are. We seem to have gotten off the path of creating a db in Mo which was the original intent of this thread."
 
 Claude has withdrawn "a landing that reads only what changed" as a next slice. It was a way around one constant in Mo's source, which is the fault he names. No slice is opened until he says what replaces them. The steer, Claude's reading of it and what Claude proposed in reply are in [design-ideas.md](../design-ideas.md) under "Which half first". This ticket stays open.
+
+## Answer
+
+Resolved on 2026-11-14. One slice ran: [Can a landing ask an agent's questions again inside one call?](39-can-a-landing-ask-an-agents-questions-again.md). Robert then stopped the slices. Asked whether to stop them and write the design of the data store and the database from what they need, followed by the list of what Mo must gain, he answered "Yes".
+
+His reason, in his words, is in the comment above: the slices measured what Mo can do today and not what Mo needs to be able to do. The other four slices proposed here were not run. What the sketches and the one slice measured is kept as evidence in [design.md](../design.md), under "What Mo must gain".
