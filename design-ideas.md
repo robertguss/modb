@@ -303,8 +303,47 @@ A replay ends one of three ways. It lands. It is refused, by its own function or
 - What an agent gets back when its replay fails, so that it can plan again without reading everything again.
 - Fairness between fast and slow agents.
 
+## Mo with batteries included
+
+Raised by Robert on 2026-11-14. Not decided.
+
+**The idea.** Mo is the framework as well as the language. Everything a program needs is in the language, ships with it, or can be built in it, and that includes the database and its storage. Ruby on Rails is the comparison. The difference is that Rails joins separate things (Ruby, SQL, a database server), and Mo would be one thing.
+
+**Mo already works this way at small scale.** Checked on 2026-11-14:
+
+- A service gets saved state, crash recovery, timers, typed upgrades and MCP tools from a few lines of declaration. One program, `mo`, checks, tests, formats, serves and upgrades it.
+- Mo's own rule is that "the library is written in Mo wherever it can be" (`~/code/mo/docs/design/library.md`). 26 files of Mo, 5,314 lines, ship inside `mo`: the library in `lib/`, and the HTTP and MCP handling of `mo serve` in `runtime/`.
+
+**What it would change here.**
+
+- The database stops being a separate product and becomes the first and largest battery: what `state` means once it outgrows memory. This is Picture 2 taken all the way. Picture 1 stays reachable through shared stores (idea 7) and tools.
+- One rule for every battery: it is written in Mo and ships with Mo. The runtime gains only what Mo code cannot express, such as bytes on a disk, a network connection and a hash. This keeps the settled rule that Mo must not become a language for one database: the language gains general abilities, and the database is a program.
+- Each battery is a driver project. Their order is Mo's roadmap.
+
+**Why it may suit agents.** This is Claude's reasoning, not a finding.
+
+- Frameworks with everything built in lost ground to ecosystems of libraries because nobody could afford to write everything themselves. When agents write the code, that cost falls.
+- An agent with no memory does better with one documented way than with a choice of libraries. `mo guide` already ships in the binary.
+- One compiler sees the whole program. The joins a framework holds together by convention can be checked: a change to a type that breaks a question, a view or an upgrade is an error before anything runs. Mo already does this for upgrades.
+
+**Earlier work.** In the survey: [Mnesia](wiki/systems/mnesia.md), a database shipped with Erlang; [GemStone](wiki/systems/gemstone.md); [Prevayler](wiki/systems/prevayler.md); [Convex](wiki/systems/convex.md); [SpacetimeDB](wiki/systems/spacetimedb.md); [Cloudflare Durable Objects](wiki/systems/cloudflare-durable-objects.md); the family page [code inside the database](wiki/families/code-inside-the-database.md). [Code inside the database, and databases inside a language](issues/07-code-inside-the-database.md) found that stored procedures failed on version control, testing and deployment, not on code sitting next to data. From Claude's own knowledge and not in the survey: MUMPS (1966), a language with a database built in that still runs large hospital systems; the business languages of the 1980s and 1990s such as dBase and FoxPro; Smalltalk; Meteor; Dark; Unison.
+
+**Costs.**
+
+- Every battery is built and kept working by this project, for good.
+- Systems like this are strong inside their walls and weak at them, because the data is reachable only through the language. Object databases lost on this (see Picture 2's costs). Tools over MCP are the door.
+- One exception to "written in Mo": the encryption under HTTPS. Writing one's own is a well-known mistake, so it would be a tested outside library behind a capability.
+- The list of batteries has no natural end.
+
+**Open.**
+
+- Which batteries, and in what order.
+- Whether the database is part of the language, as `state` is, or a library a program chooses to use.
+- What keeps the list short.
+
 ## How these sit with what is already decided
 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
 - Robert accepted building the upper half first. Every idea above belongs to the upper half.
+- [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.
 - The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
