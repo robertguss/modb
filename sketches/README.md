@@ -124,3 +124,41 @@ The script waits 16 seconds after every refused call. Five failures within a min
 Two runs on 2026-11-14 gave the same instruction counts to the instruction, and the same sizes at which each thing stopped fitting. The times differ between the runs, because another session was building on the same machine.
 
 What it does not show: two agents at once, real data, a question a person did not write into the program beforehand, or a view narrower than everything inside the service. The ticket's answer lists what each stands in for.
+
+## shape-census
+
+Not a claim but a count, for experiment 1 in [experiments.md](../experiments.md): of the Mo code agents have already written that picks rows from a collection, how much is in a shape a compiler could turn into an index lookup. The result and what it means are there.
+
+```sh
+python3 sketches/shape-census/census.py ~/code/mo/learnability sketches/kept-versions sketches/land-whole sketches/service-timing
+```
+
+`census.py` reads Mo source as text, by its indentation. It is not a compiler. A site is one of two things:
+
+- a call of `filter`, `find`, `count` or `any?` that is given a function;
+- a `for` loop over a collection whose body tests the loop's own row in an `if`.
+
+A site is in a shape when its test compares a stored field of the row, or the row itself, with a value that does not depend on the row, by `==`, `<`, `<=`, `>` or `>=`. Other tests may be joined to it with `and`. A field counts as stored when a `struct` in the same folder declares it. A loop is in a shape only when its body is that one `if` and nothing else.
+
+Everything else is a miss: a named function as the test, a call or arithmetic on the row, two fields of the same row, `!=`, `not`, `or`, and a loop that does more than the one `if`.
+
+It counts each distinct file once, and reports distinct sites first, because the corpus holds many copies of the same task.
+
+The controls run before every count. `controls/misses/` holds ten filters hidden in helpers, key arithmetic and loops that do more; all ten must be found and none recognised. `controls/hits/` holds eight plain shapes; all eight must be recognised. Both files pass `mo check`.
+
+What it does not count: `while` loops, `all?`, a loop that reads its row with `case`, and loops over a range or a written-out list. It writes every site to `build/shape-census/`, which git ignores.
+
+## instruction-counts
+
+The claim under test, for experiment 5 in [experiments.md](../experiments.md): the count of instructions a read runs tells a walk of the whole store from an indexed read. The result is there.
+
+`main.mo` is a service that holds orders in a `Map`, a list of their numbers, and two indexes kept as maps: `by_buyer`, where every buyer has ten orders whatever the size, and `by_band`, where each of ten bands holds a tenth of all orders. It has ten read functions: three through an index, two walks written in Mo, and five walks done inside one built-in each (`values`, `keys`, `contains?`, `reverse`, `unique`).
+
+```sh
+mo test sketches/instruction-counts/main.mo --only Main.test.1
+python3 sketches/instruction-counts/measure.py $MO 1000,4000
+```
+
+Result of the test on 2026-11-14: `1 passed, 0 failed, 0 stopped`. It checks that the index gives the walk's answer. Mo's own recovery check on this service was stopped after three minutes without an answer and has not been run to its end.
+
+`measure.py` grows the service to each size, fetches an export and finds each read's exact cost with `mo query --max-work`, as `asked-again.py` does and with its code. It checks that the indexed read and both Mo walks give the same answer at each size. The control that must hold: the walk written as a Mo loop grows in step with the store. A run takes a minute and a half. The counts do not depend on how busy the machine is.

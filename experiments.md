@@ -11,7 +11,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. No experiment has run.
+**Status:** open. Experiments 1 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -24,7 +24,7 @@ How this file works:
 | A | Strict. A filter on a stored table with no fast route is a compile error unless the code says `walk` | Chosen by all three reviewers for the program's own code. All three also say it can turn ordinary Mo into a hidden query language |
 | B | Warn only | Ruled out. Mo has no warnings: "a problem is an error, or it isn't reported" |
 | C | Demand. A `fast` marker makes the compiler refuse a function it cannot make fast | No reviewer chose it for the program's own code, because an unmarked function still walks unnoticed. GPT Sol makes it mandatory for a read program an agent sends |
-| D | Measure. `mo test` compares instruction counts at two store sizes | Doubted by all three. A primitive that goes over a whole collection may count as one instruction, and an indexed read with a growing answer looks like a walk. Experiment 5 |
+| D | Measure. `mo test` compares instruction counts at two store sizes | Doubted by all three. A primitive that goes over a whole collection may count as one instruction, and an indexed read with a growing answer looks like a walk. Experiment 5 found both and closed it as a gate |
 | E | A closed form. The table has a fixed set of methods that take a field and a value | Nobody's first choice. All three name it as the fallback if recognising shapes is brittle |
 | F | The review door holds an upgrade that makes a read slower, by ranked cost class | Gemini Carbon chose it, with A. The other two did not |
 | G | The type enforces it. A stored `Table` is not a `List`: it has `get`, the index methods and one `walk`, so a slow read can only be written as `walk`. Recognising shapes is then a convenience, not a gate | Added by Claude Opus. Close to E plus A |
@@ -64,11 +64,71 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
+### Result of experiment 1, 2026-11-14
+
+Run with [sketches/shape-census](sketches/README.md#shape-census) over `~/code/mo/learnability` at Mo commit `ce86860a`. The script and its controls were committed (`12f889d`) before the first run. Controls: 10 planted misses found and none recognised; 8 planted hits, all recognised.
+
+| Measure, over 188 distinct sites in 228 distinct files | Recognised |
+| --- | --- |
+| Library calls only (`filter`, `find`, `count`, `any?`) | 24, or 13% |
+| With a `for` loop holding one `if` on a field | 24, or 13% |
+| By equality alone | 17, or 9% |
+| Leaving out the 76 sites that go over text: 112 sites | 20, or 18% |
+| Counting every copy: 258 sites | 53, or 21% |
+| Ceiling: any loop with some test in a shape counts | 72, or 38% |
+
+- **121 of the 188 sites are loops and 67 are library calls.** No loop is in the one-`if` shape. 106 loops do more than one `if`. The other 15 are a single `if` whose test is a call, a negation or a computed value.
+- **Of the 67 library calls, 24 are in a shape, which is 36%.** The misses are a call or computed value on the row, `not` or `!=`, a named function, and `or`.
+- **The sketches in this repository hold two sites.** That is too few to say anything.
+
+How the predictions did:
+
+- Claude Opus, under 60%: right.
+- Claude, under 40% for library calls only: right.
+- Claude, 60% or more once one-`if` loops count: wrong. It is 13%, and the ceiling for any loop recogniser is 38%.
+
+What it means: a recogniser of plain Mo would miss about seven in eight of the places where agents pick rows today. Under option A almost every read would first meet a compile error. The two reviewers' threshold for moving to a table type was under 40%.
+
+What it does not show:
+
+- **This is not database code.** The tasks are text tools, a job queue, a cart and the like, over local collections. No agent was told an index existed or was refused a walk. It measures habit, not what agents write once a compiler pushes back. Experiments 2 and 4 measure that.
+- **The script is not a compiler.** It reads text by indentation. About 70 of the 188 sites were read by hand and looked right; the rest were not checked.
+- **Two things changed after the first run.** The ceiling row was added once the first result was seen. The first run also counted the planted control files as part of the sketches; the second run left them out. The numbers for `learnability` were the same in both.
+
+### Result of experiment 5, 2026-11-14
+
+Run with [sketches/instruction-counts](sketches/README.md#instruction-counts) on a `mo` built from commit `ce86860a` plus another session's uncommitted changes. The sketch was committed (`9d03d3d`) before the first run. The store grew four times, from 1,000 orders to 4,000.
+
+| Read | At 1,000 | At 4,000 | Times | The count says | It is |
+| --- | --- | --- | --- | --- | --- |
+| One row by key | 48 | 48 | 1.00 | indexed | indexed |
+| A buyer's ten orders through an index | 879 | 879 | 1.00 | indexed | indexed |
+| A band's orders through an index; the answer grows | 7,989 | 31,689 | 3.97 | walk | indexed |
+| Walk as a Mo `for` loop | 59,182 | 236,182 | 3.99 | walk | walk |
+| Walk as `values`, `filter`, `map`, `sum` | 78,183 | 309,183 | 3.95 | walk | walk |
+| `values` then `size` | 27 | 27 | 1.00 | indexed | walk |
+| `keys` then `size` | 27 | 27 | 1.00 | indexed | walk |
+| `contains?` for a value that is not there | 26 | 26 | 1.00 | indexed | walk |
+| `reverse` then `size` | 26 | 26 | 1.00 | indexed | walk |
+| `unique` then `size` | 26 | 26 | 1.00 | indexed | walk |
+
+The count is wrong about 6 of the 10. The control held: the Mo loop grew 3.99 times.
+
+How the predictions did: all four right. Option D as stated fails (GPT Sol, Claude). A walk inside a built-in shows no growth at all (Gemini Carbon, Claude). A walk written in Mo grows in step and an indexed read with a fixed answer does not (Claude Opus, Claude). Claude Opus's second control, that an indexed read with a growing answer must not be flagged, failed.
+
+What it means:
+
+- **Option D is closed as a gate.** It would pass five walks and refuse one indexed read.
+- **The count is exact where it works.** A lookup with a fixed answer cost the same to the instruction at both sizes, and a Mo loop grew in step. A repaired check would need Mo to charge for each element a built-in goes over, and would need to measure the cost for each row returned.
+- **Mo's instruction limit does not bound a walk done by a built-in.** `contains?` on a list of any length costs 26 instructions. The built-in loops over the list in C (`src/prim/collections.c`). Any rule for agents' read programs that relies on the limit alone, such as Claude Opus's, has this hole.
+
+What it does not show: time. The run counted instructions and did not time the built-ins. It did not test `sum` alone, `intersection`, or a read through the tree in `sketches/kept-versions`.
+
 ### Where Claude stands, with what would move it
 
 - **Strict in some form, for the program's own code: 85%.** All three reviewers chose it and Mo has no warnings.
-- **Strict by recognising plain Mo, against a table type with its own methods: about even.** Before the council Claude gave this 80% for plain Mo. The `for`-loop count and the order problem brought it down. Experiments 1, 2 and 3 move it.
-- **The growth test as a check: 15% that it works as first described.** Experiment 5 settles it.
+- **Strict by recognising plain Mo, against a table type with its own methods: 30% for plain Mo after experiment 1.** Before the council Claude gave plain Mo 80%, and about even after it. The census brought it down again: 13% of the places agents pick rows are in a shape. It is not lower because the census is of habit on local collections, not of agents repairing code a compiler refused. Experiment 4 is the one that can move it back: agents under A ending correct and on a fast route nine times in ten, with few needless walks.
+- **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
 
