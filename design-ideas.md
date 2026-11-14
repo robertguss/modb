@@ -572,6 +572,58 @@ Answer 6 extends a line already in this document: for each write function a pers
 
 **Claude's recommendation.** Start with answers 1 and 3 together: every question counts, and answers are compared. Have the database count needless send-backs. A send-back is needless when the agent's next world holds the same calls; an agent that words the same change differently is missed, so the count is a floor. Choose between answers 6 and 7 when there is a number. This follows Robert's steer of 2026-11-14 to keep performance in mind and optimise later. Answer 6 can be added later, one function at a time, without changing the first rule. Robert agreed on 2026-11-14. Claude was about 80% sure, the doubt being that the count exists only once something is built.
 
+## Which half first
+
+Reopened by Robert on 2026-11-14 after the measurements: "It doesn't really matter to me which one comes first. I'm in no rush." He asked for the trade-offs of each order and for an outside review by other models. Nothing here is decided, and this section holds no recommendation until that review is back.
+
+**The two halves.**
+
+- The upper half is what an agent or a person touches: the data as Mo types, promises as the schema, write functions a person approved, read programs, grants as view functions, proposals, a world for each agent and how it lands, the log as history.
+- The storage half is how the data is kept: a state larger than memory, writing only what changed, a version that costs no copy, finding things without walking everything, and what Mo's runtime must gain for these.
+
+**Upper half first.** It is built on Mo's services as they are: one service, with the whole state in memory and saved whole.
+
+What it gives:
+
+- The ideas that are new, and least certain, are tried first and with real data.
+- It asks little of Mo's runtime. It asks more of the language: accepting a program while running, more than one caller, calls as data, promises checked when a write lands.
+- What the upper half needs from storage is known before storage is built.
+
+Its issues:
+
+- The measured limits apply: about 125,000 small rows, a write that costs more as the data grows, a read that waits behind a write, 10 ms on every call and 20 calls a second, a request of 16 KiB and a reply of 32 KiB.
+- The upper half's own ideas lean on storage. A world, a snapshot for a read program and an old state are each a version. In Mo today a changed copy of a map is a whole copy, so each version costs a copy, in memory and in the one saved state.
+- A snapshot deletes the log, so "the log is the truth" cannot be built on today's store as it is.
+- The write functions would be written against Mo's `Map`. If storage later brings a different collection, they are written again.
+- Times taken on it say little about the finished design. Counts, such as needless send-backs, carry over.
+
+**Storage half first.**
+
+What it gives:
+
+- The ceiling and the growing cost of a write go first.
+- Versions that cost no copy exist before worlds, snapshots and history are built on them, so those are built once.
+- It is the half that asks most of Mo's runtime: bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, reads beside the writer.
+- It is the better-trodden half, with known designs and known ways of checking them.
+
+Its issues:
+
+- It is built for needs the upper half has only guessed at. Whether nodes need names by hash, how long history is kept and whether views are kept current all come from ideas not yet tried.
+- It changes Mo's runtime at once. That reopens the parked question of memory safety and the question of how the work sits beside Phases 6 to 8.
+- Nothing of Robert's is in it, and no agent uses it, until the upper half follows.
+- Both outside reviews earlier on 2026-11-14 warned about this half: one said to build a storage engine only if a guarantee needs it, the other never.
+- It does not touch the 10 ms on every call, which is not a storage cost.
+
+**What ties the halves together.** Two things: the type the data lives in, and whether a version costs a copy. Whichever half goes first settles these two for the other.
+
+**Other orders.**
+
+- The seam first: decide the collection the data lives in and what a version is, as an interface, then build either half against it.
+- One thin slice through both: one write function, one world and one read program, on the smallest store that writes only what changed.
+- A change to how Mo saves a service's state, apart from any database, since the growing cost is Mo's.
+
+**What would decide it.** Which half holds more that is unknown. Which rework costs more: write functions written again, or storage built for the wrong needs. Which part of Mo Robert wants to grow first. "Usable sooner" is not a reason, by the map's notes.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -602,6 +654,8 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
+- **Which half first,** reopened on 2026-11-14.
+- **The seam between the halves:** the collection the data lives in, and what a version costs.
 - **One write at a time** in place of one operation at a time. This changes a settled rule.
 - **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.
 - **Batteries:** which, in what order, and what keeps the list short.
@@ -620,6 +674,6 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
 - Every question an agent asked counts at landing, by its answer, and needless send-backs are counted ([decided on 2026-11-14](#which-reads-count-as-relied-on)).
 - A world lands whole, with the rule checked after every call ([decided on 2026-11-14](#what-the-second-model-found)). This keeps the accountable write: a world can do only what approved calls can do one at a time.
-- Robert accepted building the upper half first. Every idea above belongs to the upper half.
+- Robert accepted building the upper half first. Every idea above belongs to the upper half. He reopened the order on 2026-11-14 ([Which half first](#which-half-first)).
 - [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.
 - The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
