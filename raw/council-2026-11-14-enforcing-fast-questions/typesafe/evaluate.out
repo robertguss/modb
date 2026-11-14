@@ -1,0 +1,27 @@
+WHAT EACH REVIEW SAYS  (Y at 0.70 or more, N at 0.30 or less, ? between)
+  statement                              sol        opus       gemini     yes  predicted  Claude
+  own_code_strict                        Y 0.78     Y 0.94     Y 0.95   3    2          yes   <- differs
+  own_code_closed_form                   N 0.14     N 0.07     N 0.09   0    1          no    <- differs
+  choice_includes_measuring              ? 0.69     Y 0.98     ? 0.42   1    3          yes   <- unsettled
+  choice_includes_review_door            N 0.15     N 0.09     Y 0.96   1    1          yes 
+  agent_rule_differs                     Y 0.95     Y 0.98     Y 0.95   3    3          yes 
+  agent_run_time_limit                   ? 0.63     Y 0.95     Y 0.87   2    2          yes   <- unsettled
+  says_agents_miss_shapes                ? 0.37     Y 0.88     Y 0.74   2    3                <- unsettled
+  says_two_table_reads_are_a_gap         N 0.29     N 0.07     Y 0.81   1    2                <- differs
+  says_indexes_cost_writes               N 0.12     N 0.04     N 0.06   0    2                <- differs
+  says_large_answer_is_slow              Y 0.96     Y 0.81     N 0.21   2    1                <- differs
+  says_mo_lacks_ordered_collection       N 0.06     N 0.06     N 0.07   0    2                <- differs
+  says_new_syntax_will_be_needed         N 0.11     N 0.21     ? 0.37   0    1                <- unsettled
+  experiment_agents_write_reads          Y 0.71     ? 0.44     Y 0.85   2    3                <- unsettled
+  experiment_recogniser_script           ? 0.52     Y 0.98     Y 0.83   2    3                <- unsettled
+  experiment_growth_at_two_sizes         Y 0.93     Y 0.98     Y 0.98   3    3              
+  experiment_agent_repairs_after_error   Y 0.95     Y 0.83     Y 0.86   3    2                <- differs
+  experiment_existing_code               N 0.16     Y 0.98     ? 0.41   1    2                <- unsettled
+  experiment_index_upkeep_cost           N 0.06     N 0.05     N 0.06   0    1                <- differs
+
+FIRST EXPERIMENT  (choice, its probability, and whether any listed option fits)
+  sol     recogniser_over_mo_source          1.00  listed 0.92  predicted agents_write_read_functions  <- differs
+  opus    recogniser_over_mo_source          0.99  listed 0.96  predicted agents_write_read_functions  <- differs
+  gemini  recogniser_over_mo_source          0.89  listed 0.94  predicted recogniser_over_mo_source
+
+3 requests. usage: [{"input_tokens": 3456, "output_tokens": 481}, {"input_tokens": 3993, "output_tokens": 481}, {"input_tokens": 3879, "output_tokens": 481}]

@@ -1,0 +1,860 @@
+{
+ "sol": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "Mo": "A pre-release programming language and runtime. Most Mo code is written by AI agents.",
+     "read function": "A function in the program that only reads stored data.",
+     "read program": "A small program an AI agent sends while the service runs, to read stored data.",
+     "fast route": "Answering a read through an index the store keeps, without reading every row.",
+     "walk": "Reading every row of a stored table.",
+     "recognised shape": "A way of writing a filter that the compiler can turn into a fast route."
+    },
+    "options": {
+     "A_strict": "A filter with no fast route is a compile error unless the code says in a word that it walks.",
+     "B_warn": "A filter with no fast route gets a warning only.",
+     "C_demand": "Nothing by default. A marker on a function makes the compiler refuse it if it has no fast route.",
+     "D_measure": "No static rule. A test runs each read function at two store sizes and compares instruction counts.",
+     "E_closed_form": "The table offers a fixed set of methods that take a field and a value, not a function.",
+     "F_review_door": "Each read function gets a ranked cost class, and an upgrade that makes one slower is held."
+    },
+    "review": "1. Choice\n\nFor application code: A, applied to every traversal of a stored table, including through helpers. An unrecognised operation requires an explicit walk acknowledgement. Local collections remain ordinary Mo. Diagnostics must explain the missed shape and show a supported rewrite.\n\nFor runtime read programs: mandatory C at the entry point, checked through everything it calls. The host requires the demand; the caller cannot omit it. A walk requires separate approval with a work ceiling. Read-only code can still consume excessive resources.\n\nDefine the guarantee narrowly: no unacknowledged full-table traversal. An indexed read returning K rows necessarily spends work on K rows; it is not constant-cost. Recognition must also require an existing, current index. Otherwise refuse admission and explain what is missing.\n\nUse measurements as supporting evidence. B permits unnoticed regressions. Optional C leaves uncovered functions. F detects changes between versions, but cannot establish that the original was acceptable. E is the strongest fallback if recognition proves brittle.\n\n2. Strongest argument against\n\nA can turn ordinary Mo into a hidden query language: equivalent expressions receive different treatment, helpers break recognition, and agents learn to silence errors with walk. Worse, recognising a filter does not bound the work surrounding it. Nested indexed lookups can still be expensive.\n\nThis choice depends on conservative checks, useful diagnostics and evidence that agents repair rejected code without changing its meaning.\n\n3. Experiments, in order\n\nEach experiment must record its prediction and acceptance criterion before running.\n\nExperiment 1: Can a small recogniser preserve semantics?\n\nBuild an external recogniser for field equality, reversed equality, captured constants and simple helpers. Compare hand-lowered indexed versions against ordinary Mo List.filter using generated lists and prebuilt Map buckets. Include duplicates, order, empty inputs, row-dependent comparisons and predicates that stop. In particular, hoisting a row-independent expression must not introduce a stop on an empty collection.\n\nRequired result: every accepted rewrite preserves the ordered answer and stopping behaviour; every unsafe case is rejected.\n\nPrediction: a restricted recogniser passes, but unrestricted hoisting fails, 85%.\n\nFailing control: deliberately hoist a stopping expression before an empty filter.\n\nMissing Mo: none for the experiment. Real implementation needs typed recognition, helper summaries and index lowering; List.filter and List.group_by currently execute ordinary loops.\n\nExperiment 2: Does strict enforcement teach the shapes?\n\nRun fresh agent sessions on matched read-writing and refactoring tasks under A, B, optional C and an E-style library API. All produce executable Mo over mock collections; an external checker supplies the proposed diagnostics. Include held-out tasks and legitimate scans explicitly identified in the task.\n\nRequired result: under A, at least 90% of tasks become semantically correct, supported reads within two repair attempts, with no unjustified walk acknowledgements.\n\nPrediction: A meets this threshold, 65%. Existing Mo learnability measurements justify trying compiler feedback, but do not establish query-shape learnability.\n\nFailing control: replace one correct diagnostic suggestion with a rewrite that changes the answer; hidden semantic tests must reject it.\n\nMissing Mo: none. Markers and table rules are simulated outside Mo.\n\nExperiment 3: Can D distinguish unwanted work?\n\nUse exported mock service states and binary-search mo query --max-work, as the existing sketches do. Measure several sizes, zero/one/many matches, early and late matches, skew, and a branch activated only beyond the initial sizes. Compare scans, prebuilt bucket lookups and expensive native collection operations. Exclude fixture construction from query counts.\n\nRequired result: the proposed detector rejects scans while accepting indexed reads whose growth comes from results.\n\nPrediction: literal D fails, 95%.\n\nFailing control: replace an indexed lookup with a full filter; the revised detector must reject it.\n\nMissing Mo: none for instruction counts. Physical storage work cannot be measured without a store. mo_vm_execute counts instructions; work inside native primitives is not a separate instruction per unit of work. Determinism does not make that count a complete cost model.\n\nExperiment 4: Does recognition survive missing views?\n\nBuild a script modelling absent, building, ready and invalid indexes. Submit recognised predicates before creation, after eviction and after a schema change.\n\nRequired result: admission never silently builds or scans when the required view is unavailable.\n\nPrediction: recognition alone violates this requirement; readiness-aware admission passes, 95%.\n\nFailing control: label an absent view ready; the model must expose an accepted read with no executable fast route.\n\nMissing Mo: none for the model. Real enforcement needs index lifecycle metadata and a runtime admission rule.\n\n4. First experiment and reversal condition\n\nRun experiment 1 first: enforcing an unsound rewrite makes wrong answers mandatory. If ordinary helper-based expressions cannot be recognised conservatively without frequent rejection, prefer E-style ordinary Mo methods. Experiment 2 determines whether that fallback is necessary in practice.\n\n5. Missing option or likely fatal flaw\n\nAdd an access-plan explanation: identify every table access, required index, readiness and acknowledged scan.\n\nThe largest gap is confusing \"recognisable\" with \"available cheaply.\" A novel recognised predicate may require an O(N) index build. Plain Mo solves expression syntax; it does not settle view creation, maintenance, eviction or result-size costs.\n\n6. Confidence\n\nApplication choice: 75%. Runtime choice: 80%.\n"
+   },
+   "questions": {
+    "own_code_strict": {
+     "type": "noul",
+     "instructions": "For the program's own code, does `review` choose that a filter with no fast route is a compile error?",
+     "criteria": {
+      "true": "The review's choice for the program's own code makes a filter with no fast route fail to compile, with or without a word that allows a walk.",
+      "false": "The review's choice for the program's own code lets a filter with no fast route compile without an error."
+     }
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "instructions": "For the program's own code, does the choice in `review` include a fixed set of table methods that take a field and a value?",
+     "criteria": {
+      "true": "The review chooses fixed table methods that take a field and a value as part of its answer for the program's own code.",
+      "false": "The review's choice for the program's own code keeps filters written as ordinary functions."
+     }
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include a test that runs a read function at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "The review's chosen combination includes comparing instruction counts at different store sizes.",
+      "false": "The review's chosen combination has no test that compares instruction counts at different store sizes."
+     }
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include holding an upgrade that makes a read function slower?",
+     "criteria": {
+      "true": "The review's chosen combination holds or flags an upgrade that makes a read function slower.",
+      "false": "The review's chosen combination does nothing at upgrade time about a read function becoming slower."
+     }
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "instructions": "Does `review` give a read program an agent sends at run time a different rule from the program's own code?",
+     "criteria": {
+      "true": "The review chooses one rule for the program's own code and another for a read program sent at run time.",
+      "false": "The review applies the same rule to the program's own code and to a read program sent at run time."
+     }
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "instructions": "For a read program an agent sends at run time, does `review` choose a limit on rows read or work done while it runs?",
+     "criteria": {
+      "true": "The review limits how many rows a read program sent at run time may read, or how much work it may do.",
+      "false": "The review sets no run-time limit on rows or work for a read program sent at run time."
+     }
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "instructions": "Does `review` say that agents will often write a read in a form the compiler does not recognise?",
+     "criteria": {
+      "true": "The review says code written by agents will often fall outside the recognised shapes.",
+      "false": "The review does not say that agents' code will often fall outside the recognised shapes."
+     }
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read which combines two tables is a gap in the idea?",
+     "criteria": {
+      "true": "The review names reads that look up or combine a second table as something the idea does not cover well.",
+      "false": "The review does not name reads across two tables as a gap."
+     }
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping indexes current makes writes slower or uses more space?",
+     "criteria": {
+      "true": "The review says an index kept current costs time on writes or costs space.",
+      "false": "The review does not mention a cost of indexes on writes or space."
+     }
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read served by an index can still be slow because its answer is large?",
+     "criteria": {
+      "true": "The review says a read with a fast route can still be slow when it returns many rows.",
+      "false": "The review does not say that a large answer makes an indexed read slow."
+     }
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo has no sorted or ordered collection today?",
+     "criteria": {
+      "true": "The review says Mo today lacks a sorted map, an ordered index or a tree collection.",
+      "false": "The review does not say that Mo lacks a sorted or ordered collection."
+     }
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that a new syntax for queries will be needed in the end?",
+     "criteria": {
+      "true": "The review says the project will need new query syntax or a query language eventually.",
+      "false": "The review does not say that new query syntax will be needed."
+     }
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment in which AI agents write read functions and the result is counted?",
+     "criteria": {
+      "true": "One of the review's experiments has agents write read functions and counts how many fit the recognised shapes.",
+      "false": "No experiment in the review has agents write read functions."
+     }
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "instructions": "Does `review` propose building a recogniser of the fast shapes as a script over Mo source?",
+     "criteria": {
+      "true": "One of the review's experiments builds a script that reads Mo source and says which filters have a fast route.",
+      "false": "No experiment in the review builds a recogniser over Mo source."
+     }
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that runs a read at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "One of the review's experiments compares instruction counts of the same read at different store sizes.",
+      "false": "No experiment in the review compares instruction counts at different store sizes."
+     }
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures whether an agent fixes its code after being told a filter has no fast route?",
+     "criteria": {
+      "true": "One of the review's experiments gives an agent an error or warning about a walk and measures whether it rewrites the code into a recognised shape.",
+      "false": "No experiment in the review measures an agent's repair after such a message."
+     }
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "instructions": "Does `review` propose measuring Mo code that already exists for how its filters are written?",
+     "criteria": {
+      "true": "One of the review's experiments counts filter shapes in existing Mo code, such as Mo's library, its services or its recorded agent sessions.",
+      "false": "No experiment in the review measures existing Mo code."
+     }
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures what keeping an index current costs on writes?",
+     "criteria": {
+      "true": "One of the review's experiments measures the cost a kept index adds to each write.",
+      "false": "No experiment in the review measures the cost of keeping an index current."
+     }
+    },
+    "first_experiment": {
+     "type": "choice",
+     "instructions": "Which experiment does `review` say it would run first?",
+     "criteria": {
+      "agents_write_read_functions": "Agents write read functions and the shapes they use are counted.",
+      "recogniser_over_mo_source": "A script that recognises the fast shapes is built and run over Mo source.",
+      "instruction_counts_at_two_sizes": "The same read is run at different store sizes and its instruction counts are compared.",
+      "agent_repair_after_error": "An agent is told its filter has no fast route and its repair is measured.",
+      "index_upkeep_on_writes": "The cost a kept index adds to each write is measured."
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "instructions": "Is the experiment `review` would run first one of these: agents writing read functions, a recogniser script over Mo source, instruction counts at different store sizes, an agent's repair after an error, or the cost of keeping an index on writes?",
+     "criteria": {
+      "true": "The review's first experiment is one of those five.",
+      "false": "The review's first experiment is something else, or the review names no first experiment."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "own_code_strict": {
+     "type": "noul",
+     "noul": 0.78
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "noul": 0.14
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "noul": 0.69
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "noul": 0.15
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "noul": 0.63
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "noul": 0.37
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "noul": 0.29
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "noul": 0.12
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "noul": 0.11
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "noul": 0.71
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "noul": 0.52
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "noul": 0.93
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "noul": 0.16
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "first_experiment": {
+     "type": "choice",
+     "choice": "recogniser_over_mo_source",
+     "confidence": 1.0,
+     "probabilities": {
+      "agents_write_read_functions": 0.0,
+      "recogniser_over_mo_source": 1.0,
+      "instruction_counts_at_two_sizes": 0.0,
+      "agent_repair_after_error": 0.0,
+      "index_upkeep_on_writes": 0.0
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "noul": 0.92
+    }
+   },
+   "usage": {
+    "input_tokens": 3456,
+    "output_tokens": 481
+   }
+  }
+ },
+ "opus": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "Mo": "A pre-release programming language and runtime. Most Mo code is written by AI agents.",
+     "read function": "A function in the program that only reads stored data.",
+     "read program": "A small program an AI agent sends while the service runs, to read stored data.",
+     "fast route": "Answering a read through an index the store keeps, without reading every row.",
+     "walk": "Reading every row of a stored table.",
+     "recognised shape": "A way of writing a filter that the compiler can turn into a fast route."
+    },
+    "options": {
+     "A_strict": "A filter with no fast route is a compile error unless the code says in a word that it walks.",
+     "B_warn": "A filter with no fast route gets a warning only.",
+     "C_demand": "Nothing by default. A marker on a function makes the compiler refuse it if it has no fast route.",
+     "D_measure": "No static rule. A test runs each read function at two store sizes and compares instruction counts.",
+     "E_closed_form": "The table offers a fixed set of methods that take a field and a value, not a function.",
+     "F_review_door": "Each read function gets a ranked cost class, and an upgrade that makes one slower is held."
+    },
+    "review": "I worked alone and read-only: I changed no file and started no agents. Here is the review.\n\n**1. My choice**\n\n*For the program's own code: A (strict), with D as the check on it.* On a stored table, a filter the compiler can't give a fast route is a compile error unless the code says `walk`. Every Mo error already carries a fix that `mo fix` can apply (reference, Appendix A). So the error can offer the two ways out: \"add `index orders_by_buyer: orders by buyer`\" or \"write `walk`\". Agents act on errors that come with a fix.\n\nThe other options fall away for these reasons:\n- **B is out by Mo's own rule.** The reference says \"There are no warnings: a problem is an error, or it isn't reported\" (Appendix A).\n- **C is opt-in.** A slow read in a function nobody marked still arrives unnoticed, which fails the question as posed.\n- **F was already rejected.** Row 4 of the rejection table: an intent digest is equal or not, with no direction.\n\nD stays as a test-time check that the recogniser told the truth. The plain walk is the oracle, and the instruction count is the measure.\n\n*For a read program an agent sends at run time: D only, with no static gate.* An agent can't add an index, and design-ideas.md \u00a78 needs unplanned questions to walk. Rejection row 5 already notes that the instruction limit bounds every walk. So run the program, refuse it over its budget, and return and log its exact instruction count. That log is what \"the database proposes an index\" needs.\n\n**2. The strongest argument against A**\n\nStrict makes the recogniser's coverage part of what the language means. Whether a program compiles then depends on which shapes the pass knows. Ordinary refactors can break the build: pulling the test out into a named function, using `count` or `find`, or writing a `for` loop. That is a query language in disguise, with grammar you can't see. E is the honest form of the same thing.\n\nThe learnability corpus points this way. Across its 368 `.mo` files I counted 817 `for \u2026 in` loops against 80 `.filter(` calls. In `lib/list.mo`, `filter` is itself a `for` loop with `append`. So agents may mostly write the shape the compiler would miss.\n\n**3. Experiments, in the order I'd run them**\n\n1. **Shape census.**\n   - Built: a Python recogniser over the agent-written Mo in `learnability/` and the read functions in `sketches/kept-versions/worlds.mo`. It labels each piece of code that picks rows as *recognised shape* or *missed*.\n   - Result to show: at least 60% of code that picks rows by one field is in a recognised shape.\n   - Prediction: below 60%, at 75%.\n   - Control that must fail: a planted file of `for`-loop filters must all come out *missed*.\n   - Needs from Mo: nothing.\n2. **Survival under refactor.**\n   - Built: 20 recognised filters, each put through the rewrites agents actually make: a named test function, `count`, `find`, `any?`, a `for` loop, `and` across two fields, `!=`.\n   - Result to show: at least 80% stay recognised under a pass of reasonable size.\n   - Prediction: below 80%, at 70%.\n   - Needs from Mo: nothing.\n3. **Can D tell the two apart on Mo today?**\n   - Built: a sketch service with a `Map` standing in for an index, plus one read through it and one walk. The cost of each is measured exactly with `mo query --max-work`, halving the limit as `asked-again.py` already does, at 1,000 and 4,000 rows.\n   - Result to show: the index read's count grows by at most 1.2 times, the walk's by at least 3.5 times, and the counts match across two runs.\n   - Prediction: holds, at 85%.\n   - Control that must fail: the walk.\n   - A second control: an index read whose answer grows with the store, such as `orders_by_buyer.all(buyer)` when a buyer's orders grow with it. It must not fail, or D needs the answer's size held fixed.\n   - Limits in Mo: `mo query` needs an export, and `mo fetch` takes 28 s at 50,000 rows, so keep the sizes small. A native `Map.get` may count as one VM instruction whatever the map's size.\n4. **Agents under A versus E.**\n   - Built: 10 read questions over one schema, in two arms. In one, a script stands in for `mo check` and returns E-coded errors with fixes. In the other, the table has closed-form methods (`where(field, value)`). Several agents, Wilson intervals from `learnability/wilson.py`.\n   - Result to show: within one round of fixes, arm A gets correct answers on the fast route at least as often as arm E.\n   - Prediction: A is no better, at 55%.\n   - Needs from Mo: nothing. The `Table` methods are mocks over `Map`.\n\n**4. Run first, and what would change my choice**\n\nRun experiment 1 first. It is the cheapest, needs nothing from Mo, and is the one most likely to sink the idea.\n\nTwo results would change my choice:\n- If 1 and 2 both come out low (say under 40% coverage and under 50% survival), A becomes a tax on ordinary code. I'd switch to E with A's enforcement: a stored `Table` has no `filter` and no iteration except `walk`.\n- If 4 shows A matching E after one round of fixes, I keep A.\n\n**5. What is missing**\n\n*An option you didn't list.* The type enforces it, not a pattern-matcher. A stored `Table` is not a `List`: it offers `get`, the index methods and one explicit `walk(fn)`. Nothing has to be recognised to catch a slow read, because a slow read can only be written as `walk`. Shape recognition then becomes an optimisation inside `walk`, not a gate.\n\n*The flaw most likely to sink \"plain Mo is the query language\" has three parts:*\n- **The compiler has to trust named library functions.** `filter` is plain Mo, not a primitive. Recognising it means special-casing `List.filter`, `count` and `find` by name. That is a query vocabulary, just not called one.\n- **D measures the wrong cost once data lives on disk.** VM instructions are not node reads. An index lookup and a walk could cost the same instructions per call while differing a thousandfold in disk reads. That would need a node-read counter, which Mo doesn't have (design.md \u00a78, lines 1 and 3).\n- **Agents' habits.** The `for` loops outnumber `filter` calls about ten to one, though that count covers all code, not only read functions.\n\n**6. Confidence**\n\nI'm 60% confident in my choice in item 1.\n\nI didn't read `src/`, so it's an assumption that a native `Map.get` counts as one instruction. The `for` versus `filter` count is a raw grep across all learnability code, not just read functions.\n"
+   },
+   "questions": {
+    "own_code_strict": {
+     "type": "noul",
+     "instructions": "For the program's own code, does `review` choose that a filter with no fast route is a compile error?",
+     "criteria": {
+      "true": "The review's choice for the program's own code makes a filter with no fast route fail to compile, with or without a word that allows a walk.",
+      "false": "The review's choice for the program's own code lets a filter with no fast route compile without an error."
+     }
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "instructions": "For the program's own code, does the choice in `review` include a fixed set of table methods that take a field and a value?",
+     "criteria": {
+      "true": "The review chooses fixed table methods that take a field and a value as part of its answer for the program's own code.",
+      "false": "The review's choice for the program's own code keeps filters written as ordinary functions."
+     }
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include a test that runs a read function at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "The review's chosen combination includes comparing instruction counts at different store sizes.",
+      "false": "The review's chosen combination has no test that compares instruction counts at different store sizes."
+     }
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include holding an upgrade that makes a read function slower?",
+     "criteria": {
+      "true": "The review's chosen combination holds or flags an upgrade that makes a read function slower.",
+      "false": "The review's chosen combination does nothing at upgrade time about a read function becoming slower."
+     }
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "instructions": "Does `review` give a read program an agent sends at run time a different rule from the program's own code?",
+     "criteria": {
+      "true": "The review chooses one rule for the program's own code and another for a read program sent at run time.",
+      "false": "The review applies the same rule to the program's own code and to a read program sent at run time."
+     }
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "instructions": "For a read program an agent sends at run time, does `review` choose a limit on rows read or work done while it runs?",
+     "criteria": {
+      "true": "The review limits how many rows a read program sent at run time may read, or how much work it may do.",
+      "false": "The review sets no run-time limit on rows or work for a read program sent at run time."
+     }
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "instructions": "Does `review` say that agents will often write a read in a form the compiler does not recognise?",
+     "criteria": {
+      "true": "The review says code written by agents will often fall outside the recognised shapes.",
+      "false": "The review does not say that agents' code will often fall outside the recognised shapes."
+     }
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read which combines two tables is a gap in the idea?",
+     "criteria": {
+      "true": "The review names reads that look up or combine a second table as something the idea does not cover well.",
+      "false": "The review does not name reads across two tables as a gap."
+     }
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping indexes current makes writes slower or uses more space?",
+     "criteria": {
+      "true": "The review says an index kept current costs time on writes or costs space.",
+      "false": "The review does not mention a cost of indexes on writes or space."
+     }
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read served by an index can still be slow because its answer is large?",
+     "criteria": {
+      "true": "The review says a read with a fast route can still be slow when it returns many rows.",
+      "false": "The review does not say that a large answer makes an indexed read slow."
+     }
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo has no sorted or ordered collection today?",
+     "criteria": {
+      "true": "The review says Mo today lacks a sorted map, an ordered index or a tree collection.",
+      "false": "The review does not say that Mo lacks a sorted or ordered collection."
+     }
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that a new syntax for queries will be needed in the end?",
+     "criteria": {
+      "true": "The review says the project will need new query syntax or a query language eventually.",
+      "false": "The review does not say that new query syntax will be needed."
+     }
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment in which AI agents write read functions and the result is counted?",
+     "criteria": {
+      "true": "One of the review's experiments has agents write read functions and counts how many fit the recognised shapes.",
+      "false": "No experiment in the review has agents write read functions."
+     }
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "instructions": "Does `review` propose building a recogniser of the fast shapes as a script over Mo source?",
+     "criteria": {
+      "true": "One of the review's experiments builds a script that reads Mo source and says which filters have a fast route.",
+      "false": "No experiment in the review builds a recogniser over Mo source."
+     }
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that runs a read at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "One of the review's experiments compares instruction counts of the same read at different store sizes.",
+      "false": "No experiment in the review compares instruction counts at different store sizes."
+     }
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures whether an agent fixes its code after being told a filter has no fast route?",
+     "criteria": {
+      "true": "One of the review's experiments gives an agent an error or warning about a walk and measures whether it rewrites the code into a recognised shape.",
+      "false": "No experiment in the review measures an agent's repair after such a message."
+     }
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "instructions": "Does `review` propose measuring Mo code that already exists for how its filters are written?",
+     "criteria": {
+      "true": "One of the review's experiments counts filter shapes in existing Mo code, such as Mo's library, its services or its recorded agent sessions.",
+      "false": "No experiment in the review measures existing Mo code."
+     }
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures what keeping an index current costs on writes?",
+     "criteria": {
+      "true": "One of the review's experiments measures the cost a kept index adds to each write.",
+      "false": "No experiment in the review measures the cost of keeping an index current."
+     }
+    },
+    "first_experiment": {
+     "type": "choice",
+     "instructions": "Which experiment does `review` say it would run first?",
+     "criteria": {
+      "agents_write_read_functions": "Agents write read functions and the shapes they use are counted.",
+      "recogniser_over_mo_source": "A script that recognises the fast shapes is built and run over Mo source.",
+      "instruction_counts_at_two_sizes": "The same read is run at different store sizes and its instruction counts are compared.",
+      "agent_repair_after_error": "An agent is told its filter has no fast route and its repair is measured.",
+      "index_upkeep_on_writes": "The cost a kept index adds to each write is measured."
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "instructions": "Is the experiment `review` would run first one of these: agents writing read functions, a recogniser script over Mo source, instruction counts at different store sizes, an agent's repair after an error, or the cost of keeping an index on writes?",
+     "criteria": {
+      "true": "The review's first experiment is one of those five.",
+      "false": "The review's first experiment is something else, or the review names no first experiment."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "own_code_strict": {
+     "type": "noul",
+     "noul": 0.94
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "noul": 0.07
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "noul": 0.09
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "noul": 0.88
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "noul": 0.07
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "noul": 0.81
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "noul": 0.21
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "noul": 0.44
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "noul": 0.83
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "first_experiment": {
+     "type": "choice",
+     "choice": "recogniser_over_mo_source",
+     "confidence": 0.99,
+     "probabilities": {
+      "agents_write_read_functions": 0.01,
+      "recogniser_over_mo_source": 0.99,
+      "instruction_counts_at_two_sizes": 0.0,
+      "agent_repair_after_error": 0.0,
+      "index_upkeep_on_writes": 0.0
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "noul": 0.96
+    }
+   },
+   "usage": {
+    "input_tokens": 3993,
+    "output_tokens": 481
+   }
+  }
+ },
+ "gemini": {
+  "request": {
+   "model": "jev-latest",
+   "state": {
+    "terms": {
+     "Mo": "A pre-release programming language and runtime. Most Mo code is written by AI agents.",
+     "read function": "A function in the program that only reads stored data.",
+     "read program": "A small program an AI agent sends while the service runs, to read stored data.",
+     "fast route": "Answering a read through an index the store keeps, without reading every row.",
+     "walk": "Reading every row of a stored table.",
+     "recognised shape": "A way of writing a filter that the compiler can turn into a fast route."
+    },
+    "options": {
+     "A_strict": "A filter with no fast route is a compile error unless the code says in a word that it walks.",
+     "B_warn": "A filter with no fast route gets a warning only.",
+     "C_demand": "Nothing by default. A marker on a function makes the compiler refuse it if it has no fast route.",
+     "D_measure": "No static rule. A test runs each read function at two store sizes and compares instruction counts.",
+     "E_closed_form": "The table offers a fixed set of methods that take a field and a value, not a function.",
+     "F_review_door": "Each read function gets a ranked cost class, and an upgrade that makes one slower is held."
+    },
+    "review": "1. Choice\n\nProgram's own code: A (Strict) and F (the review door). Any read on a stored Table without an index or view route is a compile error unless marked walk. Adding walk, or worsening a read's cost class (constant, log, key-fanout, walk), is a directional intent change held for human approval.\n\nWhy: B breaks Mo's no-warnings rule (docs/reference/README.md, Appendix A); exit-0 checks get ignored, while learnability/bench-v0-round-3/results.md showed agents fix errors carrying a Fix on the next attempt 97.4% of the time (37/38). C lets omitted fast markers scan silently. D is blinded by Mo's VM: C primitives in src/prim/collections.c run inside one MO_OP_PRIM in src/vm/execute.c uncounted. E drops plain Mo before testing it. F stops agents adding walk just to silence mo check, while upgrades removing walk pass freely.\n\nRun-time agent read program: A (Strict with walk) plus work budget, without F. Unplanned questions have no human reviewer, so F cannot apply and walk must remain legal. Compiling under A catches accidental scans before touching state (without counting a service failure), suggests indexed shapes via Fix, and requires walk only when no fast route exists, marking scan cost and whole-table footprint.\n\n2. Strongest argument against this choice\n\nStrict recognition turns an optimisation into a brittle language boundary. Meaning-preserving edits \u2014 extracting a helper, binding a tuple, reordering boolean arms, or calling a pure function \u2014 cross an invisible cliff and fail compilation, forcing authors and agents to infer a hidden subset from errors rather than an explicit API like E. On run-time reads without F, agents may write walk on first try to skip a compile round-trip, recreating scans and inflating landing conflicts.\n\n3. Experiments, in order\n\nExperiment 1: Natural shape coverage (surface vs Mo Core).\nBuilt/measured: Prompt Claude and GPT sessions (learnability/protocol.md) on 30 read tasks (equality, and/or, range, sort-take, join, group-sum) on a 4-table Shop in sketches/, unhinted. Run two Python recognisers on passing code: surface syntax vs mo check --emit=core (mo_core_print in src/core/core.h). Control: 10 obfuscated scans (recursive helpers, key math, field-to-field tests) must score 0/10 on both.\nResult: Share of valid queries matched on surface syntax vs Mo Core.\nPrediction (80%): Surface ~65%; Core <20% because loop in src/lower/expressions.c and filter in lib/list.mo lower to MO_CORE_MAP_OP_ENTRIES and CPS jumps.\nMo lacks: Map filter in MO_CORE_MAP_OPS (src/core/ops.def; lib/map.mo has only update), Core ops for filter/sort_by, and typed-AST output in src/tools/cli.c.\n\nExperiment 2: Enforcement trial (A vs B vs C vs E).\nBuilt/measured: Wrap mo check and the surface recogniser across the 30 tasks: (A) error + Fix, allowing walk on 6 unindexable tasks; (B) exit-0 warning; (C) opt-in fast prefix; (E) opaque Table module exposing lookup/range/walk. Control: A without walk on the 6 unindexable tasks must pass 0/6.\nResult: Share of indexable tasks ending correct and fast-routed within 3 retries, plus A's walk-abuse rate.\nPrediction (80%): A hits >=90% correct-and-fast with <=10% walk abuse; B and C stay ~65% fast; E hits >=95% fast on single keys but <60% correct on joins/compound filters.\nMo lacks: Warnings (docs/reference/README.md), walk/fast grammar (grammar/mo.y), and custom edits in mo fix (src/tools/fix.c).\n\nExperiment 3: Instruction-scaling audit of D.\nBuilt/measured: Sketch in sketches/ with Tree (sketches/kept-versions/tree.mo) and Map at N=100 and N=2,000 across 20 reads: 8 indexed/log-depth reads (including multi-row orders_of), 6 Mo-loop scans, and 6 C-primitive scans (values, sum, contains?, intersection), counted via mo query --max-work (asked-again.py). Control: all 6 Mo-loop scans must grow >=15x in instructions.\nResult: False-negative rate on C-primitive scans and false-positive rate on log-depth/multi-row reads.\nPrediction (95%): 6/6 C-primitive scans show zero instruction growth despite ~20x slower runtime; >=50% of tree/multi-row reads grow.\nMo lacks: Per-element charging under MO_OP_PRIM (src/vm/execute.c) in mo_prim_collection (src/prim/collections.c); extra parameters in query_inputs (src/check/services.c); sizes past MO_LIMIT_INPUT_ELEMENTS in mo_input_build (src/tools/inputs-build.c); instruction checks via mo_process_instructions_remaining (src/vm/process.c).\n\nExperiment 4: Order equivalence and landing send-backs.\nBuilt/measured: Add a secondary index to sketches/kept-versions/worlds.mo across 500 two-agent histories, measuring == mismatches between walks and index rewrites after mutations, and false land send-backs under key vs walk footprints. Control: skip read re-checks in land; conflicting worlds must falsely land.\nResult: Rate of == mismatches and drop in false send-backs under key footprints.\nPrediction (85%): Range/OR rewrites fail == in >=30% of histories; key footprints cut false send-backs >=80%.\nMo lacks: Budgets above MO_LIMIT_SERVICE_WORK without supervisor stops (src/vm/service.c), and ordered cost classes in difference and digest_order (src/tools/protocol-door.c).\n\n4. First experiment and decision flip\n\nExperiment 1: it needs zero Mo changes, reuses learnability and mo check --emit=core, and tests natural shape coverage and survival. Switch to E + A + F (closed Table combinators plus walk) if surface recognition is <40%, or if Experiment 2 shows >25% walk abuse or <75% completion under A. If --emit=core matches >=70%, run the pass on Mo Core instead of typed AST.\n\n5. Flaw most likely to sink \"plain Mo is the query language\"\n\nMo's collections clash with query planning. Lowering erases query algebra before Core (loop in src/lower/expressions.c and lib/list.mo turn filters and Map loops into MO_CORE_MAP_OP_ENTRIES plus CPS jumps), while Mo mandates insertion/list order (docs/reference/README.md) and eager evaluation (sort_by in lib/list.mo sorts all rows before take). Exact == equivalence breaks when range, OR or join plans return key order instead of insertion order, and eager evaluation blocks index top-K without pipeline fusion. Table must drop insertion order and stay unlowered through planning.\n\n6. Confidence\n\n68%.\n"
+   },
+   "questions": {
+    "own_code_strict": {
+     "type": "noul",
+     "instructions": "For the program's own code, does `review` choose that a filter with no fast route is a compile error?",
+     "criteria": {
+      "true": "The review's choice for the program's own code makes a filter with no fast route fail to compile, with or without a word that allows a walk.",
+      "false": "The review's choice for the program's own code lets a filter with no fast route compile without an error."
+     }
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "instructions": "For the program's own code, does the choice in `review` include a fixed set of table methods that take a field and a value?",
+     "criteria": {
+      "true": "The review chooses fixed table methods that take a field and a value as part of its answer for the program's own code.",
+      "false": "The review's choice for the program's own code keeps filters written as ordinary functions."
+     }
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include a test that runs a read function at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "The review's chosen combination includes comparing instruction counts at different store sizes.",
+      "false": "The review's chosen combination has no test that compares instruction counts at different store sizes."
+     }
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "instructions": "Does the choice in `review` include holding an upgrade that makes a read function slower?",
+     "criteria": {
+      "true": "The review's chosen combination holds or flags an upgrade that makes a read function slower.",
+      "false": "The review's chosen combination does nothing at upgrade time about a read function becoming slower."
+     }
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "instructions": "Does `review` give a read program an agent sends at run time a different rule from the program's own code?",
+     "criteria": {
+      "true": "The review chooses one rule for the program's own code and another for a read program sent at run time.",
+      "false": "The review applies the same rule to the program's own code and to a read program sent at run time."
+     }
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "instructions": "For a read program an agent sends at run time, does `review` choose a limit on rows read or work done while it runs?",
+     "criteria": {
+      "true": "The review limits how many rows a read program sent at run time may read, or how much work it may do.",
+      "false": "The review sets no run-time limit on rows or work for a read program sent at run time."
+     }
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "instructions": "Does `review` say that agents will often write a read in a form the compiler does not recognise?",
+     "criteria": {
+      "true": "The review says code written by agents will often fall outside the recognised shapes.",
+      "false": "The review does not say that agents' code will often fall outside the recognised shapes."
+     }
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read which combines two tables is a gap in the idea?",
+     "criteria": {
+      "true": "The review names reads that look up or combine a second table as something the idea does not cover well.",
+      "false": "The review does not name reads across two tables as a gap."
+     }
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "instructions": "Does `review` say that keeping indexes current makes writes slower or uses more space?",
+     "criteria": {
+      "true": "The review says an index kept current costs time on writes or costs space.",
+      "false": "The review does not mention a cost of indexes on writes or space."
+     }
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "instructions": "Does `review` say that a read served by an index can still be slow because its answer is large?",
+     "criteria": {
+      "true": "The review says a read with a fast route can still be slow when it returns many rows.",
+      "false": "The review does not say that a large answer makes an indexed read slow."
+     }
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "instructions": "Does `review` say that Mo has no sorted or ordered collection today?",
+     "criteria": {
+      "true": "The review says Mo today lacks a sorted map, an ordered index or a tree collection.",
+      "false": "The review does not say that Mo lacks a sorted or ordered collection."
+     }
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "instructions": "Does `review` say that a new syntax for queries will be needed in the end?",
+     "criteria": {
+      "true": "The review says the project will need new query syntax or a query language eventually.",
+      "false": "The review does not say that new query syntax will be needed."
+     }
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment in which AI agents write read functions and the result is counted?",
+     "criteria": {
+      "true": "One of the review's experiments has agents write read functions and counts how many fit the recognised shapes.",
+      "false": "No experiment in the review has agents write read functions."
+     }
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "instructions": "Does `review` propose building a recogniser of the fast shapes as a script over Mo source?",
+     "criteria": {
+      "true": "One of the review's experiments builds a script that reads Mo source and says which filters have a fast route.",
+      "false": "No experiment in the review builds a recogniser over Mo source."
+     }
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that runs a read at more than one store size and compares instruction counts?",
+     "criteria": {
+      "true": "One of the review's experiments compares instruction counts of the same read at different store sizes.",
+      "false": "No experiment in the review compares instruction counts at different store sizes."
+     }
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures whether an agent fixes its code after being told a filter has no fast route?",
+     "criteria": {
+      "true": "One of the review's experiments gives an agent an error or warning about a walk and measures whether it rewrites the code into a recognised shape.",
+      "false": "No experiment in the review measures an agent's repair after such a message."
+     }
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "instructions": "Does `review` propose measuring Mo code that already exists for how its filters are written?",
+     "criteria": {
+      "true": "One of the review's experiments counts filter shapes in existing Mo code, such as Mo's library, its services or its recorded agent sessions.",
+      "false": "No experiment in the review measures existing Mo code."
+     }
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "instructions": "Does `review` propose an experiment that measures what keeping an index current costs on writes?",
+     "criteria": {
+      "true": "One of the review's experiments measures the cost a kept index adds to each write.",
+      "false": "No experiment in the review measures the cost of keeping an index current."
+     }
+    },
+    "first_experiment": {
+     "type": "choice",
+     "instructions": "Which experiment does `review` say it would run first?",
+     "criteria": {
+      "agents_write_read_functions": "Agents write read functions and the shapes they use are counted.",
+      "recogniser_over_mo_source": "A script that recognises the fast shapes is built and run over Mo source.",
+      "instruction_counts_at_two_sizes": "The same read is run at different store sizes and its instruction counts are compared.",
+      "agent_repair_after_error": "An agent is told its filter has no fast route and its repair is measured.",
+      "index_upkeep_on_writes": "The cost a kept index adds to each write is measured."
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "instructions": "Is the experiment `review` would run first one of these: agents writing read functions, a recogniser script over Mo source, instruction counts at different store sizes, an agent's repair after an error, or the cost of keeping an index on writes?",
+     "criteria": {
+      "true": "The review's first experiment is one of those five.",
+      "false": "The review's first experiment is something else, or the review names no first experiment."
+     }
+    }
+   }
+  },
+  "reply": {
+   "model": "jev-1.14.0",
+   "answers": {
+    "own_code_strict": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "own_code_closed_form": {
+     "type": "noul",
+     "noul": 0.09
+    },
+    "choice_includes_measuring": {
+     "type": "noul",
+     "noul": 0.42
+    },
+    "choice_includes_review_door": {
+     "type": "noul",
+     "noul": 0.96
+    },
+    "agent_rule_differs": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "agent_run_time_limit": {
+     "type": "noul",
+     "noul": 0.87
+    },
+    "says_agents_miss_shapes": {
+     "type": "noul",
+     "noul": 0.74
+    },
+    "says_two_table_reads_are_a_gap": {
+     "type": "noul",
+     "noul": 0.81
+    },
+    "says_indexes_cost_writes": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "says_large_answer_is_slow": {
+     "type": "noul",
+     "noul": 0.21
+    },
+    "says_mo_lacks_ordered_collection": {
+     "type": "noul",
+     "noul": 0.07
+    },
+    "says_new_syntax_will_be_needed": {
+     "type": "noul",
+     "noul": 0.37
+    },
+    "experiment_agents_write_reads": {
+     "type": "noul",
+     "noul": 0.85
+    },
+    "experiment_recogniser_script": {
+     "type": "noul",
+     "noul": 0.83
+    },
+    "experiment_growth_at_two_sizes": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "experiment_agent_repairs_after_error": {
+     "type": "noul",
+     "noul": 0.86
+    },
+    "experiment_existing_code": {
+     "type": "noul",
+     "noul": 0.41
+    },
+    "experiment_index_upkeep_cost": {
+     "type": "noul",
+     "noul": 0.06
+    },
+    "first_experiment": {
+     "type": "choice",
+     "choice": "recogniser_over_mo_source",
+     "confidence": 0.86,
+     "probabilities": {
+      "agents_write_read_functions": 0.11,
+      "recogniser_over_mo_source": 0.89,
+      "instruction_counts_at_two_sizes": 0.0,
+      "agent_repair_after_error": 0.0,
+      "index_upkeep_on_writes": 0.0
+     }
+    },
+    "first_experiment_is_listed": {
+     "type": "noul",
+     "noul": 0.94
+    }
+   },
+   "usage": {
+    "input_tokens": 3879,
+    "output_tokens": 481
+   }
+  }
+ }
+}
