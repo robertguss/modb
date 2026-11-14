@@ -27,6 +27,15 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 **Decided after outside review (2026-11-14).** Robert asked models from two other providers to review the direction. Both advised building a Mo service he uses first. One said to build a storage engine only if a guarantee needs it; the other said never to build one. Robert's decision: he still wants the database, and it stays the destination. The reviews are recorded on [Which problems of agents sharing data is this database for?](issues/15-which-problems-is-this-database-for.md) and [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md). What the reviews changed is the order of the work and the first slice, not the destination.
 
+**Steer on 2026-11-14: zoom out.** Robert said the work was chasing rabbit trails and asked for the big picture, "extremely ambitious".
+
+- He accepts building the upper half of the database first.
+- Nothing may presuppose SQL or the relational model. If SQLite sits underneath at first, it is only a place to keep bytes, as it is in Mo today; none of its tables, indexes or queries is used.
+- The idea to explore at the top: no query language at all, and a database that is written and used in Mo itself.
+- FERPA is one possible use, not what the design is driven by. The database is not built for his work alone; others should be able to use it.
+- Memory safety, the Rust port and Safe C stay parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md) until an addition to the runtime forces the question.
+- A side question gets a short answer and is parked. It does not grow into its own investigation unless he asks.
+
 **Mo on 2026-11-13 (v0.2 and part of Phase 6).**
 
 - Runs command-line programs (arguments, environment, console, files, clock, random) and services (state saved to SQLite, crash recovery, timers, typed live upgrades, reached as MCP tools over HTTP).
