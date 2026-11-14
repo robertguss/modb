@@ -156,7 +156,7 @@ def loop_sites(lines, known, tally):
         one_if = len(top) == 2 and top[0].startswith("if ") and ": " not in top[0] and top[1] == "end"
         result = shape(tests[0], rows, known) if one_if else "miss: the loop does more than one if"
         yield {"line": at + 1, "kind": "loop", "over": over, "text": f"{line.strip()} | {' | '.join(tests)}",
-               "shape": result}
+               "shape": result, "some test": any(shape(test, rows, known) in FOUND for test in tests)}
 
 
 def census(root):
@@ -190,7 +190,8 @@ def share(sites):
     calls = sum(site["kind"] == "call" and site["shape"] in FOUND for site in sites)
     loops = sum(site["kind"] == "loop" and site["shape"] in FOUND for site in sites)
     return {"sites": len(sites), "library calls only": calls, "with loops of one if": calls + loops,
-            "by equality alone": sum(site["shape"] == "equal" for site in sites)}
+            "by equality alone": sum(site["shape"] == "equal" for site in sites),
+            "with any loop that has a test in a shape": calls + sum(site.get("some test", False) for site in sites)}
 
 
 def percent(part, whole):
@@ -210,7 +211,9 @@ def report(name, sites, tally):
         row = result[key]
         print(f"  {key}: library calls only {percent(row['library calls only'], row['sites'])}; "
               f"with loops of one if {percent(row['with loops of one if'], row['sites'])}; "
-              f"by equality alone {percent(row['by equality alone'], row['sites'])}")
+              f"by equality alone {percent(row['by equality alone'], row['sites'])}; "
+              f"with any loop that has a test in a shape "
+              f"{percent(row['with any loop that has a test in a shape'], row['sites'])}")
     for kind, count in sorted(result["shapes of distinct sites"].items(), key=lambda item: -item[1]):
         print(f"    {count:4} {kind}")
     return result
