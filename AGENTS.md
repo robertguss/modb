@@ -12,6 +12,7 @@ MoDB is the research and the decisions toward a database for many AI agents, to 
 | `raw/` | Primary sources saved word for word (papers, pages); created when first needed | Never edited |
 | `wiki/` | The compiled knowledge base | Agents only |
 | `GLOSSARY.md` | The project's vocabulary | The `domain-modeling` skill |
+| `design-ideas.md` | Our own candidate ideas for the database while they are explored; each says what Mo has, what it needs, earlier work and what is open | The session exploring them with Robert |
 
 `research/` and `raw/` are sources. `wiki/` is what gets read. A correction to a source goes in the
 wiki, never in the source.

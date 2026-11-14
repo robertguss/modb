@@ -14,7 +14,7 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 
 ## Notes
 
-**Tracker and wiki.** [AGENTS.md](AGENTS.md) holds the conventions for tickets, for `research/` and for the wiki. Research findings are sources; the wiki compiled from them is what a decision ticket reads. Start at [wiki/overview.md](wiki/overview.md) and [wiki/index.md](wiki/index.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
+**Tracker and wiki.** [AGENTS.md](AGENTS.md) holds the conventions for tickets, for `research/` and for the wiki. Research findings are sources; the wiki compiled from them is what a decision ticket reads. Start at [wiki/overview.md](wiki/overview.md) and [wiki/index.md](wiki/index.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md). Our own candidate ideas, while they are being explored, are in [design-ideas.md](design-ideas.md).
 
 **Why this effort exists.** Robert wants an ambitious program that drives what Mo gains next, as an experiment in designing a language alongside a demanding project. The purpose is learning and his own use. Adoption by others and comparison of Mo with other languages are not measures. Clarified on 2026-11-14: he is not aiming to run Mo in production soon and is in no hurry. "Ready for real software" meant beginning to test what Mo has and filling the language's gaps by building software. Doing it right outweighs doing it soon, so "usable sooner" is not a reason to prefer one route.
 
