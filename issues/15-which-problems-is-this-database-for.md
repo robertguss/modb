@@ -1,7 +1,7 @@
 # Which problems of agents sharing data is this database for?
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: [Agents and databases today](09-agents-and-databases-today.md), [One comparison across all families](10-one-comparison-across-families.md), [Keeping sensitive data from agents and model providers](20-keeping-sensitive-data-from-agents.md), [Security of a database that agents use](21-security-of-a-database-agents-use.md)
 
 ## Question
