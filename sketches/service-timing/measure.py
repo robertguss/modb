@@ -72,8 +72,8 @@ class Service:
 
 def spread(times):
     ordered = sorted(times)
-    return {"median": round(statistics.median(ordered), 2), "p90": round(ordered[int(len(ordered) * 0.9)], 2),
-            "max": round(ordered[-1], 2)}
+    return {"min": round(ordered[0], 3), "median": round(statistics.median(ordered), 3),
+            "p90": round(ordered[int(len(ordered) * 0.9)], 3), "max": round(ordered[-1], 3)}
 
 
 def grow(service, rows, target, step):

@@ -34,6 +34,12 @@ Then, from this repository, with `MO` the path of that binary:
 python3 sketches/service-timing/measure.py $MO 0,1000,10000,50000,100000   # time reads and writes at each size
 python3 sketches/service-timing/ceiling.py $MO                            # the largest state that takes a write, snapshots, restart
 python3 sketches/service-timing/waits.py $MO                              # does a read wait behind a write; run after ceiling.py
+python3 sketches/service-timing/breakdown.py $MO 300 120                  # where a call's time goes
+python3 sketches/service-timing/yardstick.py 1,1000,10000,50000,100000,1000000,10000000
 ```
 
-Run them on a quiet machine. The recorded runs were not: another session was building on the same machine.
+`breakdown.py` reads the server's processor time for each kind of call from `/proc`. It then stops the service with `gdb` 300 times while reads run and 120 times while writes run, and counts the share of busy samples each function is in. `perf` has no build for this machine's kernel. It takes about a quarter of an hour.
+
+`yardstick.py` does not use Mo. It does the same job with SQLite inside one Python process: one table of numbered rows of 64 bytes, read one row, change one row and commit. It uses the settings Mo's store uses (`src/host/store.c` in `~/code/mo`), so each commit is synced to disk. There is no web request around it, so its times are a floor to compare against, not a like-for-like figure.
+
+Run them on a quiet machine. The first recorded runs were not: another session was building on the same machine. The ticket marks which numbers came from which run.

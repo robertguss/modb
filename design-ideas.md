@@ -214,7 +214,20 @@ Robert proposed on 2026-11-14 to write small Lean and TLA+ models, "like we did 
 3. A TLA+ model of the order of writes to disk from [Storage underneath](#storage-underneath), with a crash at every step.
 4. Lean statements, without proofs, for "a read program cannot change data" and "a helper's grant never shows more than the grant it was made from".
 
-**Performance, kept in mind.** Some costs come from the shape and cannot be optimised away later: one writer on the main line; each change rewrites and hashes a path of nodes; each merge runs the agent's reads again; a read hops from node to node. Each model and sketch counts these. The base numbers were measured on 2026-11-14, on a busy machine ([How fast and large is a Mo service?](issues/11-how-fast-and-large-is-a-mo-service.md)). A read takes about 8 ms at any size of state. A write takes about 17 ms plus 0.76 ms for every 1,000 small rows, because every write encodes the whole state; at 100,000 rows that is about a tenth of a second, and a read behind it waits as long. The state stops taking writes at about 125,000 small rows, 9 MiB saved, because of the memory one call may use. One writer on the main line and a whole-state cost on each write are therefore measured facts of a Mo service today, not guesses.
+**Performance, kept in mind.** Some costs come from the shape and cannot be optimised away later: one writer on the main line; each change rewrites and hashes a path of nodes; each merge runs the agent's reads again; a read hops from node to node. Each model and sketch counts these. The base numbers were measured on 2026-11-14, first on a busy machine and then on a quiet one, which gave nearly the same ([How fast and large is a Mo service?](issues/11-how-fast-and-large-is-a-mo-service.md)). A read takes about 10 ms at any size of state. A write takes about 17 ms plus 0.66 ms for every 1,000 small rows; at 100,000 rows that is about 80 ms, and a read behind it waits as long. The state stops taking writes at about 125,000 small rows, 9 MiB saved, because of the memory one call may use. One writer on the main line and a whole-state cost on each write are therefore measured facts of a Mo service today, not guesses.
+
+**The three costs of a Mo service, measured apart on 2026-11-14.**
+
+| Cost | Size | Where it comes from | Whose it is |
+| --- | --- | --- | --- |
+| On every call | About 10 ms of processor | The layer of `mo serve` that reads and checks the HTTP request. It is Mo bytecode run by the VM. | Mo's services, whatever they hold |
+| On every write | About 7 ms, mostly waiting | Syncing to disk | Any store that syncs each write. SQLite by itself pays about 3 ms on this disk. |
+| On every write, growing | About 0.65 ms for every 1,000 rows | The whole state is encoded and decoded back into a fresh copy (59% of a write at 100,000 rows), checksummed (9%) and the old copy freed (10%) | How Mo saves a service's state |
+
+- The yardstick: SQLite by itself, on the same disk with the settings Mo's store uses, takes about 3 ms for a synced write and a few thousandths of a millisecond for a read, from one row to ten million. It has no HTTP request around it, so it is a floor and not a like-for-like figure.
+- Only the third cost is about how data is stored. The tree of write-once nodes under "Storage underneath" is aimed at it.
+- The first cost falls on reads, which agents send in high volumes. A request program (idea 1) that does many reads in one request would pay it once. This is Claude's inference and was not measured.
+- None of this is a decision. Whether the first slice lives with these costs, or Mo changes first, is open.
 
 **Other tools looked at on 2026-11-14.**
 
@@ -586,6 +599,9 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **How often real work needs a change whose middle breaks a rule,** which decides the price of checking after every call.
 - **A long world sent back for ever,** since a world with more calls reads more.
 - **Clearing old versions,** given how fast garbage grows.
+- **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
+- **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
+- **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
 - **One write at a time** in place of one operation at a time. This changes a settled rule.
 - **What the runtime must gain:** bytes at an offset, forcing data to disk, a hash, a tree-shaped collection, running reads alongside the writer.
 - **Batteries:** which, in what order, and what keeps the list short.
