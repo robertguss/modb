@@ -176,6 +176,30 @@ A value read from a sensitive field carries a label in its type, and so does any
 - **Earlier work:** [information-flow labels](wiki/ideas/information-flow-labels.md), [IFDB](wiki/systems/ifdb.md).
 - **Open:** labels do not stop leaks through how long a program runs or how large its reply is. Choosing the release functions is where the judgement goes.
 
+### 10. The compiler is the planner
+
+Written on 2026-11-14 after Robert's two steers: judge an idea by where Mo should go, and do not hold it back to keep Mo easy to learn. It is option I in [experiments.md](experiments.md), made wider.
+
+A database sees one question at a time while it runs, and guesses what to keep ready. Mo's compiler sees every read and every write of the program before it starts. So the compiler can do the planning, once, for the whole program.
+
+- **A table is a kind of value in the language.** Its rows have a key and no order of their own, so two plans for the same read cannot give different answers.
+- **A read is ordinary Mo over tables.** No second language.
+- **The compiler sorts every read into one of three classes.** *Looked up*: it goes through an index, and its work grows with its answer. *Kept*: its answer is stored, and each write adjusts it. *Walked*: it reads the whole table, and must say `walk`.
+- **The compiler works out what to keep from the reads themselves.** Nobody declares an index. A count of open orders becomes a number that the write functions change.
+- **It knows which write changes which answer.** This one piece of knowledge serves five things (inference):
+  - an index or a kept answer is brought up to date by exactly the writes that touch it;
+  - a promise is a kept answer that must stay true, so a write checks only the promises it can break;
+  - at landing, a question an agent asked is stale only if a write since then could change its answer;
+  - a caller can ask to be told when an answer changes;
+  - the review door can show what an upgrade makes slower, for reads and for writes.
+- **Each function carries its cost.** A read says how its work grows. A write says what it must keep up. Both are checked, and the runtime counts rows.
+- **An upgrade builds what the new program needs and drops what it no longer needs,** before the new reads are let in.
+
+- **Mo today:** nothing. A `Map` keeps insertion order, the compiler lowers loops and `filter` before it could see their shape (not checked), and built-ins do whole walks at a cost of 26 or 27 instructions ([experiment 5](experiments.md)).
+- **Needs:** a table kind; a form of the program that keeps the shape of a read long enough to plan it; a way to work out, from a read's code, how a write changes its answer; cost as a checked part of a function; a count of rows read at run time; and lines 4 and 14 of [what Mo must gain](design.md).
+- **Earlier work:** [set-at-a-time queries](wiki/ideas/set-at-a-time-queries.md) for planning, [query results kept fresh as data changes](wiki/ideas/continuously-updated-query-results.md) for kept answers, with [Materialize](wiki/systems/materialize.md) and [Convex](wiki/systems/convex.md), and [derived copies fed from one log](wiki/ideas/derived-copies-fed-from-one-log.md). Those systems plan one query at a time, or re-run a query when what it read changes. None of the pages describes a compiler that plans a whole program's reads and writes together (inference from the wiki, not searched for on the web).
+- **Open:** which reads can be kept. The wiki records that kept views need "a restricted language", so some Mo will not qualify, and the compiler must say which. What a kept answer costs in memory and in each write. Whether a kept answer always equals the answer worked out afresh. Whether a question that arrives while the program runs, from an agent, is planned against what is already kept or may ask for more.
+
 ## What would be checked, and with what
 
 Mo already has the tools. Checked on 2026-11-14: `formal/` in `~/code/mo` holds a Lean model of Mo Core with 238 theorems, among them `type_safety` and `eval_deterministic` (`MoCore/Theorems.lean`); the C VM is compared with that model; and `models/` holds three TLA+ models (`Capture.tla`, `Export.tla`, `Swap.tla`).
