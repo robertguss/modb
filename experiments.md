@@ -64,6 +64,19 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
+### Experiment 4 as it will be run, written 2026-11-14 before any session
+
+The design is frozen in [sketches/enforcement-trial/freeze.md](sketches/enforcement-trial/freeze.md): 40 sessions, 10 read tasks over a four-table shop, two arms (A, and the table type G standing for E), two models. The measure the predictions above are scored on is "good within two repairs": one of the first three valid versions is correct, accepted by the arm's rule, and walks nothing it need not.
+
+Claude's further predictions, added before any session ran:
+
+- Arm G reaches 85% or more, at 75%.
+- The two arms end within 15 points of each other, at 65%.
+- Under arm A, 2 or fewer of the 16 sessions on index tasks end with a needless walk, at 70%.
+- Under arm A, the rule accepts the first valid version in 60% or more of sessions, at 60%. The store's page states the rule, so most agents should write the shape first time.
+
+With 20 sessions in an arm, a 95% interval is about 20 points each way. The trial can show a large gap and cannot show a small one.
+
 ### Result of experiment 1, 2026-11-14
 
 Run with [sketches/shape-census](sketches/README.md#shape-census) over `~/code/mo/learnability` at Mo commit `ce86860a`. The script and its controls were committed (`12f889d`) before the first run. Controls: 10 planted misses found and none recognised; 8 planted hits, all recognised.
