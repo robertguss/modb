@@ -1,7 +1,7 @@
 # Which half comes first?
 
 Type: grilling
-Status: open
+Status: resolved
 
 ## Question
 
@@ -78,3 +78,15 @@ Robert asked for the reviews to be evaluated with TypeSafe. Its model, Jev, answ
 **Settled since by a sketch.** [Can a Mo library keep old versions cheaply today?](37-can-a-mo-library-keep-old-versions-cheaply-today.md) built the design with explicit identifiers in Mo as it stands. It needs no change to Mo's runtime: a kept version costs 778 bytes when saved, at any size measured, and survives a restart. A write still costs in proportion to all of the state.
 
 **Limits of this evaluation.** Jev measured what each review says, and whether an excerpt supports a claim. It did not judge which order is right. One of Claude's questions mixed two things and was split in a second pass: GPT Sol says a later rewrite of the write functions can be avoided (0.87), and Claude Opus says it would be cheap (0.95).
+
+## Answer
+
+Resolved by Robert on 2026-11-14: neither half first. "Yes to vertical slices." The database is explored as vertical slices, small experiments that each carry one job the whole way down, with part of the upper half and part of the storage built together. The order of the halves is no longer a question.
+
+Three things led there.
+
+- The council: none of the three reviewers chose either half outright, and each asked for an experiment first.
+- The sketch, [Can a Mo library keep old versions cheaply today?](37-can-a-mo-library-keep-old-versions-cheaply-today.md): worlds, history and kept versions do not wait for the storage half, so the strongest reason to build storage first is gone. What storage must fix is that every write costs in proportion to all of the state.
+- Robert's own idea while the sketch was being built: "Instead of developing out the whole front half and then the storage."
+
+Which slices, and in what order, is [Which vertical slices, in what order, and what must each show?](38-which-vertical-slices-in-what-order.md).

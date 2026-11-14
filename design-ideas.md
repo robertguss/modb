@@ -650,7 +650,7 @@ Its issues:
 
 **Decided by Robert on 2026-11-14: the sketch comes before the order.** "I think you should open a prototype ticket and build that sketch. Before we choose the order." It is [Can a Mo library keep old versions cheaply today?](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md), with its predictions written before any code.
 
-**Robert's idea on 2026-11-14: vertical slices, not one half and then the other.** Raised while the sketch was being built, and kept for a follow-up at his request. Not decided.
+**Robert's idea on 2026-11-14: vertical slices, not one half and then the other.** Raised while the sketch was being built, and kept for a follow-up at his request. He decided for it the same day, below.
 
 - His words: "Instead of developing out the whole front half and then the storage." He would rather design part of the upper half and part of the storage together, as several small spikes and experiments, and see which seems to work best.
 - A vertical slice is one small job carried the whole way down: something an agent does, the rule that guards it, and the way its data is kept.
@@ -668,6 +668,23 @@ Its issues:
 What follows for the order: worlds, history and kept versions do not wait for the storage half. What the storage half must fix is that every write costs in proportion to all of the state, in time and in memory.
 
 **Claude's recommendation after the sketch.** Not decided by Robert. Take up his vertical slices in place of choosing a half. The sketch removed the one reason to put storage first for the sake of versions, and it showed that a slice through both halves can be built and measured in one session.
+
+**Decided by Robert on 2026-11-14: vertical slices.** "Yes to vertical slices." Neither half is built first, and the order of the halves is no longer a question ([Which half comes first?](issues/36-which-half-comes-first.md)).
+
+**Claude's proposed slices.** Not decided by Robert. They are also on [Which vertical slices, in what order, and what must each show?](issues/38-which-vertical-slices-in-what-order.md).
+
+| # | Slice | What an agent does | How the data is kept | What it must show | From Mo |
+| --- | --- | --- | --- | --- | --- |
+| 1 | A world over the wire | Opens a world on a running service, asks, acts and lands, while a second agent does the same | The tree by number, in a service's saved state | The worlds of the sketch survive being a real service that restarts; what the list of tools looks like to an agent; what an ask, an act and a landing each cost at 1,000 and 50,000 rows | Nothing |
+| 2 | A rule and a view over many rows | Lands a transfer among many accounts, and reads only its own rows | Totals kept in the tree's branches, so a check reads one path and not every row | The rule check and the narrowed read cost the same at 1,000 and 50,000 rows | Nothing |
+| 3 | A read program | Writes a small Mo function that answers its question, in place of a query, and runs it on a kept version | An exported state at first, run with `mo query` | Whether an agent with only Mo's guide writes a correct read program at the first try; what one costs; what Mo lacks to run one on a live service | Measured, not built |
+| 4 | A write that costs what it changes | Changes one row | Only the changed nodes are written; the tree by number knows which they are | How much is written and how long it takes against saving everything; exactly what Mo's service would have to change | A change to Mo to build it; here it is measured and modelled |
+| 5 | A proposal a person approves | Proposes a new kind of call; a person reads what becomes possible and approves it | The state carried across an upgrade of the service | The accountable write holds when the set of approved calls changes | Nothing known |
+
+- **Each slice is one prototype ticket,** with its predictions written first and a control that must fail, as [Can a Mo library keep old versions cheaply today?](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md) was.
+- **Recommended first: slice 1.** Every other slice hangs on what an agent sees and does, and it needs nothing from Mo. Slice 2 comes next because slice 1 is only honest at size once a rule does not read every row.
+- **Slice 4 is the storage half's real question.** The sketch showed that versions are not: every write costs in proportion to all of the state. Building slice 4 for real means changing Mo, which this map rules out, so here it can only be measured and modelled.
+- **A stop rule.** Slices are experiments and the map's destination is a decision. Claude's worry is a string of sketches that never ends in one. After these five, or sooner if two in a row change nothing, the decision is written.
 
 ## Deep dives for later
 
@@ -699,11 +716,10 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
-- **Vertical slices** (Robert, 2026-11-14): which slices, in what order, and what each must show before the next.
+- **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md).
 - **Freeing the nodes of a version nobody keeps.** The tree by number never frees a node; a long-lived one grows until the library can.
 - **A map in a record is copied on every change.** A matter for Mo: where it belongs, and whether a library should have to work around it.
 - **A call's instruction limit against a library collection.** 400 tree inserts fit in one call and 1,000 do not.
-- **Which half first,** reopened on 2026-11-14.
 - **The seam between the halves:** the collection the data lives in, and what a version costs.
 - **How a write function reaches data that is not in memory:** fetching by name, paging by the runtime, or views kept ready. Each asks something different of Mo.
 - **Recording reads,** which Mo does not log today.
@@ -728,6 +744,6 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
 - Every question an agent asked counts at landing, by its answer, and needless send-backs are counted ([decided on 2026-11-14](#which-reads-count-as-relied-on)).
 - A world lands whole, with the rule checked after every call ([decided on 2026-11-14](#what-the-second-model-found)). This keeps the accountable write: a world can do only what approved calls can do one at a time.
-- Robert accepted building the upper half first. Every idea above belongs to the upper half. He reopened the order on 2026-11-14 ([Which half first](#which-half-first)), decided that a sketch comes before the order, and raised vertical slices as a way not to choose a half at all.
+- Robert accepted building the upper half first. Every idea above belongs to the upper half. He reopened the order on 2026-11-14 ([Which half first](#which-half-first)), decided that a sketch comes before the order, and after it chose vertical slices in place of choosing a half.
 - [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.
 - The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
