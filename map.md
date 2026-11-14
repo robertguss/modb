@@ -36,6 +36,8 @@ Reaching it means a spec can start. No database code and no change to Mo is part
 - Memory safety, the Rust port and Safe C stay parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md) until an addition to the runtime forces the question.
 - A side question gets a short answer and is parked. It does not grow into its own investigation unless he asks.
 
+**Decided on 2026-11-14 while exploring many agents.** A world, an agent's own copy of the data, lands whole or not at all, and the rule is checked after every call in it ([ticket](issues/35-what-lands-together-when-a-world-holds-more-than-one-call.md)). At landing every question the agent asked counts, by its answer; the database counts needless send-backs, and a finer rule waits for that number. Both are written out in [design-ideas.md](design-ideas.md).
+
 **Raised on 2026-11-14, not decided: Mo with batteries included.** Robert asked whether Mo could be a framework as well as a language, with the database and storage as parts that ship with it. He thinks it "has serious legs" and is not yet sure. It would change the destination from a database beside Mo to Mo's first battery. He is not dogmatic about what is written in Mo. The idea, a picture of it and a list of deep dives owed are in [design-ideas.md](design-ideas.md). He deferred the framework the same day and returned the work to the database.
 
 **Mo on 2026-11-13 (v0.2 and part of Phase 6).**

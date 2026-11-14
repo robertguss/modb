@@ -327,7 +327,7 @@ A replay ends one of three ways. It lands. It is refused, by its own function or
 
 **Open.**
 
-- Which of an agent's reads count as relied on. The options are set out [below](#which-reads-count-as-relied-on).
+- Which of an agent's reads count as relied on. Decided for the first version, with the finer rule left open ([below](#which-reads-count-as-relied-on)).
 - Whether a helper's world must pass through the agent's world or may go straight to the main line.
 - What an agent gets back when its replay fails, so that it can plan again without reading everything again.
 - Fairness between fast and slow agents.
@@ -537,7 +537,7 @@ Limits. Every prediction matched, so the model confirmed what was expected and d
 
 ## Which reads count as relied on
 
-Not decided. The first model and the research both named this as the first problem of many agents. Landing whole worlds makes it sharper: a world with more calls has asked more questions, so more can change under it.
+**Decided by Robert on 2026-11-14: start simple and measure.** Every question counts, answers are compared, and the database counts needless send-backs. The finer rule is chosen when there is a number. The first model and the research both named this as the first problem of many agents. Landing whole worlds makes it sharper: a world with more calls has asked more questions, so more can change under it.
 
 **The problem.** At landing the database asks the agent's questions again. A changed answer sends the whole world back and the agent starts over. That is safe and wasteful, because an agent reads much that it does not rely on.
 
@@ -557,7 +557,7 @@ Answer 6 extends a line already in this document: for each write function a pers
 
 **What cannot be known from here.** How often a send-back is needless in real use. One preprint measured 92 to 95% for a related guard, with small models. A TLA+ model can show which mistakes each answer lets through. It cannot show how often they happen.
 
-**Claude's recommendation.** Start with answers 1 and 3 together: every question counts, and answers are compared. Have the database count needless send-backs. A send-back is needless when the agent's next world holds the same calls; an agent that words the same change differently is missed, so the count is a floor. Choose between answers 6 and 7 when there is a number. This follows Robert's steer of 2026-11-14 to keep performance in mind and optimise later. Answer 6 can be added later, one function at a time, without changing the first rule.
+**Claude's recommendation.** Start with answers 1 and 3 together: every question counts, and answers are compared. Have the database count needless send-backs. A send-back is needless when the agent's next world holds the same calls; an agent that words the same change differently is missed, so the count is a floor. Choose between answers 6 and 7 when there is a number. This follows Robert's steer of 2026-11-14 to keep performance in mind and optimise later. Answer 6 can be added later, one function at a time, without changing the first rule. Robert agreed on 2026-11-14. Claude was about 80% sure, the doubt being that the count exists only once something is built.
 
 ## Deep dives for later
 
@@ -602,6 +602,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 ## How these sit with what is already decided
 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
+- Every question an agent asked counts at landing, by its answer, and needless send-backs are counted ([decided on 2026-11-14](#which-reads-count-as-relied-on)).
 - A world lands whole, with the rule checked after every call ([decided on 2026-11-14](#what-the-second-model-found)). This keeps the accountable write: a world can do only what approved calls can do one at a time.
 - Robert accepted building the upper half first. Every idea above belongs to the upper half.
 - [Mo with batteries included](#mo-with-batteries-included) would rename the effort: not a database beside Mo, but Mo's first battery. Robert has not decided this.

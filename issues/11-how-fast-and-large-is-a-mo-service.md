@@ -1,7 +1,7 @@
 # How fast and how large is a Mo service today?
 
 Type: task
-Status: open
+Status: claimed
 
 ## Question
 
