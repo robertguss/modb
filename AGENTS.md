@@ -18,6 +18,7 @@ the map that led to it, which Robert stopped on 2026-11-14.
 | `design.md` | The data store and the database designed from what they need, and what Mo must gain; a draft until Robert accepts it | The session working on the design with Robert |
 | `design-ideas.md` | Our own candidate ideas for the database while they are explored; each says what Mo has, what it needs, earlier work and what is open | The session exploring them with Robert |
 | `docs/ideation/` | Ranked idea sets from `ce-ideate` runs, one dated file each, with what was cut and why; candidates, not decisions | The `ce-ideate` skill |
+| `experiments.md` | Every open decision with its options and the small experiments that would settle it; each experiment has predictions written before it runs and a control that must fail | The session running the experiment |
 
 `research/` and `raw/` are sources. `wiki/` is what gets read. A correction to a source goes in the
 wiki, never in the source.
