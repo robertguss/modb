@@ -1,7 +1,7 @@
 # What does a safe-Rust slice of Mo's heap and VM cost?
 
 Type: prototype
-Status: open
+Status: closed
 
 ## Question
 
@@ -22,3 +22,5 @@ The loader and verifier are not the slice because they read bytes and own little
 ## Comments
 
 2026-11-14: whether this prototype is worth running is disputed. One outside review asked for this heap-and-VM slice. A second said to skip it: Mo's values are immutable and never form cycles, which safe Rust already handles, so the slice would show little; the open questions are speed, memory and the cost of the boundary. See the comments on [How does Mo's runtime become memory safe?](24-how-does-mos-runtime-become-memory-safe.md).
+
+**2026-11-14, closed unanswered.** Robert stopped the map before this ticket was answered. See [the map](../map.md).

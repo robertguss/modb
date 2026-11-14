@@ -1,13 +1,14 @@
 # AGENTS.md
 
 MoDB is the research and the decisions toward a database for many AI agents, to be built in Mo
-(`~/code/mo`). It holds no database code yet. `map.md` says what is being decided and why.
+(`~/code/mo`). It holds no database code yet. `design.md` is the design as it stands. `map.md` is
+the map that led to it, which Robert stopped on 2026-11-14.
 
 ## Layout
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `map.md`, `issues/` | The wayfinder map and its tickets | The session working a ticket |
+| `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
 | `raw/` | Primary sources saved word for word (papers, pages); created when first needed | Never edited |
 | `wiki/` | The compiled knowledge base | Agents only |
@@ -22,7 +23,9 @@ wiki, never in the source.
 
 ## The map
 
-Local markdown tracker for the `wayfinder` skill.
+Local markdown tracker for the `wayfinder` skill. Robert stopped the map on 2026-11-14 before its
+destination. Take no ticket from it. `Status: closed` marks a ticket closed unanswered that day.
+The rules below are how it was worked.
 
 - A ticket is `issues/NN-slug.md` with `Type:` (`research`, `prototype`, `grilling`, `task`),
   `Status:` (`open`, `claimed`, `resolved`) and an optional `Blocked by:` line.

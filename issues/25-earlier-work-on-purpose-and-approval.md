@@ -1,7 +1,7 @@
 # What earlier work binds a write or a read to a purpose and an approval?
 
 Type: research
-Status: open
+Status: closed
 
 ## Question
 
@@ -15,3 +15,5 @@ The survey missed earlier systems that come close to the accountable write. For 
 - anything else found on the way that binds a purpose or an approval to a transaction.
 
 Say plainly whether the accountable write is new, a new combination, or an existing idea under another name.
+
+**2026-11-14, closed unanswered.** Robert stopped the map before this ticket was answered. See [the map](../map.md).

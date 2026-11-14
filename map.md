@@ -1,5 +1,37 @@
 # Map: MoDB, a database for many agents, built in Mo
 
+## Stopped on 2026-11-14
+
+Robert stopped this map before its destination: "i want to stop this wayfinder and start a new session." The map and its tickets are now a record. Take no ticket from it.
+
+**Where the work continues.** [design.md](design.md) is the design as it stands, and [design-ideas.md](design-ideas.md) holds the ideas and their history. The research is in the [wiki](wiki/overview.md).
+
+**His last decision on it,** the same day: the ordinary Mo application is the base case of the design, and agents are a layer on top.
+
+**Where the destination's five items stood.**
+
+1. The kind of database and what is new about it: drafted in sections 1 to 6 of design.md. Robert decided the order of its parts. The statement of what is new is Claude's proposal and is not accepted.
+2. The ideas borrowed and the tradeoff accepted with each: gathered in [the comparison across families](wiki/comparisons/families.md) and in design-ideas.md. No list was chosen.
+3. A first slice that holds real data of Robert's: not chosen.
+4. What Mo must gain: fourteen lines drafted in section 8 of design.md, not accepted.
+5. How the work sits beside Phases 6 to 8: not answered.
+
+**The rule "No database code and no change to Mo is part of this map"** bound this map only. What the next effort includes is Robert's to say.
+
+**Closed unanswered when the map stopped:**
+
+- [What real data of yours goes in first?](issues/12-what-real-data-goes-in-first.md)
+- [Does Phase 6 finish before database work starts?](issues/13-does-phase-6-finish-first.md)
+- [What rule keeps the database from bending Mo?](issues/14-what-rule-keeps-the-database-from-bending-mo.md)
+- [Which problems of agents sharing data is this database for?](issues/15-which-problems-is-this-database-for.md)
+- [Which family is the starting point, and what is borrowed?](issues/16-which-family-is-the-starting-point.md)
+- [What must Mo gain to build it?](issues/17-what-must-mo-gain.md)
+- [How does the database sit beside Phases 6 to 8?](issues/18-how-does-it-sit-beside-phases-6-to-8.md)
+- [What does a safe-Rust slice of Mo's heap and VM cost?](issues/23-what-does-a-safe-rust-slice-of-the-heap-and-vm-cost.md)
+- [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md)
+- [What earlier work binds a write or a read to a purpose and an approval?](issues/25-earlier-work-on-purpose-and-approval.md)
+- [Compile the checking and earlier-work research into the wiki](issues/34-compile-the-checking-and-earlier-work-research-into-the-wiki.md)
+
 ## Destination
 
 One written decision, short enough to read in a sitting, that names:

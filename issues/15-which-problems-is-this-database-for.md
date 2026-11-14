@@ -1,7 +1,7 @@
 # Which problems of agents sharing data is this database for?
 
 Type: grilling
-Status: claimed
+Status: closed
 Blocked by: [Agents and databases today](09-agents-and-databases-today.md), [One comparison across all families](10-one-comparison-across-families.md), [Keeping sensitive data from agents and model providers](20-keeping-sensitive-data-from-agents.md), [Security of a database that agents use](21-security-of-a-database-agents-use.md)
 
 ## Question
@@ -51,3 +51,5 @@ Both outside reviews and the agent working with Robert now agree on the first st
 - Ideas: the request is a program; promises as the schema; upgrades as migrations; the log as the permanent truth; a world per agent; simulation built in; shared stores reached through capabilities; and three answers to unplanned questions (scan, indexes the database proposes, a declarative form inside Mo).
 
 The two pictures and the ideas are written out in [design-ideas.md](../design-ideas.md).
+
+**2026-11-14, closed unanswered.** Robert stopped the map before this ticket was answered. What Robert decided along the way is in section 7 of [design.md](../design.md). See [the map](../map.md).

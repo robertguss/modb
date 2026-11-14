@@ -1,6 +1,6 @@
 # Design ideas
 
-Candidate ideas for the database, captured so they are not lost. Nothing here is decided. A decision is made on a ticket and recorded on [the map](map.md); this file then says which way the idea went.
+Candidate ideas for the database, captured so they are not lost. Nothing here is decided unless it says so. Until 2026-11-14 a decision was made on a ticket and recorded on [the map](map.md). Robert stopped the map that day, and decisions are now recorded here and in [design.md](design.md).
 
 Started on 2026-11-14, when Robert asked to stay with the big picture and explore. He had the first picture below in mind, found the second intriguing, and said of the list of ideas: "ok now we are talking!"
 
@@ -754,6 +754,10 @@ Claude's answer, written into [design.md](design.md) as its section 3. None of i
 - **The largest gap for an ordinary application:** nothing chooses a fast route for a question no index was declared for. Idea 8's "declarative form inside Mo" is the candidate and has no design.
 - **Claude's caution:** for an ordinary application alone, SQLite is hard to beat, and "many agents" is still what would be new. If the ordinary application becomes the base, the one sentence of what is new has to be written again.
 
+**Decided by Robert on 2026-11-14: the ordinary Mo application is the base case, and agents are a layer on top.** He answered "Yes" to that question. [design.md](design.md) is re-ordered to match: the base case in section 3, the data store in section 4, what every program gets in section 5, and the layer for outside callers in section 6. Each of the fourteen things Mo must gain now says whether the base needs it or only the layer. The statement of what is new is rewritten there in two parts. It is Claude's proposal and is not accepted.
+
+**Robert stopped the map on 2026-11-14.** "Then i want to stop this wayfinder and start a new session." The map says where its five items stood, and its eleven open tickets are closed unanswered. This file and design.md carry on from here.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -784,7 +788,7 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The 10 ms on every call,** which is Mo's HTTP layer run as bytecode: whether the database lives with it, pays it once for many reads through a request program, or Mo makes it cheaper.
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
-- **The ordinary application as the base case,** with agents as a layer on top. Robert's challenge of 2026-11-14.
+- **The base case, part by part.** Robert decided on 2026-11-14 that the ordinary application is the base. Section 5 of design.md names its parts, and none is designed in detail.
 - **A question in a form the compiler can match to an index,** so that an ordinary application's queries do not walk everything.
 - **Designing from what the database needs, not from what Mo does today.** Robert's steer of 2026-11-14 after the first slice. The slices stopped the same day; the draft that replaces them is [design.md](design.md).
 - **Vertical slices** (decided by Robert, 2026-11-14): which slices, in what order, and what each must show before the next. Now [a ticket](issues/38-which-vertical-slices-in-what-order.md), with a council's three slates and Claude's revised proposal. Robert chose the first slice on 2026-11-14; the rest waits for its result.

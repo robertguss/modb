@@ -1,7 +1,7 @@
 # How does Mo's runtime become memory safe?
 
 Type: grilling
-Status: open
+Status: closed
 Blocked by: [What does a safe-Rust slice of Mo's heap and VM cost?](23-what-does-a-safe-rust-slice-of-the-heap-and-vm-cost.md)
 
 ## Question
@@ -55,3 +55,5 @@ The three views agree on confining now, on no rewrite now, on not using Safe C a
 - "Usable sooner" no longer counts against a port.
 
 What it does not change: the port is about 38,600 lines of runtime C plus the serving parts of `src/tools`, with their unit tests, fuzz targets and CBMC proofs to rebuild; its speed and memory are unmeasured; and the middle of Phase 6 is the wrong moment.
+
+**2026-11-14, closed unanswered.** Robert stopped the map before this ticket was answered. See [the map](../map.md).
