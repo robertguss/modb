@@ -194,8 +194,56 @@ The same method has been used for an authorization language: Cedar's authors "fo
 
 The limits: a proof is about the model, and the implementation is compared with the model, not proved. No tool shows that the rules themselves are the right ones.
 
+## Storage underneath
+
+Explored on 2026-11-14 at Robert's request, before "many agents". Nothing here is decided.
+
+**What the upper half asks of storage.** A state larger than memory; a snapshot for every read program; old states kept, so a past question can be run again; a cheap copy for each agent's world; a permanent log of calls; a way to find things without walking everything.
+
+**The central idea: store the database the way Mo already holds a value.** A Mo value never changes once made and never contains a cycle. On disk that is a tree of nodes, each written once. A change writes new nodes along one path and shares all the rest. Each node is named by the hash of its contents. Beside the tree sits the log of calls, which only grows.
+
+What falls out of that one choice:
+
+- **A version is a root.** A snapshot, an old state and an agent's world are each one root. None of them costs a copy.
+- **A crash cannot tear the data.** Nothing is overwritten. New nodes are written first, then the root is switched.
+- **The tree can be rebuilt from the log.** Calls repeat exactly, so the tree is a saved result of replaying the log. Only the log has to reach the disk before a reply is sent, which Mo already does.
+- **History can be checked.** Each log entry can carry the root before and after. Anyone can replay a call and confirm it leads from one to the other.
+- **Two worlds can be compared quickly.** Parts with the same hash are the same, so only the differences are walked. This is what "many agents" builds on.
+- **The disk can be anything that keeps bytes under a name:** a table in SQLite at first, used only as names to bytes, then a file written in Mo, or a bucket in a cloud store ([object storage as the only durable store](wiki/ideas/object-storage-as-source-of-truth.md)).
+
+**Three more ideas on top.**
+
+- **An index is a view the database keeps current.** A view function, an index and a saved query result are the same thing: a function from the data to other data. If views are written in a form the database can follow, it updates them as the data changes, so a view is not recomputed for each request and "find things fast" needs no second mechanism ([derived copies fed from one log](wiki/ideas/derived-copies-fed-from-one-log.md), [query results kept fresh](wiki/ideas/continuously-updated-query-results.md), [Materialize](wiki/systems/materialize.md), [CouchDB](wiki/systems/couchdb.md), whose views are functions in the application's language).
+- **Code is stored by hash too.** Each approved function is kept under the hash of its checked form, and a log entry names the function it called by that hash. Replaying an old call then always runs the code that ran at the time. This answers the open question under idea 4. Phase 6 already gives each item of a program a digest.
+- **Storage laid out by type.** The database knows the type of everything it holds, so it can keep each field of a record apart. A view that leaves a field out never reads its bytes, and a sensitive field can be encrypted under its own key, released only to views approved to see it.
+
+**Other shapes, for contrast.**
+
+| Shape | Good at | Costs |
+| --- | --- | --- |
+| Tree of write-once nodes, plus the log (above) | Snapshots, history, worlds, checking | Each change rewrites a path; old versions pile up and must be cleared; reads hop from node to node |
+| The log alone, all data in memory ([Prevayler](wiki/systems/prevayler.md), and Mo today) | Simplicity | Data must fit in memory; a restart replays the log |
+| Pages changed in place, with a recovery log ([SQLite](wiki/systems/sqlite.md), [PostgreSQL](wiki/systems/postgresql.md)) | Large data; the most proven design | Snapshots, history and worlds need extra machinery; it works against values that never change |
+| Sorted files merged in the background ([RocksDB](wiki/systems/rocksdb.md), [immutable pieces with background merge](wiki/ideas/immutable-pieces-with-background-merge.md)) | Heavy writing | Background work; worlds are hard |
+
+**Earlier work.** In the survey: [Dolt](wiki/systems/dolt.md) and [Datomic](wiki/systems/datomic.md) store trees of unchanging pieces; [copy-on-write branches](wiki/ideas/copy-on-write-branches.md). From Claude's own knowledge and not in the survey: Git names every object by its hash; LMDB is a copy-on-write tree with one writer and no recovery log; Irmin is a Git-like store for typed values; Unison stores code by hash.
+
+**What Mo has and lacks for this.** Checked on 2026-11-14:
+
+- A service's state is saved whole, as one blob of at most 16 MiB, beside its log. The path from there is short: replace the one blob with a tree of nodes and write only the nodes that changed.
+- Mo's `Map` and `Set` are hash tables held in one block (`src/heap/table.c`). A changed copy of a shared map is a whole copy. The tree-shaped collection would be new.
+- Mo programs have no hash-of-bytes function (`src/base/prims.def` has none), cannot write bytes and cannot read at an offset. Each is a general ability, not one only a database wants.
+
+**Two ways to build it.** As a library written in Mo, where a tree's nodes are loaded by name through a capability: everything is ordinary Mo that `mo test` can simulate and the Lean model covers. Or inside the runtime, where any Mo value can quietly live on disk: more powerful, but it hides which step touches the disk. Claude's lean is the library first.
+
+**Open.**
+
+- What a change costs when the tree is deep, and how fast old versions pile up.
+- Erasing one person's data from every old version. It can leave a marked hole where a node was, but [deleting personal data from history](wiki/ideas/deleting-personal-data-from-history.md) shows how hard this is.
+- Which form of view the database can keep current by itself.
+
 ## How these sit with what is already decided
 
 - The accountable write stays the centre. Ideas 2, 4 and 7 are how it would be built; idea 1 extends it to reads.
 - Robert accepted building the upper half first. Every idea above belongs to the upper half.
-- The lower half, a storage engine written in Mo, and the runtime questions under it are parked on their own tickets.
+- The runtime questions under the storage engine are parked on [How does Mo's runtime become memory safe?](issues/24-how-does-mos-runtime-become-memory-safe.md).
