@@ -14,6 +14,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 MO = sys.argv[1]
+SOURCE = HERE / "main.mo"
 OUT = HERE.parents[1] / "build" / "service-timing"
 DATA = OUT / "data"
 TOKEN = "perf-token-1234567890"
@@ -25,7 +26,7 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json
 
 class Service:
     def __init__(self, first):
-        command = [MO, "serve"] + ([str(HERE / "main.mo")] if first else []) + \
+        command = [MO, "serve"] + ([str(SOURCE)] if first else []) + \
                   ["--port", "0", "--data", str(DATA)]
         began = time.perf_counter()
         self.proc = subprocess.Popen(command, env={**os.environ, "PERF_TOKEN": TOKEN},

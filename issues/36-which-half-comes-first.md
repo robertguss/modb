@@ -75,4 +75,6 @@ Robert asked for the reviews to be evaluated with TypeSafe. Its model, Jev, answ
 
 **What it could not settle.** Whether Gemini Carbon's design needs a change to Mo's runtime. Jev read that review as saying a change to saving is needed (0.92). Claude reads its explicit identifiers as a design written in Mo that needs none, and narrower questions confirmed the two parts of that reading: explicit identifiers (0.98) and written in the language (0.80). The review does not say which it means. This is the point on which the reviewers differ, and a sketch settles it where reading cannot.
 
+**Settled since by a sketch.** [Can a Mo library keep old versions cheaply today?](37-can-a-mo-library-keep-old-versions-cheaply-today.md) built the design with explicit identifiers in Mo as it stands. It needs no change to Mo's runtime: a kept version costs 778 bytes when saved, at any size measured, and survives a restart. A write still costs in proportion to all of the state.
+
 **Limits of this evaluation.** Jev measured what each review says, and whether an excerpt supports a claim. It did not judge which order is right. One of Claude's questions mixed two things and was split in a second pass: GPT Sol says a later rewrite of the write functions can be avoided (0.87), and Claude Opus says it would be cheap (0.95).

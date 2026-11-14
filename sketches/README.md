@@ -43,3 +43,47 @@ python3 sketches/service-timing/yardstick.py 1,1000,10000,50000,100000,1000000,1
 `yardstick.py` does not use Mo. It does the same job with SQLite inside one Python process: one table of numbered rows of 64 bytes, read one row, change one row and commit. It uses the settings Mo's store uses (`src/host/store.c` in `~/code/mo`), so each commit is synced to disk. There is no web request around it, so its times are a floor to compare against, not a like-for-like figure.
 
 Run them on a quiet machine. The first recorded runs were not: another session was building on the same machine. The ticket marks which numbers came from which run.
+
+## kept-versions
+
+The claim, for [Can a Mo library keep old versions cheaply today?](../issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md): a collection written in Mo can keep an old version for the cost of a few nodes, and the saving survives a save and a restart, with no change to Mo. The numbers and what they mean are in that ticket's answer.
+
+`tree.mo` is the collection: numbered rows in a tree whose nodes sit in one map and name their children by number. `worlds.mo` runs a small workload on it: a world is an agent's own version, a view narrows what it may touch, and a landing takes all of a world or none of it.
+
+```sh
+mo test sketches/kept-versions/worlds.mo
+```
+
+Result on 2026-11-14, with `mo` 0.2.0 built from commit `ef37424`: `12 passed, 0 failed, 0 stopped`. That is six tests of the tree and six of the worlds.
+
+Two controls, each of which must fail and did:
+
+- In `land`, replace the `Asked` arm with `Asked(key: _, answer: _): continue`, so a landing no longer checks the questions a world asked. `11 passed, 1 failed`: the second of two overlapping worlds lands.
+- In `open` in `tree.mo`, write `frozen: 1` in place of `frozen: next`, so no node is ever kept. `5 passed, 7 failed`: kept versions change under a later write.
+
+Three services hold the same rows and keep the version before every `put`. `mo test` on each passes Mo's own recovery check.
+
+| File | How it keeps a version |
+| --- | --- |
+| `by-number.mo` | The tree in `tree.mo` |
+| `by-reference.mo` | The same tree with each node holding its children directly. The control for saved size: it must grow by a full copy for each version, and did |
+| `whole-maps.mo` | One whole `Map` for each version, as a program does today |
+
+With `MO` the optimised `mo` described under service-timing:
+
+```sh
+python3 sketches/kept-versions/versions.py $MO 1000,10000,50000 10,100   # saved size and write time as versions are kept
+python3 sketches/kept-versions/ops.py $MO 20000,60000                    # one insert and one lookup against Map, outside a service
+```
+
+`versions.py` grows each service to each number of rows, calls `put` until 10 and then 100 versions are kept, and reads the saved size from `mo-memory` at each point. It then restarts the service and reads a row of the oldest version. It also runs the plain map from service-timing, which keeps no version, to compare the time of a write. It writes to `build/kept-versions/`, which git ignores.
+
+`in-place.mo` checks a second claim that the sketch ran into: Mo copies a map that sits in a record every time the map changes. It adds rows to a map six ways.
+
+```sh
+time $MO run sketches/kept-versions/in-place.mo field 40000   # or local, take, apart, bare, pair
+```
+
+A way that changes the map in place takes the same time at 20,000 and 40,000 rows. A way that copies it takes four times as long for twice the rows. `local`, `field`, `take` and `apart` copy; `bare` and `pair` do not. `local` is the form Mo's reference gives for changing a record's field. This is why the tree is a bare map and not a record.
+
+What it does not show: freeing the nodes of a version nobody keeps, removing a row, the worlds running as a service, or a tree tuned for speed.

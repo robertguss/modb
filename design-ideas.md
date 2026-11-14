@@ -656,6 +656,19 @@ Its issues:
 - A vertical slice is one small job carried the whole way down: something an agent does, the rule that guards it, and the way its data is kept.
 - Claude's note: this is close to what GPT Sol recommended, one thin slice through both halves, and it removes the question of which half comes first. What it leaves open is which slices, in what order, and what each must show before the next. The workload in the sketch is a first small slice: worlds, a view and a landing on a collection that keeps versions.
 
+**What the sketch found, 2026-11-14.** In full on [Can a Mo library keep old versions cheaply today?](issues/37-can-a-mo-library-keep-old-versions-cheaply-today.md). Five of six predictions held; the sixth was right in outcome and wrong in cause.
+
+- **Kept versions are cheap in space today.** A tree whose nodes sit in one map and name their children by number keeps a version for 778 bytes when saved, at 1,000, 10,000 and 50,000 rows, and the old versions are there after a restart. Mo needs no change for it.
+- **The other ways cost a whole copy.** A tree by reference and a list of whole maps each add one full copy for every kept version, on disk and in memory. At 10,000 rows they were refused for memory after 19 and 13 kept versions; at 50,000 rows after 3 and 2.
+- **A write is no cheaper.** In a service a write to the tree takes 1.1 to 1.5 times as long as a write to a plain `Map` of the same rows. The cost that grows with the state belongs to the service: it copies the map and encodes and decodes everything on every write.
+- **Outside a service** the tree's lookup takes about 13 times a `Map` lookup and its insert 33 times. It is not tuned.
+- **Worlds fit on it.** A world starts as one number. Two worlds that do not overlap both land. The second of two that asked about the same row is sent back, and nothing changes. A view narrows what a world may ask and change.
+- **Three things Mo itself stands in the way of.** A map that sits in a record is copied every time it changes, so the tree had to be a bare map. A call's instruction limit is reached by a few hundred tree inserts. A service's state cannot hold a function, so a view is a named function.
+
+What follows for the order: worlds, history and kept versions do not wait for the storage half. What the storage half must fix is that every write costs in proportion to all of the state, in time and in memory.
+
+**Claude's recommendation after the sketch.** Not decided by Robert. Take up his vertical slices in place of choosing a half. The sketch removed the one reason to put storage first for the sake of versions, and it showed that a slice through both halves can be built and measured in one session.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -687,6 +700,9 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **The saved copy on every write:** whether a state can be saved without encoding and decoding all of it, and what Mo's check "refuse a state it cannot save" would need in its place.
 - **A read that waits behind a write,** measured at 91 ms beside back-to-back writes at 125,000 rows.
 - **Vertical slices** (Robert, 2026-11-14): which slices, in what order, and what each must show before the next.
+- **Freeing the nodes of a version nobody keeps.** The tree by number never frees a node; a long-lived one grows until the library can.
+- **A map in a record is copied on every change.** A matter for Mo: where it belongs, and whether a library should have to work around it.
+- **A call's instruction limit against a library collection.** 400 tree inserts fit in one call and 1,000 do not.
 - **Which half first,** reopened on 2026-11-14.
 - **The seam between the halves:** the collection the data lives in, and what a version costs.
 - **How a write function reaches data that is not in memory:** fetching by name, paging by the runtime, or views kept ready. Each asks something different of Mo.
