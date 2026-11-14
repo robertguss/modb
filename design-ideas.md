@@ -327,7 +327,7 @@ A replay ends one of three ways. It lands. It is refused, by its own function or
 
 **Open.**
 
-- Which of an agent's reads count as relied on.
+- Which of an agent's reads count as relied on. The options are set out [below](#which-reads-count-as-relied-on).
 - Whether a helper's world must pass through the agent's world or may go straight to the main line.
 - What an agent gets back when its replay fails, so that it can plan again without reading everything again.
 - Fairness between fast and slow agents.
@@ -535,6 +535,30 @@ Limits. Every prediction matched, so the model confirmed what was expected and d
 - **Still needed:** calls as data. The sketch lists the write functions by hand as a choice type and picks one with `case`. A database would have to make that list from the approved functions.
 - The sketch has no forks, no recorded reads and no replay on a main line that has moved.
 
+## Which reads count as relied on
+
+Not decided. The first model and the research both named this as the first problem of many agents. Landing whole worlds makes it sharper: a world with more calls has asked more questions, so more can change under it.
+
+**The problem.** At landing the database asks the agent's questions again. A changed answer sends the whole world back and the agent starts over. That is safe and wasteful, because an agent reads much that it does not rely on.
+
+**The answers on offer.** The first five are from the research ([findings](research/30-earlier-work-on-merging-by-replay.md)). The last two are Claude's.
+
+| Answer | What it gives | What it costs |
+| --- | --- | --- |
+| 1. Every question counts | It caught every mistake the first model tried | The most needless send-backs |
+| 2. The agent says which answers it relied on | Precise | Agents rarely say, and whatever is left out goes unchecked |
+| 3. Compare answers, not the data under them | A change that leaves the answer alone does not count | A changed answer that did not matter still counts. This is already in the design |
+| 4. The rules decide and the questions do not | No needless send-backs | It misses whatever no rule declares. In the first model that was the discount worked out from a changed price, and the lost update |
+| 5. Follow what depends on what inside the program | Only what was affected runs again | It needs code that can be analysed, and an agent's thinking is not |
+| 6. The write function names the facts it relies on | The judgement moves from the agent to approved code. "Set the discount" relies on the price. "Add 2" relies on nothing | Each function's author must say it, a person must approve it, and an omission is a hole |
+| 7. Hold, show and confirm | The world is kept. The agent sees which answers changed and confirms its calls or makes them again. The confirmation goes in the log | The 2026 preprint saw agents, after a block, "re-commit unsafely from refreshed but still-incomplete reads" |
+
+Answer 6 extends a line already in this document: for each write function a person approves what a changed answer does (let it through, send it back, or hold it for a person).
+
+**What cannot be known from here.** How often a send-back is needless in real use. One preprint measured 92 to 95% for a related guard, with small models. A TLA+ model can show which mistakes each answer lets through. It cannot show how often they happen.
+
+**Claude's recommendation.** Start with answers 1 and 3 together: every question counts, and answers are compared. Have the database count needless send-backs. A send-back is needless when the agent's next world holds the same calls; an agent that words the same change differently is missed, so the count is a floor. Choose between answers 6 and 7 when there is a number. This follows Robert's steer of 2026-11-14 to keep performance in mind and optimise later. Answer 6 can be added later, one function at a time, without changing the first rule.
+
 ## Deep dives for later
 
 Robert on 2026-11-14: "Many of these ideas require their own deep dives later." This list keeps them from being lost. None is a ticket yet.
@@ -555,6 +579,10 @@ Robert on 2026-11-14: "Many of these ideas require their own deep dives later." 
 - **Many agents:** the replay rule, which reads count as relied on, fairness, taking one agent's work out.
 - **Worlds with more than one call:** modelled and decided on 2026-11-14. A world lands whole, with the rule checked after every call.
 - **A rule checked at the end of a world,** marked rule by rule by a person.
+- **A write function that names the facts it relies on.**
+- **Counting needless send-backs,** so that the rule for reads is chosen from a number.
+- **Promises that can be checked when a write lands,** so a rule is written once.
+- **Calls as data,** made from the approved functions and not listed by hand.
 - **How often real work needs a change whose middle breaks a rule,** which decides the price of checking after every call.
 - **A long world sent back for ever,** since a world with more calls reads more.
 - **Clearing old versions,** given how fast garbage grows.
