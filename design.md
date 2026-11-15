@@ -207,8 +207,9 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 - Tables are part of the language, and a read is ordinary Mo that the compiler plans (2026-11-14, as the direction to design and test).
 - A slow read is first made fast by keeping its answer. It is refused only when that cannot be done (2026-11-15).
 - A write is held to the same rule as a read (2026-11-15).
+- The write half of point 6, read field by field as point 2 says, and a row added under a new key is named by no row. It rests on a promise that a field naming a row names one that exists (2026-11-15).
 
-**The rule.** Not accepted.
+**The rule.** Not accepted, apart from the write half of point 6.
 
 1. **The compiler sorts every read into one of four classes.**
 
@@ -225,7 +226,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 3. **Where a part looks a row up by key in another table, the compiler groups before the lookup if it can show that order does not count.** Each part runs as far as the lookup and waits. Parts that would go on the same way are held as one entry with a count. An ask does the lookup once for each entry. Order does not count when the answer is a number, or a list the code sorts before any other use.
 4. **Otherwise it keeps the whole answer.** The ask stays cheap. A write to the looked-up table must then redo one part for every row that refers to the row it changed.
 5. **It reports every plan.** For a read: its class and what it reads. For a write: what it must keep up, in terms of rows, as "one part for every line that names this product". The compiler can say that much. It cannot say how many lines that is.
-6. **Two things are errors unless the code says so.** A read that walks a whole table. A write that must redo one part for each row that refers to the row it changed.
+6. **Two things are errors unless the code says so.** A read that walks a whole table. A write that must redo one part for each row that refers to the row it changed. A write counts only the fields it changes that a kept part reads, as point 2 says. A field that names a row must name one that exists, so a row added under a new key is named by no row.
 
 **What it rests on.** A script read the compiler's own Mo Core for 41 reads over a shop of four tables: 21 written by agents, 11 by Claude as references and 9 planted to press on the rule. It planned each one, kept the answers up to date through 1,200 random writes, and compared 23,877 answers with real Mo running the same code. None differed. Every control failed where it should.
 
@@ -242,7 +243,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 
 **What it does not rest on.**
 
-- A write test that sees growth. Experiment 13 ran the whole rule once. The read error refused exactly the one planted walk that does not say `walk`. The write error, worked out from the plan alone, flagged every write that grew, to customers and to products. It also flagged writes to orders, which stay flat at about 21 rows, because `bought` holds a part for each pair of an order and one of its lines, and an order has about three lines. The plan shows "one part for every row that names this row" and not how many rows that is. Point 4 was run only on pairs of rows. Experiment 14 tracked writes by field, as point 2 says, with 30 write functions agents wrote. The flag came off the 15 that only update fields no part depends on through a reference: status, note, price, a customer's name, and lines. Of the 15 still flagged, the 6 that grow are true fan-out (a customer moving city, a product renamed), flagged only by planted reads. The 9 that stay flat all add a row: the compiler cannot tell a new key from an old one, because nothing promises that a field naming a row names one that exists.
+- A write test that sees growth. Experiment 13 ran the whole rule once. The read error refused exactly the one planted walk that does not say `walk`. The write error, worked out from the plan alone, flagged every write that grew, to customers and to products. It also flagged writes to orders, which stay flat at about 21 rows, because `bought` holds a part for each pair of an order and one of its lines, and an order has about three lines. The plan shows "one part for every row that names this row" and not how many rows that is. Point 4 was run only on pairs of rows. Experiment 14 tracked writes by field, as point 2 says, with 30 write functions agents wrote. The flag came off the 15 that only update fields no part depends on through a reference: status, note, price, a customer's name, and lines. Of the 15 still flagged, the 6 that grow are true fan-out (a customer moving city, a product renamed), flagged only by planted reads. The 9 that stay flat all add a row: the compiler cannot tell a new key from an old one, because nothing promised that a field naming a row names one that exists. Point 6 now makes that promise.
 - A compiler pass. The planner is a Python script beside the compiler, and it handles only the forms these reads use. It groups only reads written as a loop.
 - More than one store. It has about 40 customers and 25 products at both sizes, so "grows with the store" was only seen as more lines for each product and more orders for each customer.
 - Time or memory. Rows were counted. Nothing was timed, and what the kept answers cost to hold was not measured.
@@ -251,6 +252,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 
 **Open inside the rule.**
 
+- **What removing a row does to the rows that name it.** The promise in point 6 means removing it must either be refused or take those rows with it. No experiment has run a delete of an order, a customer or a product written by an agent. Keys the store makes would be the other way to know a key is new.
 - **Where the code says so for a write.** The growth comes from a kept read, and the error would land on a write function that somebody else may have written. Claude leans to putting the word on the read, at 65%: the read chooses between a cheap ask with a growing write and the reverse.
 - **What order a table gives its rows.** Two of the 21 agent-written reads leaned on arrival order without sorting. A table with no order of its own would make such a read an error or a visible choice.
 - **The same task written two ways lands in two classes.** One agent's `bought` looks in its own list before it adds to it, so it was looked up at 189.0 rows. The other's was kept at 51.5. The report must say why a read was not kept.
