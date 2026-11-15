@@ -67,6 +67,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 8 | **A stand-in for the planner, on what the compiler itself emits.** A script reads `mo check --emit=core` for the plain-Mo reads of experiment 4, sorts each into looked up, kept or walked, keeps the answers up to date through random writes, and compares them with real Mo running the same code on the same rows | The share of reads it understands from Mo Core, and whether every answer it keeps equals Mo's | Written below, before the run | A kept answer whose upkeep skips one kind of write must be caught; a plan with its test dropped must be caught; a read whose test is `contains` must come out walked |
 | 9 | **Keeping answers that span tables.** The stand-in of experiment 8, widened: an answer is kept in parts, one for each row of the table the read goes over, and a part may read other tables. A write to another table redoes only the parts that read what it touched | Which reads stop being walks or lookups, what one ask costs, and what one write then costs at two store sizes | Written below, before the run | Upkeep skipped after a write to another table must spoil kept joins and no single-table answer; a loop that reads its own running list must not be kept; a loop with two running values must not be kept |
 | 10 | **Adjusting a kept answer in one step.** The stand-in of experiment 9 with finer parts: a loop inside a loop gets one part for each pair of rows, and a test that only asks whether any row matches is answered from the index and told only when that flips | How much of a write's upkeep in experiment 9 came from working parts out again, and how much remains | Written below, before the run | Notices of a flip dropped must spoil only reads that ask whether any row matches; the controls of experiment 9 must still fail as before |
+| 11 | **Doing the lookup when the read is asked.** The stand-in of experiment 10 with one change: a part no longer reads another table by key. Where the part is for a pair of rows, the pair is kept and the rest of the part runs when the read is asked. Where the part is for one row, nothing would be kept but the index, so the read is not kept | What a write to the looked-up table then costs, and what an ask costs against keeping the whole answer and against keeping nothing | Written below, before the run | Lookups that are never done again after the pair is made must spoil exactly the reads whose lookups moved; the controls of experiment 10 must still fail as before |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -147,6 +148,37 @@ Nothing else changes: the same 40 reads, the same writes, the same comparison wi
 7. What one ask costs stays within a tenth of experiment 9 for every read: 85%.
 
 **Limits known before the run.** Neither change does arithmetic on a part. A price change still redoes the part of every line of that product, where multiplying a kept total of quantities by the change in price would be one step. So what remains after this experiment is still an upper bound.
+
+### Experiment 11 as it will be run, written 2026-11-15 before the run
+
+Experiment 10 left one cause of writes that grow with the store: a part that looks up a row of another table by key. Robert agreed on 2026-11-15 to test doing that lookup when the read is asked.
+
+**What changes.** One rule, in `sketches/planner/`. A part does no lookup by key.
+
+- **A part for a pair of rows keeps the pair.** The lookup and everything after it run when the read is asked. This is `bought` from GPT and from the reference: the pairs of a customer's orders and their lines are kept, and each product is looked up at the ask.
+- **A part for one row keeps nothing.** With the lookup gone, what is left of such a part is the row itself, and the index already holds that. So the read is not kept. It is looked up. This is the planted revenue and buyers reads.
+- **Two counts for an ask.** Rows read, as before. And rows read when a row looked up twice in one ask is counted once, which is what a real engine would pay.
+
+The same 40 reads, the same writes and the same comparison with real Mo. Experiment 10's report is the baseline, because the writes are the same ones.
+
+**What Claude expects, and said too little of when proposing this.** Claude told Robert an ask would cost as many rows as its answer is long. Working it through before the run, that is too kind. The kept pairs are not shorter than the lines they came from, and each needs a lookup. So an ask should cost about what it costs to keep nothing. If that is what the run shows, plain late lookup is a weak lever.
+
+**Predictions, Claude:**
+
+1. On the first run that completes, at least one answer differs from Mo's: 35%.
+2. Exactly four reads change. The planted revenue and buyers reads go from kept to looked up. `bought` from GPT and from the reference stay kept, with their lookups at the ask: 85%.
+3. A write to products reads under 5 rows for upkeep on average at both sizes. It was 183.8 and 675.4: 85%.
+4. A write to customers reads under 100 rows at 1,200 orders, down from 191.1, and still more than doubles between the sizes: 70%. What is left is the planted spend of a city, where one customer has a part for each of their orders.
+5. Over all writes the mean upkeep at 1,200 orders falls from 83.1 rows to under 25: 70%.
+6. At 1,200 orders an ask of `bought` reads between 145 and 175 rows. It was 67.5 kept whole, and Claude's own `bought`, which keeps nothing, reads 189.0. An ask of the planted revenue reads between 230 and 260 rows, where it was 1.0. An ask of the planted buyers reads between 320 and 390, where it was 105.8. All three: 65%.
+7. With a row looked up twice counted once, an ask of `bought` at 1,200 orders reads under 115 rows, and an ask of the planted revenue under 130: 65%.
+
+**Limits known before the run.**
+
+- The script keeps the pair of rows and runs the rest of the part over them at the ask. It counts the kept pair as one row and each lookup as one more. A real engine would keep only the fields the rest needs.
+- Making a pair is counted as two rows read.
+- Nothing is grouped. One kept entry for each distinct product, with a count, would shorten both the kept list and the lookups. So would a kept total of quantities for the revenue read. Neither is built.
+- The store has about 40 customers and 25 products at both sizes. So lines for each product, and orders for each customer, grow with the store here. In a real shop they need not.
 
 ### Result of experiment 10, 2026-11-15
 
