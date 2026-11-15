@@ -824,11 +824,55 @@ What it does not show: time. The run counted instructions and did not time the b
 - **After experiment 14: no bound, at 90%.** Tracking writes by field took the flag off every ordinary update the agents wrote. The flags that grow are true fan-out over references with no natural limit, orders for a customer and lines for a product, so a bound there would be a guess with a number on it. The flags that stay flat are on adding a row, which a bound does not touch. What would bring the bound back: agent-written reads that fan out over a reference with a real limit, such as lines on an order, under writes that change what they read. What the rule still lacks: a way to know a new key is named by no row, from a promise that a field naming a row names one that exists, or from keys the store makes.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
+## Decision 2. Is the store a library written in Mo or part of the runtime?
+
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work. No experiment has run.
+
+**The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
+
+**Sources.** The research panel of 2026-11-15: three models checked 31 claims about earlier work against pages fetched that day.
+
+### The options
+
+Application code is the same under all three, because tables are part of the language and the compiler plans every read. The options differ in where the code that touches the disk lives, and in what Mo gains.
+
+| | Option | Where it stands after the research panel |
+| --- | --- | --- |
+| L | Library. The whole store is Mo code over bytes at a place in a file and a hash. A service must be allowed to hold a capability | The stores still in wide use are libraries: SQLite, LMDB, Mnesia, Irmin. One capability for every disk step is what simulation testing wants. A pure library was also criticised for putting too much on the programmer |
+| R | Runtime ("the store is the heap"). Large `Map`, `Set` and `List` values live on disk as trees of nodes named by hash, freed by counts | Weakened. The runtime's layout becomes a format kept for ever: PJama struggled with class evolution and was stopped, and Motoko needed a compatibility check at every upgrade. Counts kept on disk are fragile in Btrfs |
+| S | Split. The runtime gives collections whose copies share nodes, and reading and writing a node by name with a hash. The log, roots, holders, views kept current, history and erasure are Mo code on top | Strengthened. Earlier work split it this way more than once: "Bulk Types: Built-In or Add-On?" (1991), E, ANU-OPJ, Unison's storage abilities |
+
+### What earlier work settled without an experiment
+
+- Counts kept on disk are fragile, and a sweep from the roots is the common alternative. Experiment 17 models only the sweep.
+- A sweep nobody runs costs space, so retention and collection are explicit policy under every option.
+- Forgetting has to be designed in. Datomic Cloud still cannot excise data.
+
+### What the experiments must decide
+
+Whether the store's policy can be ordinary Mo over a narrow set of node operations (S), whether L's capability can reach the store without spreading through every function, and how many Mo programs other than the database would gain. Robert also answers two questions: must any large value live on disk, or only tables (Q7), and must the stored format be independent of the runtime's layout and readable outside Mo (Q9).
+
+### The experiments
+
+Before any of them, Claude reads what `~/code/mo/formal/` defines for collections and services, and how `runtime/` saves state (Q8). The draft predictions below come from the plan. Each experiment gets its own section with final predictions before it runs.
+
+| # | What is built or measured | The result that decides | Draft predictions | Control that must fail |
+| --- | --- | --- | --- | --- |
+| 15 | **Who else gains.** A script labels each Mo program in `~/code/mo/examples/`, `services/` and `learnability/` by whether its state holds a collection that grows | A large share that grows favours R or S; a small share favours L | 60% or more hold a growing collection, at 70%. Fewer than a third of those want history, at 55% | A planted service with an `Int` state must count as not gaining, and one with a growing `Map` as gaining |
+| 16 | **The policy in Mo over two node operations, with two backends.** Log, roots, holders and freeing written once over `put` and `get`. Backend A is a `Map` standing in for the runtime (S); backend B is a file for each node through a capability (L) | A small policy with a narrow boundary favours S; a capability needed on every function down to the read counts against L | The policy passes over both backends, at 75%. Freeing needs a third operation that lists a node's children, at 65%. Under B every read function carries the capability, at 90% | Freeing a node without asking the holders must break a promise; backend B in a service's state must be refused by `mo check` |
+| 17 | **Freeing by holders and a sweep, through a crash.** A TLA+ model: write nodes, force the log, switch the root, drop a holder, sweep, free, with a crash between any two steps | Safe with nothing stored beyond the roots and the log favours freeing in Mo policy | The sweep holds with nothing stored beyond the roots and the log, at 80%. A sweep during a write must pin that write's new nodes until its root lands, at 70% | Switching the root before the log is forced must break crash safety; a sweep that ignores a write not yet landed must free a node a kept version later reaches |
+
+### Where Claude stands, with what would move it
+
+- **S at 60%, L at 25%, R at 15%.** Before the research panel: 50%, 20% and 30%.
+- **Toward R:** experiment 16 shows the Mo policy is thin or awkward; Robert answers Q7 "any value" and Q9 "no".
+- **Toward L:** the capability threads cleanly through experiment 16; the reading shows the Lean definition covers file steps a runtime store would lose; experiment 15 finds few programs with growing state.
+- **Toward S:** experiment 16 passes with a boundary of two or three operations; experiment 17 shows the sweep needs only a list of a node's children from the runtime.
+
 ## Decisions waiting for options and experiments
 
 These came out of the same ideation. None has an experiment designed.
 
 - **Does the log run unbroken through an upgrade?** Idea 2. Today an upgrade deletes the log's tail.
-- **Is the store a library written in Mo or part of the runtime?** Idea 6, and `design.md` section 9.
-- **Are nodes named by hash or by number?** `design.md` section 9.
+- **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's.
 - **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.
