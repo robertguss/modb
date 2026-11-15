@@ -209,6 +209,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 - A write is held to the same rule as a read (2026-11-15).
 - The write half of point 6, read field by field as point 2 says, and a row added under a new key is named by no row. It rests on a promise that a field naming a row names one that exists (2026-11-15).
 - Removing a row that other rows still name is refused, unless the code says to remove those rows too (2026-11-15).
+- For a write that must redo one part for each row that names the row it changed, the code says so on the kept read that causes it, not on the write. The write's plan report shows the cost and names the read (2026-11-15).
 
 **The rule.** Not accepted, apart from the write half of point 6.
 
@@ -227,7 +228,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 3. **Where a part looks a row up by key in another table, the compiler groups before the lookup if it can show that order does not count.** Each part runs as far as the lookup and waits. Parts that would go on the same way are held as one entry with a count. An ask does the lookup once for each entry. Order does not count when the answer is a number, or a list the code sorts before any other use.
 4. **Otherwise it keeps the whole answer.** The ask stays cheap. A write to the looked-up table must then redo one part for every row that refers to the row it changed.
 5. **It reports every plan.** For a read: its class and what it reads. For a write: what it must keep up, in terms of rows, as "one part for every line that names this product". The compiler can say that much. It cannot say how many lines that is.
-6. **Two things are errors unless the code says so.** A read that walks a whole table. A write that must redo one part for each row that refers to the row it changed. A write counts only the fields it changes that a kept part reads, as point 2 says. A field that names a row must name one that exists, so a row added under a new key is named by no row. Removing a row that other rows still name is refused unless the code says to remove them too, and the refusal names them.
+6. **Two things are errors unless the code says so.** A read that walks a whole table. A write that must redo one part for each row that refers to the row it changed; the error and the word that allows it are on the kept read that causes it, and the write's report names that read. A write counts only the fields it changes that a kept part reads, as point 2 says. A field that names a row must name one that exists, so a row added under a new key is named by no row. Removing a row that other rows still name is refused unless the code says to remove them too, and the refusal names them.
 
 **What it rests on.** A script read the compiler's own Mo Core for 41 reads over a shop of four tables: 21 written by agents, 11 by Claude as references and 9 planted to press on the rule. It planned each one, kept the answers up to date through 1,200 random writes, and compared 23,877 answers with real Mo running the same code. None differed. Every control failed where it should.
 
@@ -254,7 +255,6 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 **Open inside the rule.**
 
 - **How often agents must say to remove the rows that name a row.** No experiment has run a delete of an order, a customer or a product written by an agent.
-- **Where the code says so for a write.** The growth comes from a kept read, and the error would land on a write function that somebody else may have written. Claude leans to putting the word on the read, at 65%: the read chooses between a cheap ask with a growing write and the reverse.
 - **What order a table gives its rows.** Two of the 21 agent-written reads leaned on arrival order without sorting. A table with no order of its own would make such a read an error or a visible choice.
 - **The same task written two ways lands in two classes.** One agent's `bought` looks in its own list before it adds to it, so it was looked up at 189.0 rows. The other's was kept at 51.5. The report must say why a read was not kept.
 - **Which lookup to wait at,** where a part does more than one. The script waits at the first, and the buyers read needs the second.
