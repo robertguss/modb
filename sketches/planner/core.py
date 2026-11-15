@@ -288,8 +288,8 @@ class Machine:
             value = self.run(args[3].body, {**args[3].env, args[3].params[0]: args[2] if found is None else found})
             return held.changed(args[1], value)
         rows = held.rows()
-        self.touched += 1 if what in ("get", "has?") else len(rows)
-        answers = {"get": lambda: option(held.get(args[1])), "has?": lambda: held.get(args[1]) is not None,
+        self.touched += 1 if what in ("get", "has") else len(rows)
+        answers = {"get": lambda: option(held.get(args[1])), "has": lambda: held.get(args[1]) is not None,
                    "values": lambda: list(rows.values()), "keys": lambda: list(rows), "size": lambda: len(rows),
                    "empty?": lambda: not rows, "entries": lambda: list(rows.items())}
         if what not in answers:

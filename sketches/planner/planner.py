@@ -665,6 +665,7 @@ def main():
                                      | planner.reads[key]["found"]["keyed"]) - {planner.reads[key]["cut"]["table"]}}
     assert not small.differing() and not large.differing(), "every answer must be Mo's"
     assert not any(run.differing() for run in by_function), "every answer under write functions must be Mo's"
+    assert not any(run.faults for run in (*by_function, unmoved)), "every write function must run"
     assert unmoved.differing() and set(unmoved.differing()) <= set(movers), "a missed move must spoil only its readers"
     assert no_upkeep.differing() and set(no_upkeep.differing()) <= kept, "skipped upkeep must spoil kept answers only"
     assert no_others.differing() and set(no_others.differing()) <= spans, "it must spoil only answers that span tables"
