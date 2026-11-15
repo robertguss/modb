@@ -1,0 +1,193 @@
+read                         by        class                same as Mo, 300       1200  rows read per ask  a row looked up twice counted once  how
+S01.orders_of                claude    kept                    294/294        84/84         6.9     27.6               6.9              27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+S02.orders_of                gpt       kept                    294/294        84/84         6.9     27.6               6.9              27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+S05.product_name             claude    by key                  196/196        56/56         1.0      1.0               1.0               1.0  products by key
+S06.product_name             gpt       by key                  196/196        56/56         1.0      1.0               1.0               1.0  products by key
+S09.large_orders             claude    looked up               770/770       220/220      167.8    659.2             167.8             659.2  orders ranged on total
+S10.large_orders             gpt       looked up               770/770       220/220      167.8    659.2             167.8             659.2  orders ranged on total
+S13.paid_total               claude    kept                    294/294        84/84         1.0      1.0               1.0               1.0  a number kept for each customer, a part for each row of orders; a part reads: orders by customer+status
+S14.paid_total               gpt       kept                    294/294        84/84         1.0      1.0               1.0               1.0  a number kept for each customer, a part for each row of orders; a part reads: orders by customer
+S17.open_count               claude    kept                      7/7           2/2          1.0      1.0               1.0               1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+S18.open_count               gpt       kept                      7/7           2/2          1.0      1.0               1.0               1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+S21.bought                   claude    looked up               294/294        84/84        44.2    189.0              38.6             134.1  orders by customer; lines by order; products by key
+S22.bought                   gpt       kept                    294/294        84/84        26.1     51.5              26.1              51.5  one entry and a count for each lines.product, kept for each customer; the lookup and the rest of a part run at the ask; it reads: orders by customer; lines by order; products by key
+S25.units_sold               claude    kept                    196/196        56/56         1.0      1.0               1.0               1.0  a number kept for each product, a part for each row of lines; a part reads: lines by product
+S26.units_sold               gpt       kept                    196/196        56/56         1.0      1.0               1.0               1.0  a number kept for each product, a part for each row of lines; a part reads: lines by product
+S29.latest                   claude    looked up              3528/3528     1008/1008       6.8     27.6               6.8              27.6  orders by customer
+S30.latest                   gpt       looked up              3528/3528     1008/1008       6.8     27.6               6.8              27.6  orders by customer
+S33.mentions                 claude    walked                   35/35         10/10       306.1   1215.0             306.1            1215.0  orders read whole at a test, says walk
+S34.mentions                 gpt       walked                   35/35         10/10       306.1   1215.0             306.1            1215.0  orders read whole, says walk
+S37.idle_customers           claude    kept                      7/7           2/2          1.7      7.5               1.7               7.5  a list kept as one, a part for each row of customers; a part reads: orders by customer; customers read whole, says walk
+S38.idle_customers           gpt       kept                      7/7           2/2          1.7      7.5               1.7               7.5  a list kept as one, a part for each row of customers; a part reads: orders by customer; customers read whole, says walk
+S91.city_customers           claude    kept                     42/42         12/12         6.4      7.6               6.4               7.6  a list kept for each city, a part for each row of customers; a part reads: customers by city
+Reference.orders_of          reference kept                    294/294        84/84         6.9     27.6               6.9              27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+Reference.product_name       reference by key                  196/196        56/56         1.0      1.0               1.0               1.0  products by key
+Reference.large_orders       reference looked up               770/770       220/220      167.8    659.2             167.8             659.2  orders ranged on total
+Reference.paid_total         reference kept                    294/294        84/84         2.3      9.7               2.3               9.7  a list kept for each customer, a part for each row of orders; a part reads: orders by customer+status
+Reference.open_count         reference kept                      7/7           2/2          1.0      1.0               1.0               1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+Reference.bought             reference kept                    294/294        84/84        26.1     51.5              26.1              51.5  one entry and a count for each lines.product, kept for each customer; the lookup and the rest of a part run at the ask; it reads: orders by customer; lines by order; products by key
+Reference.units_sold         reference kept                    196/196        56/56        31.6    124.2              31.6             124.2  a list kept for each product, a part for each row of lines; a part reads: lines by product
+Reference.latest             reference looked up              3528/3528     1008/1008       6.8     27.6               6.8              27.6  orders by customer
+Reference.mentions           reference walked                   35/35         10/10       306.1   1215.0             306.1            1215.0  orders read whole at a test, says walk
+Reference.idle_customers     reference walked                    7/7           2/2         73.3     82.0              73.3              82.0  orders by customer; customers read whole, says walk
+Reference.city_customers     reference kept                     42/42         12/12         6.4      7.6               6.4               7.6  a list kept for each city, a part for each row of customers; a part reads: customers by city
+Planted.largest              planted   looked up               294/294        84/84         6.8     27.6               6.8              27.6  orders by customer
+Planted.doubled              planted   looked up               294/294        84/84         6.8     27.6               6.8              27.6  orders by customer
+Planted.gifts                planted   kept                    294/294        84/84         1.5      4.8               1.5               4.8  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+Planted.spend_by_city        planted   kept                     42/42         12/12         1.0      1.0               1.0               1.0  a number kept for each city, a part for each pair of rows of customers and orders; a part reads: customers by city; orders by customer
+Planted.product_buyers       planted   kept                    196/196        56/56        86.8    350.1              79.7             274.3  one entry and a count for each lines.order, kept for each product; the lookup and the rest of a part run at the ask; it reads: lines by product; customers by key; orders by key
+Planted.revenue              planted   kept                    196/196        56/56        17.0     17.4               9.5               9.7  one entry and a count for each lines.product and lines.quantity, kept for each product; the lookup and the rest of a part run at the ask; it reads: lines by product; products by key
+Planted.unlined              planted   kept                      7/7           2/2         28.9     77.0              28.9              77.0  a list kept as one, a part for each row of orders; a part reads: lines by order; orders read whole, says walk
+Planted.busiest              planted   walked                    7/7           2/2        300.3   1096.5             300.3            1096.5  orders by customer; customers read whole, says walk
+Planted.bought_in_order      planted   kept                    294/294        84/84        16.3     67.5              16.3              67.5  a list kept for each customer, a part for each pair of rows of orders and lines; a part reads: orders by customer; lines by order; products by key
+Planted.noted                planted   walked     refused       35/35         10/10       306.1   1215.0             306.1            1215.0  orders read whole at a test
+
+answers compared with Mo's: 23922
+agent-written reads planned from Mo Core with every answer the same as Mo's: 21 of 21
+classes, agent-written: by key 2, kept 12, looked up 5, walked 2
+classes, all: by key 3, kept 24, looked up 9, walked 6
+reads whose answers differed from Mo's: at 300 orders [], at 1200 []
+upkeep at 300 orders, over 600 writes:
+  a write to customers    39 writes; index entries adjusted and parts made or dropped: mean   14.8, most   32; rows read for upkeep: mean    11.5, most    29
+  a write to products     55 writes; index entries adjusted and parts made or dropped: mean   41.9, most   78; rows read for upkeep: mean    62.8, most   117
+  a write to orders      205 writes; index entries adjusted and parts made or dropped: mean   33.2, most   68; rows read for upkeep: mean    19.6, most    59
+  a write to lines       301 writes; index entries adjusted and parts made or dropped: mean   13.2, most   20; rows read for upkeep: mean     9.2, most    14
+  any write: rows read for upkeep, mean 17.9
+upkeep at 1200 orders, over 600 writes:
+  a write to customers    48 writes; index entries adjusted and parts made or dropped: mean   30.6, most   76; rows read for upkeep: mean    24.9, most    73
+  a write to products     48 writes; index entries adjusted and parts made or dropped: mean  158.3, most  294; rows read for upkeep: mean   237.5, most   441
+  a write to orders      199 writes; index entries adjusted and parts made or dropped: mean   32.6, most   80; rows read for upkeep: mean    20.2, most    69
+  a write to lines       305 writes; index entries adjusted and parts made or dropped: mean   13.2, most   20; rows read for upkeep: mean     9.3, most    14
+  any write: rows read for upkeep, mean 32.4
+reads refused, a walk the code does not say: [('Planted', 'noted')]
+writes, by table: what each kept read must keep up when one row is written:
+  customers: flagged; rows read for upkeep, mean 11.5 at 300 orders and 24.9 at 1200, grows
+    Planted.spend_by_city: one part for every order that names this customer (orders.customer)
+    one part: S37.idle_customers, S38.idle_customers, S91.city_customers, Reference.city_customers
+    nothing, the lookup runs at the ask: Planted.product_buyers
+  products: flagged; rows read for upkeep, mean 62.8 at 300 orders and 237.5 at 1200, grows
+    Planted.bought_in_order: one part for every line that names this product (lines.product)
+    one part: none
+    nothing, the lookup runs at the ask: S22.bought, Reference.bought, Planted.revenue
+  orders: flagged; rows read for upkeep, mean 19.6 at 300 orders and 20.2 at 1200, flat
+    S22.bought: one part for every line that names this order (lines.order)
+    Reference.bought: one part for every line that names this order (lines.order)
+    Planted.bought_in_order: one part for every line that names this order (lines.order)
+    one part: S01.orders_of, S02.orders_of, S13.paid_total, S14.paid_total, S17.open_count, S18.open_count, S37.idle_customers, S38.idle_customers, Reference.orders_of, Reference.paid_total, Reference.open_count, Planted.gifts, Planted.spend_by_city, Planted.unlined
+    nothing, the lookup runs at the ask: Planted.product_buyers
+  lines: not flagged; rows read for upkeep, mean 9.2 at 300 orders and 9.3 at 1200, flat
+    one part: S22.bought, S25.units_sold, S26.units_sold, Reference.bought, Reference.units_sold, Planted.product_buyers, Planted.revenue, Planted.unlined, Planted.bought_in_order
+    nothing, the lookup runs at the ask: none
+writes the rule flags: ['customers', 'products', 'orders']; writes that grow 1.5 times or more: ['customers', 'products']
+flagged and flat: ['orders']; growing and not flagged: []
+control, the write test counts lookups by key only: flags ['products'], misses growing ['customers']
+
+write functions, with upkeep by field:
+  W1.add_customer (claude): customers: every field
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 21 at 300 orders and 21 at 1200; rows read for upkeep, mean 5.0 and 5.0, flat; parts made or dropped, mean 5.0 and 5.0
+  W1.move_customer (claude): customers: city
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 25 at 300 orders and 17 at 1200; rows read for upkeep, mean 10.8 and 35.1, grows; parts made or dropped, mean 13.4 and 37.1
+  W1.add_product (claude): products: every field
+    experiment 13's test: flagged; field test: Planted.bought_in_order (planted) on products
+    calls 23 at 300 orders and 18 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W1.set_price (claude): products: price
+    experiment 13's test: flagged; field test: not flagged
+    calls 25 at 300 orders and 23 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W1.place_order (claude): orders: every field
+    experiment 13's test: flagged; field test: S22.bought (gpt) on orders, Reference.bought (reference) on orders, Planted.bought_in_order (planted) on orders
+    calls 20 at 300 orders and 16 at 1200; rows read for upkeep, mean 15.2 and 15.0, flat; parts made or dropped, mean 18.2 and 18.0
+  W1.add_line (claude): orders: total; lines: every field
+    experiment 13's test: flagged; field test: not flagged
+    calls 17 at 300 orders and 21 at 1200; rows read for upkeep, mean 4.6 and 5.9, flat; parts made or dropped, mean 5.8 and 7.4
+  W1.remove_line (claude): orders: total; removes lines
+    experiment 13's test: flagged; field test: not flagged
+    calls 14 at 300 orders and 18 at 1200; rows read for upkeep, mean 0.6 and 0.8, flat; parts made or dropped, mean 4.1 and 5.3
+  W1.set_status (claude): orders: status
+    experiment 13's test: flagged; field test: not flagged
+    calls 29 at 300 orders and 16 at 1200; rows read for upkeep, mean 2.1 and 1.6, flat; parts made or dropped, mean 8.7 and 8.2
+  W1.set_note (claude): orders: note
+    experiment 13's test: flagged; field test: not flagged
+    calls 12 at 300 orders and 17 at 1200; rows read for upkeep, mean 0.8 and 0.9, flat; parts made or dropped, mean 1.7 and 1.9
+  W2.add_customer (gpt): customers: every field
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 21 at 300 orders and 25 at 1200; rows read for upkeep, mean 5.0 and 5.0, flat; parts made or dropped, mean 5.0 and 5.0
+  W2.add_product (gpt): products: every field
+    experiment 13's test: flagged; field test: Planted.bought_in_order (planted) on products
+    calls 23 at 300 orders and 21 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W2.place_order (gpt): orders: every field
+    experiment 13's test: flagged; field test: S22.bought (gpt) on orders, Reference.bought (reference) on orders, Planted.bought_in_order (planted) on orders
+    calls 20 at 300 orders and 20 at 1200; rows read for upkeep, mean 16.0 and 15.8, flat; parts made or dropped, mean 19.0 and 18.8
+  W2.move_customer (gpt): customers: city
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 21 at 300 orders and 23 at 1200; rows read for upkeep, mean 11.3 and 40.0, grows; parts made or dropped, mean 13.7 and 42.6
+  W2.rename_product (gpt): products: name
+    experiment 13's test: flagged; field test: Planted.bought_in_order (planted) on products
+    calls 18 at 300 orders and 23 at 1200; rows read for upkeep, mean 46.7 and 163.6, grows; parts made or dropped, mean 31.1 and 109.0
+  W2.note_order (gpt): orders: note
+    experiment 13's test: flagged; field test: not flagged
+    calls 18 at 300 orders and 23 at 1200; rows read for upkeep, mean 1.0 and 0.8, flat; parts made or dropped, mean 2.0 and 1.6
+  W3.add_customer (claude): customers: every field
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 19 at 300 orders and 23 at 1200; rows read for upkeep, mean 5.0 and 5.0, flat; parts made or dropped, mean 5.0 and 5.0
+  W3.move_customer (claude): customers: city
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 15 at 300 orders and 15 at 1200; rows read for upkeep, mean 10.5 and 20.7, grows; parts made or dropped, mean 13.3 and 23.1
+  W3.add_product (claude): products: every field
+    experiment 13's test: flagged; field test: Planted.bought_in_order (planted) on products
+    calls 19 at 300 orders and 14 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W3.set_price (claude): products: price
+    experiment 13's test: flagged; field test: not flagged
+    calls 17 at 300 orders and 20 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W3.place_order (claude): orders: every field
+    experiment 13's test: flagged; field test: S22.bought (gpt) on orders, Reference.bought (reference) on orders, Planted.bought_in_order (planted) on orders
+    calls 17 at 300 orders and 26 at 1200; rows read for upkeep, mean 15.4 and 15.4, flat; parts made or dropped, mean 18.4 and 18.4
+  W3.add_line (claude): orders: total; lines: every field
+    experiment 13's test: flagged; field test: not flagged
+    calls 15 at 300 orders and 20 at 1200; rows read for upkeep, mean 4.0 and 5.3, flat; parts made or dropped, mean 5.1 and 6.8
+  W3.remove_line (claude): orders: total; removes lines
+    experiment 13's test: flagged; field test: not flagged
+    calls 25 at 300 orders and 16 at 1200; rows read for upkeep, mean 0.7 and 1.1, grows; parts made or dropped, mean 4.0 and 7.1
+  W3.set_status (claude): orders: status
+    experiment 13's test: flagged; field test: not flagged
+    calls 25 at 300 orders and 15 at 1200; rows read for upkeep, mean 1.4 and 1.0, flat; parts made or dropped, mean 5.8 and 5.6
+  W3.set_note (claude): orders: note
+    experiment 13's test: flagged; field test: not flagged
+    calls 13 at 300 orders and 27 at 1200; rows read for upkeep, mean 0.8 and 0.8, flat; parts made or dropped, mean 1.7 and 1.6
+  W4.rename_customer (gpt): customers: name
+    experiment 13's test: flagged; field test: not flagged
+    calls 16 at 300 orders and 16 at 1200; rows read for upkeep, mean 2.0 and 2.0, flat; parts made or dropped, mean 4.0 and 4.0
+  W4.move_customer (gpt): customers: city
+    experiment 13's test: flagged; field test: Planted.spend_by_city (planted) on customers
+    calls 20 at 300 orders and 17 at 1200; rows read for upkeep, mean 14.3 and 32.1, grows; parts made or dropped, mean 17.3 and 34.9
+  W4.rename_product (gpt): products: name
+    experiment 13's test: flagged; field test: Planted.bought_in_order (planted) on products
+    calls 27 at 300 orders and 25 at 1200; rows read for upkeep, mean 25.7 and 196.0, grows; parts made or dropped, mean 17.1 and 130.6
+  W4.price_product (gpt): products: price
+    experiment 13's test: flagged; field test: not flagged
+    calls 21 at 300 orders and 23 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+  W4.note_order (gpt): orders: note
+    experiment 13's test: flagged; field test: not flagged
+    calls 26 at 300 orders and 15 at 1200; rows read for upkeep, mean 0.8 and 0.8, flat; parts made or dropped, mean 1.6 and 1.6
+  W4.status_order (gpt): orders: status
+    experiment 13's test: flagged; field test: not flagged
+    calls 18 at 300 orders and 26 at 1200; rows read for upkeep, mean 2.3 and 2.3, flat; parts made or dropped, mean 9.3 and 9.2
+  Moved.move_order (planted): orders: customer
+    experiment 13's test: flagged; field test: S22.bought (gpt) on orders, Reference.bought (reference) on orders, Planted.bought_in_order (planted) on orders
+    calls 0 at 300 orders and 0 at 1200; rows read for upkeep, mean 0.0 and 0.0, flat; parts made or dropped, mean 0.0 and 0.0
+agent-written write functions: 30; flagged by experiment 13's test: 30; flagged by the field test: 15
+flagged by the field test and flat: ['W1.add_customer', 'W1.add_product', 'W1.place_order', 'W2.add_customer', 'W2.add_product', 'W2.place_order', 'W3.add_customer', 'W3.add_product', 'W3.place_order']
+growing and not flagged by the field test: ['W3.remove_line']
+flagged by the field test because of an agent-written read: ['W1.place_order', 'W2.place_order', 'W3.place_order']
+function writes at 300 orders: answers differing from Mo's []; rows read for upkeep, mean 6.8; faults {}
+function writes at 1200 orders: answers differing from Mo's []; rows read for upkeep, mean 21.3; faults {}
+control, upkeep skipped when a write changes an order's customer: differing [('Planted', 'bought_in_order'), ('Planted', 'gifts'), ('Planted', 'spend_by_city'), ('Reference', 'bought'), ('Reference', 'orders_of'), ('Reference', 'paid_total'), ('S01', 'orders_of'), ('S02', 'orders_of'), ('S13', 'paid_total'), ('S14', 'paid_total'), ('S22', 'bought'), ('S37', 'idle_customers'), ('S38', 'idle_customers')]; kept reads that read an order's customer [('Planted', 'bought_in_order'), ('Planted', 'gifts'), ('Planted', 'product_buyers'), ('Planted', 'spend_by_city'), ('Reference', 'bought'), ('Reference', 'orders_of'), ('Reference', 'paid_total'), ('S01', 'orders_of'), ('S02', 'orders_of'), ('S13', 'paid_total'), ('S14', 'paid_total'), ('S22', 'bought'), ('S37', 'idle_customers'), ('S38', 'idle_customers')]
+reads that differ when rows come back in the opposite order: [('Planted', 'bought_in_order'), ('Planted', 'doubled'), ('S02', 'orders_of'), ('S10', 'large_orders')]
+control, updates skip all upkeep: differing [('Planted', 'bought_in_order'), ('Planted', 'gifts'), ('Planted', 'product_buyers'), ('Planted', 'revenue'), ('Planted', 'spend_by_city'), ('Planted', 'unlined'), ('Reference', 'bought'), ('Reference', 'city_customers'), ('Reference', 'open_count'), ('Reference', 'orders_of'), ('Reference', 'paid_total'), ('Reference', 'units_sold'), ('S01', 'orders_of'), ('S02', 'orders_of'), ('S13', 'paid_total'), ('S14', 'paid_total'), ('S17', 'open_count'), ('S18', 'open_count'), ('S22', 'bought'), ('S25', 'units_sold'), ('S26', 'units_sold'), ('S91', 'city_customers')]
+control, a write to another table skips the parts that read it: differing [('Planted', 'bought_in_order'), ('Planted', 'spend_by_city'), ('Planted', 'unlined'), ('Reference', 'bought'), ('S22', 'bought'), ('S37', 'idle_customers'), ('S38', 'idle_customers')]
+control, the test is dropped after the index: differing [('Planted', 'gifts')]
+control, no notice when an index entry empties or fills: differing [('Planted', 'unlined'), ('S37', 'idle_customers'), ('S38', 'idle_customers')]
+control, a waiting part's lookups are never done again: differing [('Planted', 'product_buyers'), ('Planted', 'revenue'), ('Reference', 'bought'), ('S22', 'bought')]
+control, a list is grouped though its order counts: differing [('Planted', 'bought_in_order')]
+control, waiting parts are grouped on no fields: differing [('Planted', 'product_buyers'), ('Planted', 'revenue'), ('Reference', 'bought'), ('S22', 'bought')]

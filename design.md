@@ -200,7 +200,7 @@ A tree of this shape, written in Mo as it stands, kept a version for 778 bytes a
 
 ### The rule for reads and writes
 
-Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a query. The experiments are numbers 8 to 13 in [experiments.md](experiments.md), which holds every figure below with its predictions and controls.
+Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a query. The experiments are numbers 8 to 14 in [experiments.md](experiments.md), which holds every figure below with its predictions and controls.
 
 **Decided by Robert.**
 
@@ -242,7 +242,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 
 **What it does not rest on.**
 
-- A write test that sees growth. Experiment 13 ran the whole rule once. The read error refused exactly the one planted walk that does not say `walk`. The write error, worked out from the plan alone, flagged every write that grew, to customers and to products. It also flagged writes to orders, which stay flat at about 21 rows, because `bought` holds a part for each pair of an order and one of its lines, and an order has about three lines. The plan shows "one part for every row that names this row" and not how many rows that is. Point 4 was run only on pairs of rows.
+- A write test that sees growth. Experiment 13 ran the whole rule once. The read error refused exactly the one planted walk that does not say `walk`. The write error, worked out from the plan alone, flagged every write that grew, to customers and to products. It also flagged writes to orders, which stay flat at about 21 rows, because `bought` holds a part for each pair of an order and one of its lines, and an order has about three lines. The plan shows "one part for every row that names this row" and not how many rows that is. Point 4 was run only on pairs of rows. Experiment 14 tracked writes by field, as point 2 says, with 30 write functions agents wrote. The flag came off the 15 that only update fields no part depends on through a reference: status, note, price, a customer's name, and lines. Of the 15 still flagged, the 6 that grow are true fan-out (a customer moving city, a product renamed), flagged only by planted reads. The 9 that stay flat all add a row: the compiler cannot tell a new key from an old one, because nothing promises that a field naming a row names one that exists.
 - A compiler pass. The planner is a Python script beside the compiler, and it handles only the forms these reads use. It groups only reads written as a loop.
 - More than one store. It has about 40 customers and 25 products at both sizes, so "grows with the store" was only seen as more lines for each product and more orders for each customer.
 - Time or memory. Rows were counted. Nothing was timed, and what the kept answers cost to hold was not measured.

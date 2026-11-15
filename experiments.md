@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 to 13 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read. The rule those experiments led to is written as a draft in [design.md](design.md), section 5, for Robert to accept; experiments on kept answers stopped there at his word. At his request experiment 13 then ran the whole rule once: every write that grows was flagged, and writes to orders were flagged though they stay flat, because the write test sees a shape and not how many rows share it.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 to 13 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read. The rule those experiments led to is written as a draft in [design.md](design.md), section 5, for Robert to accept; experiments on kept answers stopped there at his word. At his request experiment 13 then ran the whole rule once: every write that grows was flagged, and writes to orders were flagged though they stay flat, because the write test sees a shape and not how many rows share it. Experiment 14 then tracked writes by field, with write functions agents wrote: the flag came off half of them, every ordinary update among them. What stays flagged is adding a row, which stays flat, and moving a customer or renaming a product, which grow and are flagged only by planted reads.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -328,6 +328,63 @@ Experiment 13 flagged writes to orders, and those writes stayed flat. Its writes
 - The sessions run inside this repository, as in experiment 4, and are told to stay in their folders. Nothing stops one from reading elsewhere.
 - The store is built as in experiment 13, with about three lines to an order, so a cancelled order drops about three pairs at both sizes.
 - The limits of experiment 13 stand.
+
+### Result of experiment 14, 2026-11-15
+
+Run as committed in `91c7758`, with one fix after a void first run (below), at `aa0f07b`. The report is [sketches/planner/results/report-14.txt](sketches/planner/results/report-14.txt). The agents' functions are in [sketches/write-trial/results](sketches/write-trial/results/).
+
+**Headline.** Tracking writes by field took the flag off half the agents' functions. Experiment 13's test flags all 30; the field test flags 15. Every function that only pays, ships, notes, reprices, renames a customer or changes lines is no longer flagged, and reads at most about 6 rows of upkeep at both sizes. Fifteen stay flagged. Nine add a row and stay flat. Six grow, and each is real fan-out: a customer who moves city redoes one part for every order they have, and a renamed product redoes one part for every line that names it. Every one of those six is flagged only because of a planted read. With the 21 agent-written reads alone, the field test flags three functions, all of them adding an order, and all flat.
+
+**What the agents wrote.** All four sessions ended with a `writes.mo` that checks and tests that pass: 9, 6, 9 and 6 functions, 30 in all. They added customers (3), products (3), orders (3) and lines (2), removed lines (2), moved a customer to another city (4), renamed a product (2) or a customer (1), changed a price (3), an order's status (3) or its note (4). Adding or removing a line also changes the order's total. No agent removed an order, a customer or a product, and none gave an order to another customer.
+
+| Functions | Field test | Rows read for upkeep, mean at 300 and 1,200 orders |
+| --- | --- | --- |
+| Add an order (3) | flagged: `bought` from GPT and from the reference, and the planted in-order read | 15.2 to 16.0, and 15.0 to 15.8; flat |
+| Add a customer (3) | flagged: the planted spend of a city | 5.0 and 5.0; flat |
+| Add a product (3) | flagged: the planted in-order read | 0 and 0; flat |
+| Move a customer to another city (4) | flagged: the planted spend of a city | 10.5 to 14.3, and 20.7 to 40.0; grows 2.0 to 3.5 times |
+| Rename a product (2) | flagged: the planted in-order read | 25.7 and 46.7, and 163.6 and 196.0; grows 3.5 and 7.6 times |
+| Change an order's status (3) | not flagged | 1.4 to 2.3, and 1.0 to 2.3 |
+| Change an order's note (4) | not flagged | at most 1.0 |
+| Change a price (3) | not flagged | 0 |
+| Rename a customer (1) | not flagged | 2.0 and 2.0 |
+| Add a line (2) | not flagged | 4.0 to 4.6, and 5.3 to 5.9 |
+| Remove a line (2) | not flagged | 0.6 and 0.7, and 0.8 and 1.1 |
+
+Adding an order reads about 15 rows because about 15 kept reads hold a part for each order, and each makes one. No line names a new order, so no pair is made.
+
+**Predictions.**
+
+1. All four sessions end with a module that checks and tests that pass: held.
+2. Every session writes a function that adds an order and one that changes only an order's status: failed. One GPT session added no order, and the other changed no status.
+3. Experiment 13's test flags more than half of the agents' functions: held, all 30.
+4. No function is flagged by the field test if all it does is change an order's status, note, total or day, change a price, or add, change or remove lines without removing an order: held, for all 15 such functions.
+5. Every function that adds an order, a customer or a product is flagged by the field test, and each is flat: held, all nine.
+6. No function that grows goes unflagged: failed, by the line fixed before the run. One of the two functions that remove a line read 0.7 rows at 300 orders and 1.1 at 1,200, which is 1.57 times. Its twin read 0.6 and 0.8. In the void first run the other one crossed the line, at 0.3 and 0.8. Claude reads this as noise in a mean under one row over 16 to 25 calls, but did not check it. Every function that grows by more than a row is flagged.
+7. A function that changes only an order's status reads at most 5 rows on average at both sizes: held, at most 2.3.
+8. No field flag comes from an agent-written read except for adding or removing an order: held. Adding an order is flagged by `bought` from GPT; every other flag comes from a planted read.
+9. Every answer is the same as Mo's at every comparison, for both kinds of write: held, in both full runs.
+10. Skipping upkeep for a write that changes an order's customer spoils the planted in-order read and at least one `bought`, and only reads that read an order's customer: held. It spoiled 11 reads, among them both `bought`s and the in-order read, all of which read an order's customer.
+11. The controls of experiment 13 fail as they did, and under random writes the flags and the growth are the same: held. Every control line matches experiment 13's report. Customers and products grow and are flagged; orders are flagged and flat.
+
+**Under random writes,** upkeep by field changed little, because a random write changes most fields. At 1,200 orders: customers 24.9 rows against 31.7 in experiment 13, products 237.5 against 252.3, orders 20.2 against 21.6, lines 9.3 against 9.3, any write 32.4 against 34.6. Under the agents' functions, any write read 6.8 rows at 300 orders and 21.3 at 1,200.
+
+**What went wrong on the way.**
+
+- The first parse of the functions read W3's `expose` as one line, though it spans nine, and found one function in place of nine. Claude fixed it before any run.
+- The first full run is void. Mo Core names a map's `has?` as `has`, which the script did not know. All 11 functions that add a row check `has?` first, so each of their calls stopped with a fault and changed nothing. The script counted the faults but did not stop on them. Claude fixed the name, made the script stop on any fault, and ran again. Only the second run is recorded.
+- The Claude sessions were started through T3 Code's `delegate_task` on `claude-fable-5-2`, not the Agent tool written above, so that they could run in the background. The prompt and the model are the same.
+
+**What it means.** Claude's 40% for a bound on the reference falls to 10%. The flags left after tracking by field are of two kinds. The six that grow are true fan-out over references with no natural limit: orders for a customer, lines for a product. A bound there would be a guess with a number on it. The nine that do not grow are on adding a row. A bound does not touch those. They stand because the compiler cannot tell a new key from an old one, and nothing in the design promises that a field naming a row names one that exists. With such a promise, a row added under a new key is named by no row, and the flag would come off. Removing a row would then be refused or would take the rows that name it with it, which is a choice the rule would have to make.
+
+**What it does not show.**
+
+- No agent removed an order, a customer or a product, or gave an order to another customer. So no agent function tested the deletes that the council expected to keep the flag. The planted `move_order` ran only in the control.
+- The task fixed the form of the functions. Telling agents to take a new row's id as a parameter is part of why the compiler cannot know the key is new. A store that makes its own keys would know.
+- The arguments are random, and every function is called equally often. One GPT session named its parameters `value`, so the script gave its cities and names the words of a note.
+- The answers are compared with Mo every 100 writes, not after each one.
+- Which fields a function changes is read from its Mo Core by which fields it copies. Each of the 30 readings matches what the function's name says. Claude did not check each one against its code; the comparison with Mo is what would catch a part left stale.
+- The store has about three lines to an order and about 40 customers at both sizes, as in experiment 13.
 
 ### Result of experiment 13, 2026-11-15
 
@@ -764,6 +821,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **After experiment 12: grouping before the lookup works where the key repeats and order does not count, and the compiler can find it.** That moves the 70% above. Claude's view now, at 75%: where a part looks up another table, the compiler groups before the lookup when it can show order does not count, and keeps the whole answer otherwise. It reports what each write must keep up, in the terms it knows: one part for every line that names this product. A write whose upkeep is one part for each row that refers to the written row is the growing kind, and is an error unless the code says so. What is still open is small beside that: which lookup to wait at, totalling before a lookup, and more shapes that do not lean on order.
 - **After experiment 13: the rule runs whole, and the write half of point 6 is too coarse as written.** The read error refused exactly the one planted walk. The write test, worked out from the plan alone, flagged every write that grew and one that did not: a write to an order redoes a part for each of its lines, and an order has about three. The compiler sees "one part for every row that names this row" and cannot see how many rows that is. Claude's view, at 70%: keep the test as the compiler's report, and let the code state a bound on a reference, such as at most so many lines to an order, so a flagged write with a stated bound is not an error. Without that, every program with a pair of an order and its lines must say the word for writes that never grow. What would move it: a corpus where few-to-one references are rare, or a store that can measure the bound for itself.
 - **After the council on the write rule, 2026-11-15: the bound is the wrong next step, at 60% against it.** [Three reviewers, two rounds](raw/council-2026-11-15-the-write-rule/README.md). In round 2 two of the three said keep the write half of point 6 as written, and one said add a bound that every write checks, at 62% to 72% each. All three named the same first experiment. The script redoes a part when any field of a row it read changes, but point 2 says a write redoes only the parts that read what it changed. `bought` reads an order only through its id and its customer, and the spend of a city reads a customer only through its id and city. So paying, shipping or editing an order should redo no line part, and the flag on orders may come from writes of whole rows, not from a need for a bound. Claude's 70% for the bound falls to 40%. What would move it back: the next experiment, with the planner tracking fields and the writes written as write functions by agents who were not told the rule, still flagging ordinary writes on references that have a real limit.
+- **After experiment 14: no bound, at 90%.** Tracking writes by field took the flag off every ordinary update the agents wrote. The flags that grow are true fan-out over references with no natural limit, orders for a customer and lines for a product, so a bound there would be a guess with a number on it. The flags that stay flat are on adding a row, which a bound does not touch. What would bring the bound back: agent-written reads that fan out over a reference with a real limit, such as lines on an order, under writes that change what they read. What the rule still lacks: a way to know a new key is named by no row, from a promise that a field naming a row names one that exists, or from keys the store makes.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
