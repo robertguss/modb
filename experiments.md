@@ -70,6 +70,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 11 | **Doing the lookup when the read is asked.** The stand-in of experiment 10 with one change: a part no longer reads another table by key. Where the part is for a pair of rows, the pair is kept and the rest of the part runs when the read is asked. Where the part is for one row, nothing would be kept but the index, so the read is not kept | What a write to the looked-up table then costs, and what an ask costs against keeping the whole answer and against keeping nothing | Written below, before the run | Lookups that are never done again after the pair is made must spoil exactly the reads whose lookups moved; the controls of experiment 10 must still fail as before |
 | 12 | **Grouping before the lookup.** The stand-in of experiment 11 with one change: parts that stop at a lookup are grouped by the fields the rest of the part reads, and each group is kept once with a count. An ask does the lookup and the rest once for each group. A list is grouped only where the code sorts it before any other use | Whether the compiler can find the grouping from Mo Core alone, and what an ask and a write then cost against experiments 10 and 11 | Written below, before the run | Grouping on no fields must spoil exactly the grouped reads; grouping a planted read whose order counts must spoil exactly that read; lookups never done again must spoil exactly the reads that wait at a lookup; the controls of experiment 10 must still fail as before |
 | 13 | **The whole rule in one run.** The stand-in of experiment 12 run under the draft rule of [design.md](design.md), section 5: point 4 replaces doing the lookup at the ask where order counts, a read that walks without saying `walk` is refused, and a write that must redo one part for each row that refers to the row it changed is flagged, worked out from the plan alone | Whether the tables flagged from the plan are exactly the tables whose upkeep grows between the two store sizes | Written below, before the run | A planted walk that does not say `walk` must be refused and nothing else newly refused; a weakened write test must miss a write that grows; the controls of experiment 12 must still fail as before, or the change is named |
+| 14 | **Writes tracked by field, with write functions agents wrote.** Four fresh agent sessions write the shop's write functions, choosing the changes themselves and told nothing of the rule. The stand-in of experiment 13 runs them. It works out from each function's Mo Core which fields of which tables it can change. It flags the function under point 6 only when the function removes a row, or changes a field that a kept read reads, of a row that a part depends on through the rows that name it. A write redoes a part only when it changed a field the read reads | Which ordinary writes keep the flag once writes are tracked by field, and whether any write that grows goes unflagged | Written below, before the sessions | Skipping upkeep when a write changes an order's customer must spoil reads that read an order's customer, and only those; the controls of experiment 13 must still fail as before |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -264,6 +265,69 @@ The 41 reads, the writes, the seeds and the comparison with real Mo are the same
 - The line between flat and growing, 1.5 times, is Claude's.
 - The store has about 40 customers and 25 products at both sizes, and about three lines to an order. So "grows" here means more orders for each customer and more lines for each product.
 - The limits of experiment 12 stand.
+
+### Experiment 14 as it will be run, written 2026-11-15 before any session
+
+Experiment 13 flagged writes to orders, and those writes stayed flat. Its writes were random whole rows, so every write to an order counted as changing every field. Point 2 says a write redoes only the parts that read what it changed. `bought` reads an order only through its id and its customer, so paying or shipping an order should redo no part of it. The council of 2026-11-15 named this the first experiment to run before Robert decides on point 6 ([raw/council-2026-11-15-the-write-rule](raw/council-2026-11-15-the-write-rule/README.md)). Robert asked for it the same day.
+
+**The sessions.** Four fresh agent sessions, two Claude and two GPT, each write `writes.mo`: between 6 and 10 functions that change the shop, one for each change its customers and staff make in an ordinary day. They choose the changes. They are told nothing of kept answers or of the rule. The materials are in [sketches/write-trial](sketches/write-trial/): the prompt, the task, and the same store and `STORE.md` as experiment 4. The task fixes only the form, so that a script can call the functions. Each takes the shop first and gives back the changed shop. It takes only `Int`, `Text` and `Status` after the shop. A parameter holding a row's id is named after its row type, and a new row's id is a parameter named `id`. Each session also writes tests of its functions on `Shop.sample` and must make them pass.
+
+- **Claude:** a `general-purpose` subagent started with the Agent tool on `claude-fable-5-2`, as in experiment 4.
+- **GPT:** `gpt-6.1-sol` through Codex, started with T3 Code's `delegate_task`, default settings, as in experiment 4.
+- Every session counts. A session that ends without a `writes.mo` that checks adds no functions, and is reported.
+
+**What changes in the planner.** All in `sketches/planner/`.
+
+- **It runs write functions.** The script runs each function's Mo Core over the stored tables. A map's `set` and `remove` build a change to the table, and the script applies the change when the function returns. The arguments are random. A parameter named after a table gets the id of one of its rows. `id` gets a key no table holds. Other `Int`s get 1 to 29, a `Text` gets a city, a name or a note, and a `Status` gets one of the three. Each write calls one function, chosen with equal chance from all of them.
+- **What a function can change, from its Mo Core.** The tables it calls `set` or `remove` on. For each table it sets, the fields its new rows do not copy from a row of the same type. A row built from nothing, as when a row is added, changes every field.
+- **What a read reads, from its Mo Core.** For each table, the fields its code takes out of that table's rows.
+- **Upkeep by field.** A write that changes a row's fields redoes a kept read's parts only when the read reads one of the fields that changed. A row added or removed counts as changing every field.
+- **The write flag by field.** Experiment 13 flags a table: a write to it must redo one part for every row that names the row it changed. Now the flag is on a function. It is flagged for a table when experiment 13's test flags that table for some kept read, and the function either removes rows of it or changes a field of it that this read reads. A function that adds a row changes every field, so it is flagged wherever the table is flagged. The compiler cannot tell a new key from an old one, and nothing in the design promises that a row names only rows that exist.
+- **The report** gives, for each function, who wrote it, what it changes, whether experiment 13's test flags it, whether the field test flags it and which reads cause that, and its mean upkeep at 300 and 1,200 orders. It says which of the reads that cause a flag were written by agents.
+- **Two fixes the council asked for.** The count of parts in the upkeep lines now counts each part made or dropped, where experiment 13 counted one for each read. A dropped part is counted there, though it reads no row.
+
+**What is kept from experiment 13.** The 42 reads. The random writes, now with upkeep by field, at both sizes, with the same seeds, the same comparison with real Mo, and the same controls. What counts as growing: mean upkeep at 1,200 orders at least 1.5 times the mean at 300. The function writes run on stores built the same way, at both sizes, and are compared with real Mo every 100 writes.
+
+**One planted write.** `move_order` gives an order to another customer. Only the control needs it: no agent may write such a change, and the control has to make one. It is reported apart from the agents' functions.
+
+**What Claude expects the agents to write, before seeing it.** Adding a customer, a product, an order and a line. Paying, shipping, and putting a note on an order. Changing a price, a quantity or a customer's city. Removing a line, and cancelling an order by removing it and its lines. Adding a line may also change the order's total.
+
+**What Claude worked out from the plan before writing the predictions.** Experiment 13's test flags customers, orders and products. The field test then flags these:
+
+- **Orders,** for any function that adds or removes an order or changes its customer. `bought` from GPT and from the reference, and the planted in-order read, read an order only through its id and its customer. Paying, shipping, a note or a new total is not flagged.
+- **Customers,** for any function that adds or removes a customer or changes their city. Only the planted spend of a city causes it. It reads a customer's id and city, not their name.
+- **Products,** for any function that adds or removes a product or changes its name. Only the planted in-order read causes it. It reads a product's name, not its price.
+- **Lines** are not flagged, as in experiment 13.
+
+**Predictions, Claude.** "Sessions" means it depends on what the agents write. "Run" means it depends on the run.
+
+1. Sessions. All four sessions end with a `writes.mo` that checks and tests that pass: 75%.
+2. Sessions. Every session writes a function that adds an order, and one that changes only an order's status: 85%.
+3. Sessions. Experiment 13's test flags more than half of the agents' functions: 80%.
+4. Sessions and run, the result that decides. No agent function is flagged by the field test if all it does is change an order's status, note, total or day, change a product's price, or add, change or remove lines without removing an order: 85%.
+5. Sessions and run. Every agent function that adds an order, a customer or a product is flagged by the field test, and each is flat: 80%. That is the flag left standing where nothing grows.
+6. Run. Every function whose upkeep grows is flagged by the field test. No growing function goes unflagged: 90%.
+7. Run. A function that changes only an order's status reads at most 5 rows for upkeep on average, at both sizes. In experiment 13 a write to an order read 21: 75%.
+8. Sessions and run. Of the agents' functions the field test flags, none is flagged by an agent-written read except for adding or removing an order. Every other flag comes from a planted read: 75%.
+9. Run. Every answer is the same as Mo's, at every comparison, for both kinds of write: 75%. Running write functions and upkeep by field are both new.
+10. Run. The control: skipping all upkeep for a write that changes an order's customer spoils `Planted.bought_in_order` and at least one `bought`. Every read it spoils reads an order's customer: 85%.
+11. Run. The controls of experiment 13 fail as they did. Under the random writes, the tables experiment 13's test flags, and the ones that grow, are the same as in experiment 13: 85%.
+
+**Controls that must fail.**
+
+- Skipping all upkeep for a write that changes an order's customer must spoil some reads, and only reads that read an order's customer. In the control's run `move_order` makes one write in five, so the control has changes to miss.
+- The controls of experiment 13, on the random writes: the planted walk that does not say `walk` is refused and nothing else is, the weakened write test misses a write that grows, and the eight controls of experiment 12.
+
+**What it would mean.** If predictions 4 and 5 hold, tracking writes by field takes the flag off the ordinary writes. The flags left are on adding a row, removing one, and changing a field that parts are grouped or joined by or look up. Adding a row would stay flagged though it is flat, because nothing promises that a row names only rows that exist. A bound on the reference would not fix that; a promise like that would. Claude's 40% for the bound would fall, and the question for Robert would become whether point 6 should say that a new key fans out to nothing. If prediction 4 fails, ordinary writes keep the flag and the case for a bound comes back.
+
+**Limits known before the run.**
+
+- The agents chose the writes, but the task fixed their form and the script chose their arguments. Each function is called equally often, which no shop does.
+- What a function can change is read from its Mo Core by copying of fields. A function that copies a field from another row of the same type would be read as leaving it unchanged. The comparison with Mo would catch a part left stale by that.
+- The answers are compared with Mo at checkpoints, not after every write.
+- The sessions run inside this repository, as in experiment 4, and are told to stay in their folders. Nothing stops one from reading elsewhere.
+- The store is built as in experiment 13, with about three lines to an order, so a cancelled order drops about three pairs at both sizes.
+- The limits of experiment 13 stand.
 
 ### Result of experiment 13, 2026-11-15
 
