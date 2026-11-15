@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8, 9 and 10 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8, 9, 10 and 11 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -179,6 +179,56 @@ The same 40 reads, the same writes and the same comparison with real Mo. Experim
 - Making a pair is counted as two rows read.
 - Nothing is grouped. One kept entry for each distinct product, with a count, would shorten both the kept list and the lookups. So would a kept total of quantities for the revenue read. Neither is built.
 - The store has about 40 customers and 25 products at both sizes. So lines for each product, and orders for each customer, grow with the store here. In a real shop they need not.
+
+### Result of experiment 11, 2026-11-15
+
+Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-11.txt`](sketches/planner/results/report-11.txt). The script as it ran is at commit `8eda276`.
+
+**What it shows.**
+
+- **Every answer matched Mo's, on the first run that completed.** The same 40 reads and 23,499 answers.
+- **A write got cheap.** Rows read for upkeep by one write, mean, experiment 10 against experiment 11:
+
+| A write to | At 300 orders | At 1,200 orders | Grows with the store? |
+| --- | --- | --- | --- |
+| lines | 10.9, now 5.4 | 10.9, now 5.5 | No |
+| orders | 24.8, now 15.6 | 25.0, now 16.1 | No |
+| customers | 68.1, now 14.5 | 191.1, now 31.7 | Yes, 2.2 times |
+| products | 183.8, now 0.0 | 675.4, now 0.0 | No |
+| any table | 35.2, now 9.0 | 83.1, now 10.7 | Barely, 1.2 times |
+
+- **An ask got dear, for the four reads that changed.** Rows read by one ask at 1,200 orders:
+
+| Read | Kept whole, experiment 10 | Lookup at the ask | Lookup at the ask, a row looked up twice counted once | Nothing kept |
+| --- | --- | --- | --- | --- |
+| `bought`, GPT and reference | 67.5 | 161.5 | 106.5 | 189.0, or 134.1 counted once (Claude's `bought`) |
+| planted revenue | 1.0 | 248.4 | 125.1 | the same: nothing is kept |
+| planted buyers | 105.8 | 369.8 | 280.9 | the same: nothing is kept |
+
+- **Plain late lookup is a weak lever, as Claude expected before the run.** For `bought` it saves 15% of what keeping nothing costs. For the two planted reads it is keeping nothing. The cost has moved from the write to the ask, and it has grown on the way: one write to a product cost 675 rows, and now every ask of revenue costs 248.
+- **So which side should pay depends on how often each happens.** A product changes rarely and its revenue is asked often. For such a read keeping the whole answer is the better deal, with the growing write said in the code, as Robert decided. Late lookup suits the opposite case.
+- **What is left of growing writes is one read.** A write to a customer still grows, because the planted spend of a city holds a part for each of that customer's orders. This store has about 40 customers at both sizes, so orders for each customer grow with it.
+
+**Predictions against the result.** All seven went as predicted.
+
+| Prediction | Result |
+| --- | --- |
+| 1. An answer differs from Mo's on the first complete run, 35% | Did not happen |
+| 2. Exactly four reads change, 85% | Held: the two planted reads are looked up, the two `bought` keep pairs |
+| 3. A write to products under 5 rows at both sizes, 85% | Held: 0.0 and 0.0 |
+| 4. A write to customers under 100 rows at 1,200 orders, still more than doubling, 70% | Held: 31.7, and 2.2 times |
+| 5. Mean upkeep at 1,200 orders under 25 rows, 70% | Held: 10.7 |
+| 6. Asks at 1,200 orders: `bought` 145 to 175, revenue 230 to 260, buyers 320 to 390, 65% | Held: 161.5, 248.4, 369.8 |
+| 7. Counted once: `bought` under 115, revenue under 130, 65% | Held: 106.5, 125.1 |
+
+**Controls.** Pairs whose lookups were done once and never again spoiled `bought` from GPT and from the reference, and nothing else. The five controls of experiment 10 failed as before. The planted revenue and buyers reads no longer show in the two upkeep controls, because they are no longer kept.
+
+**What it does not show.**
+
+- Nothing is grouped. The revenue read needs one number for each product, a total of quantities, and one lookup of the price. That would make both sides cheap: about two rows an ask and nothing on a write to a product. The same idea for `bought` is one kept entry for each distinct product a customer bought. This is the lever not yet tried, and the sketch cannot do it as built, because it runs whole functions over one or two rows and cannot split a part at the lookup.
+- The script moves every lookup by key, whatever it costs. The buyers read looks up an order from each line, and an order has about three lines, so that lookup never grew. Only the lookup of the customer did. Which lookup fans out is a fact about the rows, and the code does not show it.
+- "Grows with the store" here means grows with the number of orders, in a store whose customers and products stay at about 40 and 25. A write rule needs to say what a write's cost is counted against. The compiler can say "one part for every line that names this product". It cannot say how many lines that is.
+- The limits written before the run stand, and so do those of experiments 8, 9 and 10.
 
 ### Result of experiment 10, 2026-11-15
 
@@ -448,6 +498,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **Tables in the language after experiment 8: 85% for I.** The thing that would have moved the 80% down was a common read whose plan changes the answer. On this corpus none did. The two reads that changed under a reversed index are reads that already lean on an order the task did not give them.
 - **After experiment 9: keeping answers makes walks rare, and a write then needs a cost of its own.** The compiler can keep a join, and a read of it becomes cheap. The write that feeds it is then the slow part, and it can be slower than the walk it replaced. So the same rule that refuses an unmarked walk in a read should apply to a write: the compiler works out what a write must keep up, and a write whose upkeep grows with the store is an error unless the code says so. Claude holds this at 70%. What would move it: a way of adjusting a part in one step that covers the joins here, which would make the growth go away. Robert decided it on 2026-11-15: a write is held to the same rule as a read.
 - **After experiment 10: what the write rule must catch is a lookup that fans out.** Finer parts made writes to orders and lines flat. Writes to products and customers still grow, because one of their rows is read by a part for every line that refers to it. Claude sees three answers and has tested none: refuse the read as kept, stop keeping at the lookup and do it when asked, or do arithmetic on the kept value.
+- **After experiment 11: doing the lookup when asked is real and weak.** It made writes flat and cheap, 10.7 rows against 83.1. It made the four reads it touched cost about what keeping nothing costs. So it is a choice between who pays, and the compiler cannot make it, because it turns on how often a row changes against how often the read is asked. Claude's view, at 70%: keep the whole answer by default, report the write that grows, and let the code say which it wants. What would move it: grouping before the lookup, which should make both sides cheap for sums and for lists without repeats. That is untested.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
