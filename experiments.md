@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiment 8 tests it.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -64,6 +64,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 5 | **Does the instruction count separate a walk from an indexed read?** A sketch with a `Map` as an index, measured with `mo query --max-work` at two sizes: indexed reads, walks written as Mo loops, walks through primitives such as `values` and `sum`, and an indexed read whose answer grows | Walks grow with the store and indexed reads with a fixed answer do not | Claude Opus: holds for Mo loops, at 85%. GPT Sol: option D as stated fails, at 95%. Gemini Carbon: walks through primitives show no growth, at 95%. Claude: Mo loops grow, at 95%; walks through primitives show little or no growth, at 80%; so D as stated fails, at 90% | A walk written as a Mo loop must grow in step with the store |
 | 6 | **Survival under refactor.** Twenty recognised filters, each put through the edits agents make: a named test function, `count`, `find`, `any?`, a `for` loop, `and` over two fields | The share still recognised | Claude Opus: under 80%, at 70%. Claude: under 80% for a recogniser that does not look inside helpers, at 75% | A filter rewritten to compare two fields of the row must be a miss |
 | 7 | **Index readiness.** A model of an index that is absent, being built, ready or out of date, with recognised reads arriving in each state | No read is admitted that then silently builds or walks | GPT Sol: recognition alone fails this and readiness-aware admission passes, at 95%. Claude: the same, at 90% | An absent index labelled ready must show an admitted read with no fast route |
+| 8 | **A stand-in for the planner, on what the compiler itself emits.** A script reads `mo check --emit=core` for the plain-Mo reads of experiment 4, sorts each into looked up, kept or walked, keeps the answers up to date through random writes, and compares them with real Mo running the same code on the same rows | The share of reads it understands from Mo Core, and whether every answer it keeps equals Mo's | Written below, before the run | A kept answer whose upkeep skips one kind of write must be caught; a plan with its test dropped must be caught; a read whose test is `contains` must come out walked |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -79,6 +80,24 @@ Claude's further predictions, added before any session ran:
 - Under arm A, the rule accepts the first valid version in 60% or more of sessions, at 60%. The store's page states the rule, so most agents should write the shape first time.
 
 With 20 sessions in an arm, a 95% interval is about 20 points each way. The trial can show a large gap and cannot show a small one.
+
+### Experiment 8 as it will be run, written 2026-11-15 before the run
+
+Robert decided on 2026-11-15 that the compiler should first try to make a slow read fast by keeping its answer up to date, and refuse only when it cannot. This experiment is the first test of [idea 10](design-ideas.md#10-the-compiler-is-the-planner).
+
+**What is run.** [`sketches/planner/`](sketches/planner/). The reads are the 21 that agents wrote in plain Mo in experiment 4 (arm A, with the pilot) and the 11 of `reference-a.mo`. None was written for this experiment. For each, the script reads the function from `mo check --emit=core`, finds the table it reads, the test and what is done with the rows, and gives it a class. It then applies random writes to the four tables one at a time, adjusting what it keeps on each write and never rebuilding. At checkpoints it writes the rows out as a Mo program, runs the agents' own functions with real Mo, and compares.
+
+**What Claude had seen before writing the predictions.** The Mo Core of one function, session 01's `orders_of`: the `filter` call and its test were both there. Nothing else.
+
+**Predictions, Claude:**
+
+1. Mo Core keeps the library call and its test, as a function, in every read that uses library calls: 90%. Gemini Carbon predicted in the council that under 20% would be matched on Core, at 80%, and Claude wrote "under 30%, at 70%" for experiment 2. Those were about agents given no rule, so this corpus is kinder.
+2. The script understands at least 14 of the 21 agent-written reads from Mo Core alone: 65%. The reads written as `for` loops are not understood by the first version: 70%.
+3. The classes come out as: `product_name` by key; `orders_of`, `large_orders`, `latest`, `bought`, `city_customers` looked up; `paid_total`, `open_count`, `units_sold` kept; `mentions` walked; `idle_customers` walked, because keeping it needs two tables at once and the script handles one: 75% that every understood read lands in the class listed.
+4. On the first complete run at least one answer the script keeps differs from Mo's: 50%. Whatever still differs after repair is reported as failing.
+5. A kept read touches one entry at every store size, and the upkeep of a write is bounded by the number of things kept on its table, not by the size of the store: 90%.
+
+**Limits known before the run.** The script is a stand-in, in Python, for a pass that would live in the compiler. It reads only the forms these 32 reads use. The agents had been told arm A's rule, so their code is tidier than code written with no rule. Speed is counted in rows touched, not timed.
 
 ### Result of experiment 4, 2026-11-14
 
