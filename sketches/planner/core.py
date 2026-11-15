@@ -120,7 +120,7 @@ def unique(items):
 
 PRIMS = {
     ("int", "add"): lambda a, b: a + b, ("int", "sub"): lambda a, b: a - b, ("int", "mul"): lambda a, b: a * b,
-    ("int", "max"): max, ("int", "min"): min, ("eq",): lambda a, b: a == b, ("not",): lambda a: not a,
+    ("int", "max"): max, ("int", "min"): min, ("int", "div"): lambda a, b: a // b, ("int", "rem"): lambda a, b: a % b, ("eq",): lambda a, b: a == b, ("not",): lambda a: not a,
     ("cmp", "lt"): lambda a, b: a < b, ("cmp", "le"): lambda a, b: a <= b,
     ("cmp", "gt"): lambda a, b: a > b, ("cmp", "ge"): lambda a, b: a >= b,
     ("list", "lit"): lambda *items: list(items), ("list", "append"): lambda items, item: items + [item],

@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiment 8 tests it.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiment 8 tested it on 2026-11-15; its result is below.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -44,7 +44,7 @@ How this file works:
 - **A rewrite can change the answer.** Mo keeps insertion order, and an index gives key order, so the walk and the index lookup can return the same rows in a different order. A value computed before the lookup can stop a program that the walk, on an empty table, would have let finish.
 - **A recognised shape still needs an index that exists and is current.** Building one reads the whole table once.
 - **Agents may not write the shapes.** Mo's recorded agent sessions hold about ten `for` loops for every `.filter(` call. That count covers all code, not only reads.
-- **The shape may be gone before Mo Core.** Idea 1 says the compiler normalises over Mo Core. Gemini Carbon says loops and `filter` are lowered to entry lists and jumps before that, so recognition would have to happen earlier. Not checked.
+- **The shape may be gone before Mo Core.** Idea 1 says the compiler normalises over Mo Core. Gemini Carbon says loops and `filter` are lowered to entry lists and jumps before that, so recognition would have to happen earlier. Not checked. Checked in experiment 8: a loop is lowered to joins and jumps, and a call to `filter` is kept whole with its test.
 - **`sort_by` sorts everything before a `take`,** so "the first ten by date" cannot use an ordered index without the compiler fusing the two.
 
 ### What the experiments must decide
@@ -99,6 +99,65 @@ Robert decided on 2026-11-15 that the compiler should first try to make a slow r
 6. Added after reading the Mo Core of six of the reads and before any run: when an index hands rows back in the opposite order, none of the 21 agent-written reads changes its answer, because each sorts at the end: 70%. A planted read that leans on the order does change: 95%.
 
 **Limits known before the run.** The script is a stand-in, in Python, for a pass that would live in the compiler. It reads only the forms these 32 reads use. The agents had been told arm A's rule, so their code is tidier than code written with no rule. Speed is counted in rows touched, not timed.
+
+### Result of experiment 8, 2026-11-15
+
+Run with `python3 sketches/planner/planner.py`, on the Mo binary frozen for experiment 4. The full table is in [`sketches/planner/results/report.txt`](sketches/planner/results/report.txt).
+
+**What it shows.**
+
+- **All 21 agent-written reads were planned from Mo Core alone, and every answer matched Mo's.** With the 11 reference reads and 3 planted ones that makes 35 reads. The script compared 22,923 answers with real Mo at 9 checkpoints, through 800 random writes, on a store of 300 orders and one of 1,200. None differed.
+- **The three classes came out by rule, with nobody declaring an index.**
+
+| Task | Class | What the script kept | Rows read for one ask, at 300 orders and at 1,200 |
+| --- | --- | --- | --- |
+| `product_name` | by key | nothing | 1.0 and 1.0 |
+| `open_count` | kept | one number | 1.0 and 1.0 |
+| `paid_total` | kept | one number for each customer | 1.0 and 1.0 |
+| `units_sold` | kept | one number for each product | 1.0 and 1.0 |
+| `orders_of`, `latest` | looked up | orders by customer | 6.8 and 27.4 |
+| `city_customers` | looked up | customers by city | 6.2 and 7.2 |
+| `bought` | looked up | orders by customer, lines by order | 44.2 and 190.0 |
+| `large_orders` | looked up | orders in order of total | 167.8 and 652.8 |
+| `mentions` | walked | nothing | 306.1 and 1,209.0 |
+| `idle_customers` | walked | orders by customer | 300.3 and 1,141.0 |
+
+- **A kept read costs the same at both sizes. A looked-up read grows with its answer. A walked read grows with the table.**
+- **A write pays for what is kept.** One write adjusted 7.1 index entries and kept answers on average at 300 orders and 6.9 at 1,200, and at most 16 at both.
+- **Mo Core keeps a library call and its test whole.** `filter`, `count` and `any?` arrive as calls that take the test as a function. A `for` loop is lowered to joins and jumps. So Gemini Carbon's point in the council holds for loops and not for library calls. A loop over rows that a `filter` already picked was still planned, because the pick happens at the call.
+- **Two of the 21 agent-written reads lean on the order of the table.** `orders_of` and `large_orders` from GPT return ids in the order `filter` gives them and never sort, though the task says smallest first. They passed experiment 4 because its rows sit in id order. They gave Mo's answers here for the same reason, and changed when the index handed rows back in the opposite order. A table with no order of its own would make such a read an error or a visible choice.
+- **The rule for kept answers is narrow.** It takes a count, or a loop that only adds to one number, over rows picked by equality on every parameter. It kept all six agent-written sums and counts. It missed two of Claude's own reference reads, which sum with `.map(...).sum`; they were looked up instead.
+
+**Predictions against the result.**
+
+| Prediction | Result |
+| --- | --- |
+| 1. Mo Core keeps the library call and its test, 90% | Held for every read |
+| 2. At least 14 of 21 understood, 65%; `for` loops not understood, 70% | 21 of 21. The loop part missed: every loop here runs over rows a `filter` had picked, and was planned |
+| 3. Each read lands in the class listed, 75% | Held for all 21 agent-written reads. Missed for 2 of the 11 references, `paid_total` and `units_sold`, which were looked up and not kept |
+| 4. A kept answer differs from Mo's on the first complete run, 50% | Did not happen. No answer the script gave was ever wrong. Earlier runs stopped short for other reasons, listed below |
+| 5. A kept read touches one entry at any size, and a write's upkeep does not grow with the store, 90% | Held |
+| 6. No agent-written read changes when an index reverses its rows, 70%; the planted one does, 95% | Missed: two changed. The planted one changed |
+| Gemini Carbon, council: under 20% matched on Mo Core, at 80% | 21 of 21 on this corpus. The agents here had been told a rule, and Gemini Carbon's prediction was for agents told nothing |
+
+**Controls.** Updates that skip the upkeep spoiled all seven kept answers and nothing else. A test dropped after the index spoiled the one read whose test goes beyond its index. Every `mentions` came out walked. The planted maximum and the planted sum that uses its total twice were not kept.
+
+**What went wrong on the way.** Five runs, the last clean.
+
+1. Mo refused the larger store written as one function: error E1153, "lowered body exceeds the Core path limit". About 1,270 rows in one function passed and about 3,000 did not. The rows are now split, 400 to a function.
+2. The script lacked integer division, which Mo's library sort uses. Nine reads stopped. None gave a wrong answer.
+3. The pilot's module took the name of session 01, so one read was missing from the second run.
+4. The control that drops the test could not fail: no read in the corpus has a test that goes beyond its index. `gifts` was planted to give it one. This is a change to a control after seeing a result.
+5. Index upkeep was not counted at 1,200 orders, because the indexes were first built after the writes. A checkpoint before the writes fixed the count.
+
+**What it does not show.**
+
+- The planner is a Python script beside the compiler, not a pass inside it. It handles only the forms these reads use.
+- The agents had been told arm A's rule, so every test sits in a library call. A test written as an `if` inside a loop over the whole table would come out walked. Experiment 1 found that this is how agents write when told nothing.
+- An answer is kept only for a sum or a count on one table. `idle_customers` needs two tables at once and `bought` is a join; neither is kept.
+- Speed is counted in rows read, not timed. The kept answers and indexes live in Python, not in a store on disk.
+- An index key is used only when working it out early cannot stop the program. That sidesteps the council's point about a value that stops; it does not test it.
+- The rows keep the order they arrived in, as Mo's `Map` does. Tables with no order were not tried.
 
 ### Result of experiment 4, 2026-11-14
 
@@ -202,6 +261,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **Strict in some form, for the program's own code: 85%.** All three reviewers chose it and Mo has no warnings.
 - **Strict by recognising plain Mo, against a table type with its own methods: 35% for plain Mo after experiment 4.** Before the council Claude gave plain Mo 80%, about even after it, and 30% after the census. Experiment 4 removed the reason for the drop: agents told the rule write the shape. It did not restore plain Mo, because the table type did exactly as well. Claude then leaned to the table type because it asks less of Mo. Robert set that reason aside on 2026-11-14, so the 35% no longer stands.
 - **Tables in the language (I), against a table type in a library (G): 80% for I after Robert's second steer, with nothing measured.** The 55% below held back for a reason Robert has since set aside, that the writer must learn which expressions are fast. Experiment 4 also speaks against that worry: agents learned either rule from one page, 40 of 40. What would move the 80% is a finding that planning cannot keep the answer the same for a common kind of read. The reasoning as first written, at 55%: Experiment 4 does not choose between them. It gave arm G the seven index functions its tasks needed, and gave arm A the indexed fields. It never asked a question whose index did not exist yet. That is where the two differ: under G somebody must write a new function in the store for each new question, and under I the read itself says which index is needed. What the council held against plain Mo was insertion order, eager evaluation, the shape being lost before Mo Core, and built-ins the instruction count cannot see. Each is a fact about Mo today, so under Robert's steer each is a thing to change in Mo, not a reason against. What still counts against I: which expressions are fast is a rule the writer must learn, and all three reviewers warned of a hidden query language. A trial with questions that need a new index would move this number either way.
+- **Tables in the language after experiment 8: 85% for I.** The thing that would have moved the 80% down was a common read whose plan changes the answer. On this corpus none did. The two reads that changed under a reversed index are reads that already lean on an order the task did not give them.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments

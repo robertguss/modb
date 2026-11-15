@@ -1,0 +1,46 @@
+read                         by        class           same as Mo, 300       1200  rows read per ask  how
+S01.orders_of                claude    looked up          294/294        84/84         6.8     27.3  orders by customer
+S02.orders_of                gpt       looked up          294/294        84/84         6.8     27.3  orders by customer
+S05.product_name             claude    by key             196/196        56/56         1.0      1.0  products by key
+S06.product_name             gpt       by key             196/196        56/56         1.0      1.0  products by key
+S09.large_orders             claude    looked up          770/770       220/220      167.8    649.2  orders ranged on total
+S10.large_orders             gpt       looked up          770/770       220/220      167.8    649.2  orders ranged on total
+S13.paid_total               claude    kept               294/294        84/84         1.0      1.0  kept for each customer; orders by customer+status
+S14.paid_total               gpt       kept               294/294        84/84         1.0      1.0  kept for each customer; orders by customer
+S17.open_count               claude    kept                 7/7           2/2          1.0      1.0  kept as one number; orders by status
+S18.open_count               gpt       kept                 7/7           2/2          1.0      1.0  kept as one number; orders by status
+S21.bought                   claude    looked up          294/294        84/84        44.2    189.7  orders by customer; lines by order; products by key
+S22.bought                   gpt       looked up          294/294        84/84        44.2    189.7  orders by customer; lines by order; products by key
+S25.units_sold               claude    kept               196/196        56/56         1.0      1.0  kept for each product; lines by product
+S26.units_sold               gpt       kept               196/196        56/56         1.0      1.0  kept for each product; lines by product
+S29.latest                   claude    looked up         3528/3528     1008/1008       6.8     27.3  orders by customer
+S30.latest                   gpt       looked up         3528/3528     1008/1008       6.8     27.3  orders by customer
+S33.mentions                 claude    walked              35/35         10/10       306.1   1204.5  orders read whole at a test, says walk
+S34.mentions                 gpt       walked              35/35         10/10       306.1   1204.5  orders read whole, says walk
+S37.idle_customers           claude    walked               7/7           2/2        300.3   1150.5  orders by customer; customers read whole, says walk
+S38.idle_customers           gpt       walked               7/7           2/2        300.3   1150.5  orders by customer; customers read whole, says walk
+S91.city_customers           claude    looked up           42/42         12/12         6.2      6.9  customers by city
+Reference.orders_of          reference looked up          294/294        84/84         6.8     27.3  orders by customer
+Reference.product_name       reference by key             196/196        56/56         1.0      1.0  products by key
+Reference.large_orders       reference looked up          770/770       220/220      167.8    649.2  orders ranged on total
+Reference.paid_total         reference looked up          294/294        84/84         2.2      9.6  orders by customer+status
+Reference.open_count         reference kept                 7/7           2/2          1.0      1.0  kept as one number; orders by status
+Reference.bought             reference looked up          294/294        84/84        44.2    189.7  orders by customer; lines by order; products by key
+Reference.units_sold         reference looked up          196/196        56/56        31.6    123.7  lines by product
+Reference.latest             reference looked up         3528/3528     1008/1008       6.8     27.3  orders by customer
+Reference.mentions           reference walked              35/35         10/10       306.1   1204.5  orders read whole at a test, says walk
+Reference.idle_customers     reference walked               7/7           2/2        300.3   1150.5  orders by customer; customers read whole, says walk
+Reference.city_customers     reference looked up           42/42         12/12         6.2      6.9  customers by city
+Planted.largest              planted   looked up          294/294        84/84         6.8     27.3  orders by customer
+Planted.doubled              planted   looked up          294/294        84/84         6.8     27.3  orders by customer
+Planted.gifts                planted   looked up          294/294        84/84         6.8     27.3  orders by customer
+
+agent-written reads planned from Mo Core with every answer the same as Mo's: 21 of 21
+classes, agent-written: by key 2, kept 6, looked up 9, walked 4
+classes, all: by key 3, kept 7, looked up 19, walked 6
+reads whose answers differed from Mo's: at 300 orders [], at 1200 []
+upkeep of one write at 300 orders: mean 7.1 adjustments, most 16, over 600 writes
+upkeep of one write at 1200 orders: mean 6.9 adjustments, most 16, over 200 writes
+reads that differ when an index gives rows in the opposite order: [('Planted', 'doubled'), ('S02', 'orders_of'), ('S10', 'large_orders')]
+control, updates skip the upkeep of kept answers: differing [('Reference', 'open_count'), ('S13', 'paid_total'), ('S14', 'paid_total'), ('S17', 'open_count'), ('S18', 'open_count'), ('S25', 'units_sold'), ('S26', 'units_sold')]
+control, the test is dropped after the index: 1 reads differ

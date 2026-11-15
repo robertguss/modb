@@ -193,3 +193,17 @@ python3 sketches/instruction-counts/measure.py $MO 1000,4000
 Result of the test on 2026-11-14: `1 passed, 0 failed, 0 stopped`. It checks that the index gives the walk's answer. Mo's own recovery check on this service was stopped after three minutes without an answer and has not been run to its end.
 
 `measure.py` grows the service to each size, fetches an export and finds each read's exact cost with `mo query --max-work`, as `asked-again.py` does and with its code. It checks that the indexed read and both Mo walks give the same answer at each size. The control that must hold: the walk written as a Mo loop grows in step with the store. A run takes a minute and a half. The counts do not depend on how busy the machine is.
+
+## planner
+
+The claim under test, for experiment 8 in [experiments.md](../experiments.md): a compiler can plan ordinary Mo reads over stored tables, working out for itself which indexes and which answers to keep. The result is there.
+
+`core.py` reads the Mo Core that `mo check --emit=core` prints and runs it, over tables that hold their own indexes. `plan.py` finds every table read in a function and gives the function a class: by key, looked up, kept or walked. `planner.py` takes the plain-Mo reads agents wrote in the enforcement trial, plans them, applies random writes, and at each checkpoint runs the same functions in real Mo on the same rows and compares every answer. `controls/planted.mo` holds three reads that must not be kept, one of which leans on the order of the table and one of which has a test that goes beyond its index.
+
+```sh
+python3 sketches/planner/planner.py
+```
+
+It takes about six minutes and writes `build/planner/report.txt`; the report of the recorded run is in `results/`. It ends with five checks that must hold: skipped upkeep spoils every kept answer and nothing else, a dropped test is caught, every `mentions` is walked, no planted read is kept, and the planted read that leans on order shows it.
+
+Known limits: one Mo function can hold only so many rows (E1153), so the rows are written 400 to a function. The script knows only the Mo Core forms and built-in steps these reads use, and stops with the name of any other.

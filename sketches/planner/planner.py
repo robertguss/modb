@@ -20,7 +20,7 @@ from tasks import PILOT, TASKS, swept
 OUT = HERE.parents[1] / "build" / "planner"
 MO = HERE.parents[1] / "build" / "enforcement-trial" / "mo"
 PLANTED = [{"name": name, "sweep": ["customer in 0..42"], "call": f"{name}(Shop.large, customer)"}
-           for name in ("largest", "doubled")]
+           for name in ("largest", "doubled", "gifts")]
 BY_NAME = {task["name"]: task for task in [*TASKS, PILOT, *PLANTED]}
 CITIES = ["Lisbon", "Porto", "Faro", "Braga", "Evora"]
 WORDS = ["gift", "call", "wrap", "fragile", "rush", "plain"]
@@ -33,7 +33,7 @@ def modules():
     found = {}
     for path in sorted((TRIAL / "results" / "answers").glob("*-a-*.mo")):
         number, _, model, task = path.stem.split("-", 3)
-        name = "S" + number.replace("p", "0")
+        name = "S" + number.replace("p", "9")
         found[name] = (path.read_text().replace("module Answer", f"module {name}", 1), model, [task])
     found["Reference"] = ((TRIAL / "reference-a.mo").read_text(), "reference", [task["name"] for task in [*TASKS, PILOT]])
     found["Planted"] = ((HERE / "controls" / "planted.mo").read_text(), "planted", [task["name"] for task in PLANTED])
@@ -65,9 +65,18 @@ def in_mo(value, names=None):
 def shop_text(store, fields):
     """The trial's shop module with one more function, `checkpoint`, that gives these rows."""
     head = (TRIAL / "shop-a.head.mo").read_text().replace("sample, large", "sample, large, checkpoint")
-    lists = ",\n".join("[" + ",\n".join(in_mo(row, fields[row[0]]) for row in table.rows.values()) + "]"
-                       for table in store)
-    return head + (TRIAL / "rows.mo").read_text() + f"\nfn checkpoint() : Shop\n  shop_of(\n{lists}\n  )\nend\n"
+    parts, lists = [], []
+    for table, kind in zip(store, ("Customer", "Product", "Order", "Line")):
+        rows = [in_mo(row, fields[row[0]]) for row in table.rows.values()]
+        calls = []
+        for at in range(0, len(rows), 400):
+            calls.append(f"part_{kind.lower()}_{at}()")
+            listed = ",\n".join(rows[at:at + 400])
+            parts.append(f"fn part_{kind.lower()}_{at}() : List({kind})\n  [{listed}]\nend\n")
+        lists.append(calls[0] + "".join(f".concat({call})" for call in calls[1:]) if calls else "[]")
+    joined = ",\n".join(lists)
+    return (head + (TRIAL / "rows.mo").read_text() + "\n" + "\n".join(parts)
+            + f"\nfn checkpoint() : Shop\n  shop_of(\n{joined}\n  )\nend\n")
 
 
 def shown(value):
@@ -123,7 +132,7 @@ class Planner:
             elif site["range"]:
                 parts.append(f"{table} ranged on {columns[site['range'][0]]}")
             else:
-                parts.append(f"{table} read whole at a test")
+                parts.append(f"{table} read whole at a test" + (", says walk" if site["table"] in found["said"] else ""))
         parts += [f"{self.tables[table]} by key" for table in sorted(found["keyed"])]
         parts += [f"{self.tables[table]} read whole" + (", says walk" if table in found["said"] else "")
                   for table in sorted(found["walked"])]
@@ -218,7 +227,7 @@ def main():
     for _ in range(6):
         small.writes(100)
         small.compare()
-    large = Run(planner, 1200, seed=9)
+    large = Run(planner, 1200, seed=9).compare()
     large.writes(200)
     large.compare()
     reversed_order = Run(planner, 300, seed=8, order=-1)
@@ -258,9 +267,9 @@ def main():
 
     kept = {key for key, read in planner.reads.items() if read["class"] == "kept"}
     assert kept and set(no_upkeep.differing()) == kept, "skipped upkeep must spoil every kept answer and nothing else"
-    assert no_test.differing(), "a dropped test must be caught"
+    assert no_test.differing() == [("Planted", "gifts")], "a dropped test must be caught where the index does not cover it"
     assert all(read["class"] == "walked" for key, read in planner.reads.items() if key[1] == "mentions")
-    assert all(planner.reads["Planted", name]["class"] == "looked up" for name in ("largest", "doubled"))
+    assert all(planner.reads["Planted", name]["class"] == "looked up" for name in ("largest", "doubled", "gifts"))
     assert ("Planted", "doubled") in reversed_order.differing(), "the planted read that leans on order must show"
 
 

@@ -1,5 +1,5 @@
 module Planted
-expose largest, doubled
+expose largest, doubled, gifts
 use Shop{Shop}
 
 fn largest(shop: Shop, customer: Int) : Int
@@ -16,4 +16,9 @@ fn doubled(shop: Shop, customer: Int) : Int
     total = total + total + order.total
   end
   total
+end
+
+fn gifts(shop: Shop, customer: Int) : List(Int)
+  shop.orders.values.filter(fn(order) order.customer == customer and order.note.contains?("gift") end)
+    .map(fn(order) order.id end).sort
 end
