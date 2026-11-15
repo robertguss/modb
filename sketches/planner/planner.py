@@ -63,7 +63,7 @@ def write_modules():
 
 def signatures(text):
     """The exposed functions that give back a Shop, each with its parameters after the shop as (name, type)."""
-    exposed = re.search(r"^expose (.*)$", text, re.M).group(1).replace(" ", "").split(",")
+    exposed = re.findall(r"[\w?!]+", re.search(r"^expose (.*?)^use ", text, re.M | re.S).group(1))
     return {name: [tuple(part.strip() for part in param.split(":")) for param in params.split(",")][1:]
             for name, params in re.findall(r"fn ([\w?!]+)\(([^)]*)\)\s*:\s*Shop\b", text) if name in exposed}
 
