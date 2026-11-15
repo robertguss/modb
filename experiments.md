@@ -69,6 +69,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 10 | **Adjusting a kept answer in one step.** The stand-in of experiment 9 with finer parts: a loop inside a loop gets one part for each pair of rows, and a test that only asks whether any row matches is answered from the index and told only when that flips | How much of a write's upkeep in experiment 9 came from working parts out again, and how much remains | Written below, before the run | Notices of a flip dropped must spoil only reads that ask whether any row matches; the controls of experiment 9 must still fail as before |
 | 11 | **Doing the lookup when the read is asked.** The stand-in of experiment 10 with one change: a part no longer reads another table by key. Where the part is for a pair of rows, the pair is kept and the rest of the part runs when the read is asked. Where the part is for one row, nothing would be kept but the index, so the read is not kept | What a write to the looked-up table then costs, and what an ask costs against keeping the whole answer and against keeping nothing | Written below, before the run | Lookups that are never done again after the pair is made must spoil exactly the reads whose lookups moved; the controls of experiment 10 must still fail as before |
 | 12 | **Grouping before the lookup.** The stand-in of experiment 11 with one change: parts that stop at a lookup are grouped by the fields the rest of the part reads, and each group is kept once with a count. An ask does the lookup and the rest once for each group. A list is grouped only where the code sorts it before any other use | Whether the compiler can find the grouping from Mo Core alone, and what an ask and a write then cost against experiments 10 and 11 | Written below, before the run | Grouping on no fields must spoil exactly the grouped reads; grouping a planted read whose order counts must spoil exactly that read; lookups never done again must spoil exactly the reads that wait at a lookup; the controls of experiment 10 must still fail as before |
+| 13 | **The whole rule in one run.** The stand-in of experiment 12 run under the draft rule of [design.md](design.md), section 5: point 4 replaces doing the lookup at the ask where order counts, a read that walks without saying `walk` is refused, and a write that must redo one part for each row that refers to the row it changed is flagged, worked out from the plan alone | Whether the tables flagged from the plan are exactly the tables whose upkeep grows between the two store sizes | Written below, before the run | A planted walk that does not say `walk` must be refused and nothing else newly refused; a weakened write test must miss a write that grows; the controls of experiment 12 must still fail as before, or the change is named |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -216,6 +217,53 @@ The other 40 reads, the writes and the comparison with real Mo are the same.
 - Every lookup by key is treated alike. The script does not ask which lookup fans out.
 - A part that sometimes ends with something to add and no lookup is not handled. The script stops if it meets one.
 - The rule for order knows one shape, sorted before any other use. A list used in another way that does not lean on order is not grouped.
+
+### Experiment 13 as it will be run, written 2026-11-15 before the run
+
+The draft rule in [design.md](design.md), section 5, was drawn from experiments 8 to 12, and no single run used all of it. Experiment 10 kept every answer whole, which is point 4. Experiment 12 grouped where order does not count, which is point 3, and elsewhere did the lookup at the ask, which the rule does not say. No run raised either error of point 6. Robert asked on 2026-11-15 for one run of the whole rule before he decides whether to accept it.
+
+**What changes.** All in `sketches/planner/`.
+
+- **Point 3 stays as experiment 12 built it.** A part that looks a row up by key waits at the lookup and is grouped, where the answer is a number or a list sorted before any other use.
+- **Point 4 replaces experiment 12's other branch.** Where order counts, the part does its own lookups and records them, and the whole answer is kept, as in experiment 10. A write to the looked-up table then redoes the parts that looked up the row it changed. In this corpus that is one read, the planted in-order read, which experiment 12 kept as pairs in order with the lookup at the ask. No read here has a part for one row whose order counts, so the case where experiment 12 kept nothing does not arise.
+- **Point 6, the read error.** A read classed walked is refused when some table it walks is not passed through `walk` in its code. One planted read is added to test it: `noted`, which gives the ids of the orders whose note holds a word, smallest first, and does not say `walk`. It is the task of `mentions`, written without the word.
+- **Point 6, the write error, worked out from the plan before any row is read.** The test Claude settles on, in plain words: *a write to a table must redo one part for each row that refers to the row it changed when some kept read holds a part for each row of another table, and that part depends on a row of the written table that its own row names by a field.* The plan shows two ways a part does that.
+  1. The part looks the written table up by key, by a field of its own row, and does the lookup itself. A line looks up the product it names. A part that waits at the lookup does not count, because the lookup runs at the ask.
+  2. The part is for a pair of rows and the written table is the outer one. The inner row is found by its field that names the outer row. An order names its customer, so the spend of a city has a part for every order of a customer.
+- **What the test does not look at.** How many rows refer to one row. It cannot tell a customer with a hundred orders from an order with three lines.
+- **Two shapes it does not look for,** because no read here has them: a part that reads an index of another table by something other than its own row's key, and a part that reads a whole table. Each would make a write fan out in the same way.
+- **The report** gives, for each read, its class and whether it is refused. For writes to each table it gives what each kept read must keep up, in terms of rows, whether the rule flags it, which reads cause the flag, and the measured upkeep at 300 and 1,200 orders.
+- **What counts as growing,** fixed before the run: a write grows when its mean upkeep at 1,200 orders is at least 1.5 times its mean at 300. The store grows four times. In experiment 12 writes to customers grew 2.2 times and the others at most 1.03 times.
+
+The 41 reads, the writes, the seeds and the comparison with real Mo are the same as in experiment 12, with `noted` added.
+
+**What Claude worked out from the plan before writing the predictions.** The test flags writes to customers, because of the planted spend of a city. It flags writes to products, because of the planted in-order read, which now does its lookups. It flags writes to orders, because `bought` from GPT and from the reference and the planted in-order read each hold a part for every pair of an order and one of its lines, so a write to an order redoes one part for each line that names it. Writes to lines are not flagged. In this store an order has about three lines at both sizes, because lines are three times the orders. So Claude expects the flag on orders to stand where nothing grows.
+
+**Predictions, Claude.** Most of these can be worked out by hand before the run, because the script counts rows by fixed rules; experiments 11 and 12 showed that. They are marked "by hand". The ones marked "run" test what cannot be worked out: that every answer is still Mo's, and that each control fails where it should.
+
+1. Run. On the first run that completes, at least one answer differs from Mo's: 20%. Point 4 brings back the way experiment 10 kept a pair whole, which matched Mo's every time.
+2. By hand. Exactly one read is refused, the planted `noted`. All five reads that walked in experiment 12 say `walk`: 95%.
+3. By hand. Classes over the 42 reads: by key 3, kept 24, looked up 9, walked 6. The 21 agent-written reads stay at by key 2, kept 12, looked up 5, walked 2: 90%.
+4. By hand. The rule flags writes to customers, orders and products, and not to lines. The reads named as the cause: the spend of a city for customers; `bought` from GPT, `bought` from the reference and the in-order read for orders; the in-order read for products: 90%.
+5. By hand, and the result that decides. Writes to customers and products grow; writes to orders and lines do not. So the flags and the growth do not match: orders is flagged and stays flat. No growing write goes unflagged: 80%.
+6. By hand. Rows read for upkeep by one write, mean. Products: between 200 and 300 at 1,200 orders and between 50 and 85 at 300, growing 3.0 to 4.5 times. Customers: between 25 and 40 at 1,200 orders, growing at least 1.8 times. Orders: between 20 and 27 at both sizes. Lines: between 8.5 and 11 at both sizes. Any write at 1,200 orders: between 28 and 45: 65%. The in-order read adds about one row to each pair it redoes, because a pair now does its lookup.
+7. By hand. An ask of the in-order read reads between 14 and 19 rows at 300 orders and between 60 and 75 at 1,200, as `bought` cost kept whole in experiment 10, 16.3 and 67.5: 75%.
+8. Run. The controls. The eight controls of experiment 12 fail as before, with two named changes. Lookups never done again spoil four reads, not five, because the in-order read no longer waits at a lookup. Grouping a list whose order counts still spoils only the in-order read, but now by making that read wait and group, where before its waiting pairs were grouped: 80%.
+9. By hand. The weakened write test counts only lookups by key, as experiment 10 put the cause. It flags products alone and misses customers, which grows: 90%.
+
+**Controls that must fail.**
+
+- The planted `noted` walks without saying so. It must be refused, and no other read may be refused.
+- The weakened write test, lookups by key only, must miss a write that grows.
+- The eight controls of experiment 12: rows in the opposite order, upkeep skipped, upkeep for another table skipped, the test dropped after the index, no notice when an index entry empties or fills, lookups never done again, a list grouped though its order counts, and grouping on no fields.
+
+**Limits known before the run.**
+
+- The writes are random writes to each table, not write functions. So a flag lands on a table, not on code someone wrote, and this run says nothing about where the word that accepts a growing write should go. It names the reads that cause each flag, which is the data for that question.
+- The write test reads two shapes from the plan. The two it does not look for are named above.
+- The line between flat and growing, 1.5 times, is Claude's.
+- The store has about 40 customers and 25 products at both sizes, and about three lines to an order. So "grows" here means more orders for each customer and more lines for each product.
+- The limits of experiment 12 stand.
 
 ### Result of experiment 12, 2026-11-15
 
