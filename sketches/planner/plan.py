@@ -1,5 +1,10 @@
 """Works out, from a read function's Mo Core, which table reads it holds and how each one can be served."""
+import collections
+import re
+
 from core import SITE
+
+CHAIN = re.compile(r"::List\.(filter|map|flat_map)\(")
 
 FLIP = {"lt": "gt", "gt": "lt", "le": "ge", "ge": "le"}
 ARGS = {"prim": lambda node: node[2], "con": lambda node: node[3], "tuple": lambda node: node[1],
@@ -79,13 +84,15 @@ def test_of(test):
 
 def planned(decl):
     """Every table read in a function: the sites an index can serve, the tables walked and those read by key."""
-    found = {"sites": [], "walked": set(), "said": set(), "keyed": set(), "lost": False}
+    found = {"sites": [], "walked": set(), "said": set(), "keyed": set(), "lost": False,
+             "count": collections.Counter()}
 
     def use(fact):
         if fact == ("shop",):
             found["lost"] = True
         elif fact and fact[0] in ("rows", "table"):
             found["walked"].add(fact[1])
+            found["count"][fact[1]] += 1
 
     def scan(node, env):
         head = node[0]
@@ -112,6 +119,7 @@ def planned(decl):
             if node[1][-1][0] == "values":
                 return "rows", facts[0][1]
             found["walked" if node[1][-1][0] == "keys" else "keyed"].add(facts[0][1])
+            found["count"][facts[0][1]] += 1
             facts = facts[1:]
         if head == "call" and "Shop.walk(" in node[1] and facts[0] and facts[0][0] == "table":
             found["said"].add(facts[0][1])
@@ -119,6 +127,7 @@ def planned(decl):
         if head == "call" and SITE.search(node[1]) and [fact and fact[0] for fact in facts] == ["rows", "test"]:
             found["sites"].append({"node": node, "table": facts[0][1], "how": SITE.search(node[1]).group(1),
                                    **test_of(facts[1][1])})
+            found["count"][facts[0][1]] += 1
             return "picked", node
         for fact in facts:
             use(fact)
@@ -128,18 +137,18 @@ def planned(decl):
     return found
 
 
-def class_of(found, kept):
+def class_of(found, cut):
     if found["lost"]:
         return "not understood"
-    if kept is not None:
+    if cut:
         return "kept"
     if found["walked"] | {site["table"] for site in found["sites"] if not site["equal"] and not site["range"]}:
         return "walked"
     return "looked up" if found["sites"] else "by key"
 
 
-def adds_only(node, total, done, same=frozenset()):
-    """No use of the running total but adding to it and passing it on, and no way out of the loop early."""
+def grows_only(node, total, done, kind, same=frozenset()):
+    """No use of the running value but adding or appending to it and passing it on, and no early way out."""
     names = same | {total}
     if isinstance(node, str) or not node:
         return True
@@ -148,53 +157,114 @@ def adds_only(node, total, done, same=frozenset()):
     if node[0] == "stop" or node[0] == "jump" and node[1] == done:
         return False
     if node[0] == "jump":
-        return all(is_var(arg, names) or adds_only(arg, total, done, same) for arg in node[2])
+        return all(is_var(arg, names) or grows_only(arg, total, done, kind, same) for arg in node[2])
     if node[0] == "let_":
         name, expr, rest = node[1:4]
         if is_var(expr, names):
-            return adds_only(rest, total, done, same | {name})
-        if name == total:
+            return grows_only(rest, total, done, kind, same | {name})
+        if name == total and kind == "sum":
             return (expr[0] == "prim" and expr[1] == ["int", ["add"]]
                     and [is_var(arg, names) for arg in expr[2]].count(True) == 1
-                    and adds_only(rest, total, done, same))
-    return all(adds_only(child, total, done, same) for child in (node[1:] if isinstance(node[0], str) else node))
+                    and grows_only(rest, total, done, kind, same))
+        if name == total:
+            return (expr[0] == "prim" and expr[1][0] == "list" and expr[1][-1] in (["append"], ["concat"])
+                    and is_var(expr[2][0], names) and not mentions(expr[2][1], names)
+                    and grows_only(rest, total, done, kind, same))
+    return all(grows_only(child, total, done, kind, same) for child in (node[1:] if isinstance(node[0], str) else node))
 
 
-def summed(tail, resolve, picked):
-    """Whether this is a loop over the picked rows that only ever adds to one number that starts at nought."""
-    try:
-        join, done, ((total, _),), after, (_, loop, ((rest, _), (again, _)), body, start) = tail
-        case, (_, _, (source,)), ((_, _, ended), (_, _, step)) = body
-    except (ValueError, TypeError):
-        return False
-    return (join == "join" and case == "case_" and again == total and after == ["var", total]
-            and resolve(["var", total]) == ["lit", ["int", "0"]] and source == ["var", rest]
-            and ended == ["jump", done, [["var", total]]] and start[:2] == ["jump", loop]
-            and body[1][1][-1] == ["uncons"] and resolve(start[2][0]) is picked and start[2][1] == ["var", total] and adds_only(step, total, done))
+def occurrences(node, name):
+    if isinstance(node, str) or not node:
+        return 0
+    return 1 if node == ["var", name] else sum(occurrences(child, name) for child in node)
 
 
-def keepable(decl, found):
-    """For an answer that is a count or a sum over one table, the field each parameter is set equal to."""
-    if found["lost"] or found["walked"] or found["keyed"] or len(found["sites"]) != 1:
+def cut_of(decl, found):
+    """Where a read splits into work done for each row of one table, which can be kept, and work on the whole."""
+    if found["lost"]:
         return None
-    site, params = found["sites"][0], [param[0] for param in decl[2][1:]]
-    aliases, bound = dict(site["before"]), {}
-    for field, other in site["equal"]:
-        while other[0] == "var" and other[1] in aliases and aliases[other[1]] != other:
-            other = aliases[other[1]]
-        if is_var(other, params):
-            bound[other[1]] = field
-        elif other[0] not in ("lit", "con"):
-            return None
-    defs, tail = {}, decl[4]
+    shop, params = decl[2][0][0], [param[0] for param in decl[2][1:]]
+    lets, tail = [], decl[4]
     while tail[0] == "let_":
-        defs[tail[1]], tail = tail[2], tail[3]
+        lets.append(tail)
+        tail = tail[3]
+    defs = {let[1]: let[2] for let in lets}
+    sites = {id(site["node"]): site for site in found["sites"]}
 
     def resolve(expr):
         while expr[0] == "var" and expr[1] in defs and defs[expr[1]] != expr:
             expr = defs[expr[1]]
         return expr
 
-    counted = site["how"] == "count" and resolve(tail) is site["node"]
-    added = site["how"] == "filter" and summed(tail, resolve, site["node"])
-    return [bound[name] for name in params] if set(bound) == set(params) and (counted or added) else None
+    def source(expr):
+        node = resolve(expr)
+        if id(node) in sites:
+            return sites[id(node)]["table"], sites[id(node)]
+        if node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["values"]:
+            inner = resolve(node[2][0])
+            while inner[0] == "call" and "Shop.walk(" in inner[1]:
+                inner = resolve(inner[2][0])
+            if field_of(inner, {shop}) is not None:
+                return field_of(inner, {shop}), None
+        return None
+
+    stale = {let[1] for let in lets if source(let[2])}
+    cut = None
+    try:
+        join, done, ((total, _),), after, (inner, loop, ((rest, _), (again, _)), body, start) = tail
+        case, (_, op, (walked,)), ((_, _, ended), (_, _, step)) = body
+        first = resolve(["var", total])
+        kind = ("sum" if first == ["lit", ["int", "0"]] else
+                "list" if first[0] == "prim" and first[1][0] == "list" and first[1][-1] == ["lit", "0"] else None)
+        if (join == inner == "join" and case == "case_" and again == total and op[-1] == ["uncons"]
+                and walked == ["var", rest] and ended == ["jump", done, [["var", total]]] and kind
+                and start[:2] == ["jump", loop] and start[2][1] == ["var", total] and source(start[2][0])
+                and grows_only(step, total, done, kind)):
+            cut = {"kind": kind, "driven": source(start[2][0]), "start": start, "ended": ended, "done": done,
+                   "post": after, "node": None, "stages": []}
+    except (ValueError, TypeError, IndexError):
+        pass
+    if not cut:
+        driven, bag, stages, last = None, set(), [], None
+        for name, expr, post in [(let[1], let[2], let[3]) for let in lets] + [(None, tail, None)]:
+            if id(expr) in sites and (driven is None or is_var(expr[2][0], bag) and not stages):
+                driven, bag, stages = source(expr), {name}, [expr]
+                last = ("sum", expr, post) if sites[id(expr)]["how"] == "count" and name is None else None
+            elif driven is None and source(expr) and expr[0] != "var":
+                driven, bag = source(expr), {name}
+            elif driven and is_var(expr, bag):
+                bag.add(name)
+            elif driven and expr[0] == "call" and CHAIN.search(expr[1]) and is_var(expr[2][0], bag):
+                stale |= bag
+                bag, last = {name}, ("list", expr, post)
+                stages.append(expr)
+            elif driven and expr[0] == "call" and "::List.sum(" in expr[1] and is_var(expr[2][0], bag) and last:
+                stale |= bag
+                last = ("sum", expr, post)
+                break
+            elif mentions(expr, bag):
+                break
+        if last:
+            cut = {"kind": last[0], "driven": driven, "node": last[1], "post": last[2],
+                   "stages": [stage for stage in stages if stage is not last[1]]}
+    if not cut or found["count"][cut["driven"][0]] != 1:
+        return None
+    if any(mentions(let[2], stale) for let in lets if let[1] not in stale and let[2] is not cut["node"]):
+        return None
+    if cut["post"] and mentions(cut["post"], stale):
+        return None
+    site, bound = cut["driven"][1], {}
+    aliases = dict(site["before"]) if site else {}
+    for field, other in (site["equal"] if site else []):
+        while other[0] == "var" and other[1] in aliases and aliases[other[1]] != other:
+            other = aliases[other[1]]
+        if is_var(other, params):
+            bound[other[1]] = field
+        elif other[0] not in ("lit", "con"):
+            return None
+    early = {name for name in params
+             if occurrences(decl[4], name) > (occurrences(cut["post"], name) if cut["post"] else 0)}
+    if not early <= set(bound):
+        return None
+    return {**cut, "table": cut["driven"][0], "names": sorted(bound),
+            "fields": [bound[name] for name in sorted(bound)], "places": [params.index(name) for name in sorted(bound)]}

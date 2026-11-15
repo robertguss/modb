@@ -94,6 +94,10 @@ class Rows:
         self.table = table
 
 
+class Captured(Exception):
+    """Carries the value a read had reached at its cut, when only that value was wanted."""
+
+
 class Held:
     def __init__(self, params, body, env=None):
         self.params, self.body, self.env = params, body, env
@@ -135,10 +139,19 @@ PRIMS = {
 
 
 class Machine:
-    """Runs Mo Core. `sites` maps a planned call to the index it reads through; `touched` counts rows read."""
+    """Runs Mo Core. `sites` maps a planned call to the index it reads through; `touched` counts rows read.
+
+    `cuts` maps a node to the cut it belongs to. In mode "part" a run stops at its cut and gives the value reached;
+    in mode "whole" the cut gives what `whole` holds for it, and the calls in `skipped` are not run at all.
+    `log`, when it is a set, collects what was read: a key, an index entry, or all of a table."""
 
     def __init__(self, funs, sites=None, recheck=True, order=1):
         self.funs, self.sites, self.recheck, self.order, self.touched = funs, sites or {}, recheck, order, 0
+        self.cuts, self.skipped, self.mode, self.whole, self.log = {}, set(), None, None, None
+
+    def noted(self, *entry):
+        if self.log is not None:
+            self.log.add(entry)
 
     def call(self, name, args):
         decl = self.funs[name]
@@ -147,6 +160,7 @@ class Machine:
     def read(self, value):
         if isinstance(value, Rows):
             self.touched += len(value.table.rows)
+            self.noted(value.table, "all")
             return list(value.table.rows.values())
         return value
 
@@ -158,9 +172,11 @@ class Machine:
         if site["equal"]:
             values = tuple(self.run(other, env) for _, other in site["equal"])
             keys = rows.table.by_equal(tuple(field for field, _ in site["equal"]), values)
+            self.noted(rows.table, tuple(field for field, _ in site["equal"]), values)
         else:
             field, op, other = site["range"]
             keys = rows.table.by_range(field, op, self.run(other, env))
+            self.noted(rows.table, "all")
         self.touched += len(keys)
         return [rows.table.rows[key] for key in sorted(keys, key=lambda key: self.order * rows.table.arrived[key])]
 
@@ -184,12 +200,25 @@ class Machine:
                 held = Held([param[0] for param in node[2]], node[3])
                 env = held.env = {**env, node[1]: held}
                 node = node[4]
+            elif head == "jump" and self.mode and id(node) in self.cuts:
+                cut = self.cuts[id(node)]
+                if self.mode == "part" and node is cut["ended"]:
+                    raise Captured(self.run(node[2][0], env))
+                if self.mode == "whole" and node is cut["start"]:
+                    held = env[cut["done"]]
+                    env, node = {**held.env, held.params[0]: self.whole(cut, env)}, held.body
+                else:
+                    held = env[node[1]]
+                    env = {**held.env, **dict(zip(held.params, (self.read(self.run(arg, env)) for arg in node[2])))}
+                    node = held.body
             elif head in ("jump", "app"):
                 held = env[node[1]] if head == "jump" else self.run(node[1], env)
                 env = {**held.env, **dict(zip(held.params, (self.read(self.run(arg, env)) for arg in node[2])))}
                 node = held.body
             elif head == "lam":
                 return Held([param[0] for param in node[1]], node[2], env)
+            elif head == "call" and self.mode == "whole" and (id(node) in self.cuts or id(node) in self.skipped):
+                return self.whole(self.cuts[id(node)], env) if id(node) in self.cuts else None
             elif head == "call":
                 args = [self.run(arg, env) for arg in node[2]]
                 site = self.sites.get(id(node))
@@ -198,7 +227,10 @@ class Machine:
                     if not self.recheck:
                         args[1] = Held(args[1].params, ["lit", ["bool", "true"]], {})
                 decl = self.funs[node[1]]
-                env, node = dict(zip((param[0] for param in decl[2]), map(self.read, args))), decl[4]
+                inside = dict(zip((param[0] for param in decl[2]), map(self.read, args)))
+                if self.mode == "part" and id(node) in self.cuts:
+                    raise Captured(self.read(self.run(decl[4], inside)))
+                env, node = inside, decl[4]
             elif head == "prim":
                 return self.prim(node[1], [self.read(self.run(arg, env)) for arg in node[2]])
             elif head == "con":
@@ -217,9 +249,11 @@ class Machine:
                 return Rows(table)
             if what == "get":
                 self.touched += 1
+                self.noted(table, "key", args[1])
                 return option(table.rows.get(args[1]))
             if what == "keys":
                 self.touched += len(table.rows)
+                self.noted(table, "all")
                 return list(table.rows)
         key = (op[0],) if op[0] in ("eq", "not") else (op[0], op[-1][0])
         if key not in PRIMS:

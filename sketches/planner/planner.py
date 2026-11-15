@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Experiment 8. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through random
-writes, and compares every answer with real Mo running the same functions on the same rows."""
+"""Experiments 8 and 9. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through
+random writes, and compares every answer with real Mo running the same functions on the same rows."""
 import collections
 import json
 import pathlib
@@ -19,8 +19,13 @@ from tasks import PILOT, TASKS, swept
 
 OUT = HERE.parents[1] / "build" / "planner"
 MO = HERE.parents[1] / "build" / "enforcement-trial" / "mo"
-PLANTED = [{"name": name, "sweep": ["customer in 0..42"], "call": f"{name}(Shop.large, customer)"}
-           for name in ("largest", "doubled", "gifts")]
+CITY = ['city in ["Lisbon", "Porto", "Faro", "Braga", "Evora", "Rome"]']
+PLANTED = [{"name": name, "sweep": sweep, "call": f"{name}(Shop.large{', ' + arg if arg else ''})"}
+           for name, sweep, arg in [
+               ("largest", ["customer in 0..42"], "customer"), ("doubled", ["customer in 0..42"], "customer"),
+               ("gifts", ["customer in 0..42"], "customer"), ("spend_by_city", CITY, "city"),
+               ("product_buyers", ["product in 0..28"], "product"), ("revenue", ["product in 0..28"], "product"),
+               ("unlined", [], ""), ("busiest", [], "")]]
 BY_NAME = {task["name"]: task for task in [*TASKS, PILOT, *PLANTED]}
 CITIES = ["Lisbon", "Porto", "Faro", "Braga", "Evora"]
 WORDS = ["gift", "call", "wrap", "fragile", "rush", "plain"]
@@ -111,19 +116,24 @@ class Planner:
         self.tables = [name[1:-1] for name, _ in datas['"Shop.Shop"'][2][0][2]]
         self.fields = {datas[table][2][0][1]: [name[1:-1] for name, _ in datas[table][2][0][2]] for table in tables}
         self.columns = [self.fields[datas[table][2][0][1]] for table in tables]
-        self.reads, self.sites = {}, {}
+        self.reads, self.sites, self.cuts, self.skipped = {}, {}, {}, set()
         for module, (_, model, names) in mods.items():
             for name in names:
                 decl = self.funs[f'"{module}.{name}"']
                 found = plan.planned(decl)
-                kept = plan.keepable(decl, found)
+                cut = plan.cut_of(decl, found)
                 for site in found["sites"]:
                     if site["equal"] or site["range"]:
                         self.sites[id(site["node"])] = site
-                self.reads[module, name] = {"decl": decl, "found": found, "kept": kept, "model": model,
-                                            "class": plan.class_of(found, kept), "how": self.how(found, kept)}
+                if cut:
+                    cut["read"] = module, name
+                    self.cuts.update({id(node): cut for node in (cut["node"], cut.get("start"), cut.get("ended")) if node})
+                    self.skipped |= {id(site["node"]) for site in [cut["driven"][1]] if site and site["node"] is not cut["node"]}
+                    self.skipped |= {id(stage) for stage in cut["stages"]}
+                self.reads[module, name] = {"decl": decl, "found": found, "cut": cut, "model": model,
+                                            "class": plan.class_of(found, cut), "how": self.how(found, cut)}
 
-    def how(self, found, kept):
+    def how(self, found, cut):
         parts = []
         for site in found["sites"]:
             columns, table = self.columns[site["table"]], self.tables[site["table"]]
@@ -136,63 +146,125 @@ class Planner:
         parts += [f"{self.tables[table]} by key" for table in sorted(found["keyed"])]
         parts += [f"{self.tables[table]} read whole" + (", says walk" if table in found["said"] else "")
                   for table in sorted(found["walked"])]
-        return ("kept for each " + "+".join(self.columns[found["sites"][0]["table"]][field] for field in kept) + "; "
-                if kept else "kept as one number; " if kept is not None else "") + "; ".join(parts)
+        if not cut:
+            return "; ".join(parts)
+        each = "+".join(self.columns[cut["table"]][field] for field in cut["fields"])
+        return (f"a {'number' if cut['kind'] == 'sum' else 'list'} kept {'for each ' + each if each else 'as one'}, "
+                f"a part for each row of {self.tables[cut['table']]}; a part reads: " + "; ".join(parts))
 
 
 class Run:
-    """One store, the answers kept for it, and the tally of how its reads compared with Mo."""
+    """One store, the answers kept for it in parts, and the tally of how its reads compared with Mo."""
 
-    def __init__(self, planner, orders, seed, recheck=True, order=1, skip_updates=False):
+    def __init__(self, planner, orders, seed, recheck=True, order=1, skip_updates=False, skip_others=False):
         self.planner, self.orders, self.rng = planner, orders, random.Random(seed)
         self.machine = core.Machine(planner.funs, planner.sites, recheck, order)
+        self.machine.cuts, self.machine.skipped, self.machine.whole = planner.cuts, planner.skipped, self.whole
         self.store = [core.Table() for _ in range(4)]
         self.shop = ('"Shop"', tuple(self.store))
-        self.held, self.adjusted = {}, []
+        self.kept = {key: read["cut"] for key, read in planner.reads.items() if read["cut"]}
+        self.parts = {key: {} for key in self.kept}
+        self.sums = {key: collections.Counter() for key in self.kept}
+        self.lists = {key: collections.defaultdict(dict) for key in self.kept}
+        self.readers, self.indexed = collections.defaultdict(set), collections.defaultdict(set)
+        self.skip_updates, self.skip_others, self.upkeep = skip_updates, skip_others, []
         self.tally = collections.defaultdict(lambda: collections.Counter())
-        for key, read in planner.reads.items():
-            if read["kept"] is not None:
-                self.held[key] = collections.Counter()
-                self.store[read["found"]["sites"][0]["table"]].kept.append(self.upkeep(key, read, skip_updates))
+        for at, table in enumerate(self.store):
+            table.kept.append(lambda old, new, at=at: self.after(at, old, new))
         self.next = [1, 1, 1, 1]
         for table, count in enumerate([40, 25, orders, orders * 3]):
             for _ in range(count):
                 self.write(table, 0.0)
 
-    def upkeep(self, key, read, skip_updates):
-        table, fields, name = read["found"]["sites"][0]["table"], read["kept"], read["decl"][1]
+    def part(self, read, key, row):
+        """Works out again the part of a kept answer that belongs to one row, or drops it when the row is gone."""
+        cut, parts, decl = self.kept[read], self.parts[read], self.planner.reads[read]["decl"]
+        if key in parts:
+            where, value, entries = parts.pop(key)
+            for entry in entries:
+                self.readers[entry].discard((read, key))
+            if cut["kind"] == "sum":
+                self.sums[read][where] -= value
+            else:
+                self.lists[read][where].pop(key, None)
+        if row is None:
+            return
+        alone = list(self.store)
+        alone[cut["table"]] = core.Table([row])
+        args = [None] * (len(decl[2]) - 1)
+        for place, field in zip(cut["places"], cut["fields"]):
+            args[place] = row[1][field]
+        self.machine.mode, self.machine.log = "part", set()
+        try:
+            self.machine.call(decl[1], [('"Shop"', tuple(alone)), *args])
+            raise AssertionError(f"a part of {read} ran past its cut")
+        except core.Captured as reached:
+            value = reached.args[0]
+        finally:
+            entries, self.machine.mode, self.machine.log = self.machine.log, None, None
+        entries = {entry for entry in entries if entry[0] is not alone[cut["table"]]}
+        where = tuple(row[1][field] for field in cut["fields"])
+        parts[key] = where, value, entries
+        for entry in entries:
+            self.readers[entry].add((read, key))
+            if isinstance(entry[1], tuple):
+                self.indexed[entry[0]].add(entry[1])
+        if cut["kind"] == "sum":
+            self.sums[read][where] += value
+        elif value:
+            self.lists[read][where][key] = value
 
-        def adjust(old, new):
-            if skip_updates and old and new:
-                return 0
-            for row, sign in ((old, -1), (new, 1)):
-                if row:
-                    alone = [core.Table() for _ in range(4)]
-                    alone[table] = core.Table([row])
-                    args = tuple(row[1][field] for field in fields)
-                    self.held[key][args] += sign * self.machine.call(name, [('"Shop"', tuple(alone)), *args])
-            return (old is not None) + (new is not None)
+    def after(self, at, old, new):
+        """What one write to a table does to the kept answers. Gives how many parts were worked out again."""
+        if self.skip_updates and old and new:
+            return 0
+        key, table, done = (old or new)[1][0], self.store[at], 0
+        for read, cut in self.kept.items():
+            if cut["table"] == at:
+                self.part(read, key, new)
+                done += 1
+        if self.skip_others:
+            return done
+        touched = {(table, "all"), (table, "key", key)}
+        touched |= {(table, fields, tuple(row[1][field] for field in fields))
+                    for fields in self.indexed[table] for row in (old, new) if row}
+        for read, row in sorted({reader for entry in touched for reader in self.readers.get(entry, ())}):
+            self.part(read, row, self.store[self.kept[read]["table"]].rows[row])
+            done += 1
+        return done
 
-        return adjust
+    def whole(self, cut, env):
+        """The kept parts of an answer put together, for the parameters the read is being asked with."""
+        read, where = cut["read"], tuple(env[name] for name in cut["names"])
+        if cut["kind"] == "sum":
+            self.machine.touched += 1
+            return self.sums[read][where]
+        parts, arrived = self.lists[read].get(where, {}), self.store[cut["table"]].arrived
+        joined = [item for key in sorted(parts, key=lambda key: self.machine.order * arrived[key]) for item in parts[key]]
+        self.machine.touched += max(len(joined), 1)
+        return joined
 
     def write(self, table=None, chance=None):
         table = self.rng.choices(range(4), SHARE)[0] if table is None else table
         chance = self.rng.random() if chance is None else chance
-        held = self.store[table]
+        held, before = self.store[table], self.machine.touched
         if chance < 0.3 or not held.rows:
             self.next[table] += 1
-            return held.put(fresh(self.rng, table, self.next[table] - 1, self.orders))
-        key = self.rng.choice(list(held.rows))
-        return held.put(fresh(self.rng, table, key, self.orders)) if chance < 0.8 else held.delete(key)
+            adjusted = held.put(fresh(self.rng, table, self.next[table] - 1, self.orders))
+        else:
+            key = self.rng.choice(list(held.rows))
+            adjusted = held.put(fresh(self.rng, table, key, self.orders)) if chance < 0.8 else held.delete(key)
+        return table, adjusted, self.machine.touched - before
 
     def writes(self, count):
-        self.adjusted += [self.write() for _ in range(count)]
+        self.upkeep += [self.write() for _ in range(count)]
 
     def answer(self, key, args):
-        if key in self.held:
-            return self.held[key][tuple(args)], 1
-        self.machine.touched = 0
-        return self.machine.call(self.planner.reads[key]["decl"][1], [self.shop, *args]), self.machine.touched
+        self.machine.touched, self.machine.mode = 0, "whole" if key in self.kept else None
+        try:
+            return self.machine.call(self.planner.reads[key]["decl"][1], [self.shop, *args]), self.machine.touched
+        finally:
+            self.machine.mode = None
 
     def compare(self):
         """Runs every read in real Mo on the rows as they stand, and counts the answers that match."""
@@ -209,13 +281,28 @@ class Run:
                 got, touched = self.answer((module, name), args)
                 tally["same"] += shown(got) == said
                 tally["touched"] += touched
-            except (NotImplementedError, StopIteration, KeyError, TypeError, IndexError, ValueError) as fault:
-                tally["broke"] += 1
-                self.tally[module, name]["fault: " + repr(fault)[:80]] += 1
+            except (NotImplementedError, StopIteration, KeyError, TypeError, IndexError, ValueError, AttributeError) as fault:
+                tally["fault: " + repr(fault)[:80]] += 1
         return self
 
     def differing(self):
         return sorted(key for key, tally in self.tally.items() if tally["same"] != tally["asked"])
+
+    def cost(self, names):
+        lines = []
+        for at, name in enumerate(names):
+            mine = [(adjusted, rows) for table, adjusted, rows in self.upkeep if table == at]
+            lines.append(f"  a write to {name:10} {len(mine):4} writes; parts and index entries adjusted: mean "
+                         f"{sum(a for a, _ in mine) / len(mine):6.1f}, most {max(a for a, _ in mine):4}; "
+                         f"rows read for upkeep: mean {sum(r for _, r in mine) / len(mine):7.1f}, most {max(r for _, r in mine):5}")
+        rows = [rows for _, _, rows in self.upkeep]
+        return lines + [f"  any write: rows read for upkeep, mean {sum(rows) / len(rows):.1f}"]
+
+
+def control(planner, **flags):
+    run = Run(planner, 300, seed=8, **flags)
+    run.writes(100)
+    return run.compare()
 
 
 def main():
@@ -228,48 +315,47 @@ def main():
         small.writes(100)
         small.compare()
     large = Run(planner, 1200, seed=9).compare()
-    large.writes(200)
+    large.writes(600)
     large.compare()
-    reversed_order = Run(planner, 300, seed=8, order=-1)
-    reversed_order.writes(100)
-    reversed_order.compare()
-    no_upkeep = Run(planner, 300, seed=8, skip_updates=True)
-    no_upkeep.writes(100)
-    no_upkeep.compare()
-    no_test = Run(planner, 300, seed=8, recheck=False)
-    no_test.writes(100)
-    no_test.compare()
+    reversed_order, no_upkeep = control(planner, order=-1), control(planner, skip_updates=True)
+    no_others, no_test = control(planner, skip_others=True), control(planner, recheck=False)
 
-    lines = [f"{'read':28} {'by':9} {'class':14} {'same as Mo, 300':>16} {'1200':>10} {'rows read per ask':>18}  how"]
+    lines = [f"{'read':28} {'by':9} {'class':10} {'same as Mo, 300':>16} {'1200':>10} {'rows read per ask':>18}  how"]
     for key, read in planner.reads.items():
         a, b = small.tally[key], large.tally[key]
-        lines.append(f"{key[0] + '.' + key[1]:28} {read['model']:9} {read['class']:14} "
+        lines.append(f"{key[0] + '.' + key[1]:28} {read['model']:9} {read['class']:10} "
                      f"{a['same']:>7}/{a['asked']:<8} {b['same']:>4}/{b['asked']:<5} "
                      f"{a['touched'] / a['asked']:>8.1f} {b['touched'] / b['asked']:>8.1f}  {read['how']}"
                      + "".join(f"  [{note} x{count}]" for note, count in a.items() if note.startswith("fault")))
     agents = [key for key, read in planner.reads.items() if read["model"] in ("claude", "gpt")]
     right = [key for key in agents if key not in small.differing() + large.differing()
              and planner.reads[key]["class"] != "not understood"]
-    lines += ["", f"agent-written reads planned from Mo Core with every answer the same as Mo's: {len(right)} of {len(agents)}"]
+    asked = sum(tally["asked"] for run in (small, large) for tally in run.tally.values())
+    lines += ["", f"answers compared with Mo's: {asked}",
+              f"agent-written reads planned from Mo Core with every answer the same as Mo's: {len(right)} of {len(agents)}"]
     for label, keys in (("agent-written", agents), ("all", list(planner.reads))):
         lines.append(f"classes, {label}: " + ", ".join(f"{name} {count}" for name, count in sorted(
             collections.Counter(planner.reads[key]["class"] for key in keys).items())))
     lines.append(f"reads whose answers differed from Mo's: at 300 orders {small.differing()}, at 1200 {large.differing()}")
     for label, run in (("300", small), ("1200", large)):
-        lines.append(f"upkeep of one write at {label} orders: mean {sum(run.adjusted) / len(run.adjusted):.1f} "
-                     f"adjustments, most {max(run.adjusted)}, over {len(run.adjusted)} writes")
-    lines.append(f"reads that differ when an index gives rows in the opposite order: {reversed_order.differing()}")
-    lines.append(f"control, updates skip the upkeep of kept answers: differing {no_upkeep.differing()}")
-    lines.append(f"control, the test is dropped after the index: {len(no_test.differing())} reads differ")
+        lines += [f"upkeep at {label} orders, over {len(run.upkeep)} writes:"] + run.cost(planner.tables)
+    lines.append(f"reads that differ when rows come back in the opposite order: {reversed_order.differing()}")
+    lines.append(f"control, updates skip all upkeep: differing {no_upkeep.differing()}")
+    lines.append(f"control, a write to another table skips the parts that read it: differing {no_others.differing()}")
+    lines.append(f"control, the test is dropped after the index: differing {no_test.differing()}")
     report = "\n".join(lines) + "\n"
     (OUT / "report.txt").write_text(report)
     print(report)
 
-    kept = {key for key, read in planner.reads.items() if read["class"] == "kept"}
-    assert kept and set(no_upkeep.differing()) == kept, "skipped upkeep must spoil every kept answer and nothing else"
+    kept = set(small.kept)
+    spans = {key for key in kept if {site["table"] for site in planner.reads[key]["found"]["sites"]}
+             | planner.reads[key]["found"]["keyed"] > {planner.reads[key]["cut"]["table"]}}
+    assert not small.differing() and not large.differing(), "every answer must be Mo's"
+    assert no_upkeep.differing() and set(no_upkeep.differing()) <= kept, "skipped upkeep must spoil kept answers only"
+    assert no_others.differing() and set(no_others.differing()) <= spans, "it must spoil only answers that span tables"
     assert no_test.differing() == [("Planted", "gifts")], "a dropped test must be caught where the index does not cover it"
     assert all(read["class"] == "walked" for key, read in planner.reads.items() if key[1] == "mentions")
-    assert all(planner.reads["Planted", name]["class"] == "looked up" for name in ("largest", "doubled", "gifts"))
+    assert all(planner.reads["Planted", name]["cut"] is None for name in ("largest", "doubled", "busiest"))
     assert ("Planted", "doubled") in reversed_order.differing(), "the planted read that leans on order must show"
 
 
