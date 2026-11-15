@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Experiments 8 to 11. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through
-random writes, and compares every answer with real Mo running the same functions on the same rows."""
+"""Experiments 8 to 13. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through
+random writes, and compares every answer with real Mo running the same functions on the same rows. It refuses a
+walk the code does not say, and flags a write that must redo one part for every row that names the row it changed."""
 import collections
 import json
 import pathlib
@@ -25,7 +26,8 @@ PLANTED = [{"name": name, "sweep": sweep, "call": f"{name}(Shop.large{', ' + arg
                ("largest", ["customer in 0..42"], "customer"), ("doubled", ["customer in 0..42"], "customer"),
                ("gifts", ["customer in 0..42"], "customer"), ("spend_by_city", CITY, "city"),
                ("product_buyers", ["product in 0..28"], "product"), ("revenue", ["product in 0..28"], "product"),
-               ("unlined", [], ""), ("busiest", [], ""), ("bought_in_order", ["customer in 0..42"], "customer")]]
+               ("unlined", [], ""), ("busiest", [], ""), ("bought_in_order", ["customer in 0..42"], "customer"),
+               ("noted", ['word in ["gift", "call", "wrap", "fragile", "zebra"]'], "word")]]
 BY_NAME = {task["name"]: task for task in [*TASKS, PILOT, *PLANTED]}
 CITIES = ["Lisbon", "Porto", "Faro", "Braga", "Evora"]
 WORDS = ["gift", "call", "wrap", "fragile", "rush", "plain"]
@@ -131,7 +133,8 @@ class Planner:
                     self.skipped |= {id(site["node"]) for site in [cut["driven"][1]] if site and site["node"] is not cut["node"]}
                     self.skipped |= {id(stage) for stage in cut["stages"]}
                 self.reads[module, name] = {"decl": decl, "found": found, "cut": cut, "model": model,
-                                            "class": plan.class_of(found, cut), "how": self.how(found, cut)}
+                                            "class": plan.class_of(found, cut), "how": self.how(found, cut),
+                                            "refused": plan.refused(found, cut)}
 
     def how(self, found, cut):
         parts = []
@@ -151,15 +154,40 @@ class Planner:
         each = "+".join(self.columns[cut["table"]][field] for field in cut["fields"])
         rows = (f"pair of rows of {self.tables[cut['table']]} and {self.tables[cut['inner']]}"
                 if cut.get("inner") is not None else f"row of {self.tables[cut['table']]}")
-        if cut["late"]:
+        if cut["late"] and cut["free"]:
             by = [f"row of {self.tables[table]}" if field is None else f"{self.tables[table]}.{self.columns[table][field]}"
                   for table, fields in zip((cut["table"], cut.get("inner")), cut["needs"])
                   for field in ([None] if fields is None else fields)]
-            held = f"one entry and a count for each {' and '.join(by) or 'answer'}" if cut["free"] else f"each {rows} in order"
-            return (f"{held}, kept {'for each ' + each if each else 'as one'}; the lookup and the rest of a part run "
-                    "at the ask; it reads: " + "; ".join(parts))
+            return (f"one entry and a count for each {' and '.join(by) or 'answer'}, kept "
+                    f"{'for each ' + each if each else 'as one'}; the lookup and the rest of a part run at the ask; "
+                    "it reads: " + "; ".join(parts))
         return (f"a {'number' if cut['kind'] == 'sum' else 'list'} kept {'for each ' + each if each else 'as one'}, "
                 f"a part for each {rows}; a part reads: " + "; ".join(parts))
+
+    def flags(self, pairs=True):
+        """Each table the write rule flags, with the kept reads that cause it and what each must keep up."""
+        found = collections.defaultdict(list)
+        for key, read in self.reads.items():
+            for table, by, fields in plan.fans(read["cut"], pairs) if read["cut"] else []:
+                named = f" ({self.tables[by]}.{'+'.join(self.columns[by][field] for field in fields)})" if fields else ""
+                found[table].append((key, f"one part for every {self.tables[by][:-1]} that names this "
+                                          f"{self.tables[table][:-1]}{named}"))
+        return found
+
+    def upkeep(self, at):
+        """The kept reads a write to this table redoes one part of, and those that look it up only at the ask."""
+        one, asked = [], []
+        for key, read in self.reads.items():
+            cut = read["cut"]
+            if not cut:
+                continue
+            reads = {cut["table"], cut.get("inner")} | {site["table"] for site in read["found"]["sites"]}
+            looked = {table for table, _, _ in cut["lookups"]}
+            if at in reads or at in looked and not (cut["late"] and cut["free"]):
+                one.append(key)
+            elif at in looked:
+                asked.append(key)
+        return one, asked
 
 
 class Run:
@@ -215,23 +243,22 @@ class Run:
         return self.reached(read, alone, row, waits)
 
     def waits(self, read):
-        return self.kept[read]["late"] and not self.skip_lookups
+        cut = self.kept[read]
+        return cut["late"] and (cut["free"] or self.skip_order) and not self.skip_lookups
 
     def place(self, read, part, row, other=None):
         """Works out a part and holds it. Where the read does its lookups when asked, the part stops at the first
-        one and is held by its group: the fields the rest of it reads, or itself where order counts."""
+        one and is held by its group: the fields the rest of it reads."""
         cut = self.kept[read]
         value, log = self.over(read, row, other, self.waits(read))
-        if value is core.Waiting and not (cut["free"] or self.skip_order):
-            value = "at", part
-        elif value is core.Waiting:
+        if value is core.Waiting:
             value = ("at", *([] if self.skip_needs else [
                 held[1] if fields is None else tuple(held[1][field] for field in fields)
                 for held, fields in zip((row, other), cut["needs"])]))
         else:
             assert not (self.waits(read) and value), f"a part of {read} ended with {value} and no lookup"
         self.hold(read, part, row, value, {entry for entry in log if entry[0] in self.store
-                                           and not (cut["late"] and entry[1] == "key")})
+                                           and not (cut["late"] and cut["free"] and entry[1] == "key")})
 
     def drop(self, read, part):
         if part in self.parts[read]:
@@ -401,6 +428,10 @@ class Run:
     def differing(self):
         return sorted(key for key, tally in self.tally.items() if tally["same"] != tally["asked"])
 
+    def mean(self, at):
+        rows = [rows for table, _, rows in self.upkeep if table == at]
+        return sum(rows) / len(rows)
+
     def cost(self, names):
         lines = []
         for at, name in enumerate(names):
@@ -435,11 +466,12 @@ def main():
     no_flips, no_lookups = control(planner, skip_flips=True), control(planner, skip_lookups=True)
     no_order, no_needs = control(planner, skip_order=True), control(planner, skip_needs=True)
 
-    lines = [f"{'read':28} {'by':9} {'class':10} {'same as Mo, 300':>16} {'1200':>10} {'rows read per ask':>18} "
+    lines = [f"{'read':28} {'by':9} {'class':10} {'':8} {'same as Mo, 300':>16} {'1200':>10} {'rows read per ask':>18} "
              f"{'a row looked up twice counted once':>35}  how"]
     for key, read in planner.reads.items():
         a, b = small.tally[key], large.tally[key]
         lines.append(f"{key[0] + '.' + key[1]:28} {read['model']:9} {read['class']:10} "
+                     f"{'refused' if read['refused'] else '':8} "
                      f"{a['same']:>7}/{a['asked']:<8} {b['same']:>4}/{b['asked']:<5} "
                      f"{a['touched'] / a['asked']:>8.1f} {b['touched'] / b['asked']:>8.1f} "
                      f"{a['once'] / a['asked']:>17.1f} {b['once'] / b['asked']:>17.1f}  {read['how']}"
@@ -456,6 +488,25 @@ def main():
     lines.append(f"reads whose answers differed from Mo's: at 300 orders {small.differing()}, at 1200 {large.differing()}")
     for label, run in (("300", small), ("1200", large)):
         lines += [f"upkeep at {label} orders, over {len(run.upkeep)} writes:"] + run.cost(planner.tables)
+    refused = [key for key, read in planner.reads.items() if read["refused"]]
+    lines.append(f"reads refused, a walk the code does not say: {refused}")
+    flags, weak = planner.flags(), planner.flags(pairs=False)
+    grows = sorted(at for at in range(4) if large.mean(at) > 0 and large.mean(at) >= 1.5 * small.mean(at))
+    lines.append("writes, by table: what each kept read must keep up when one row is written:")
+    for at, name in enumerate(planner.tables):
+        one, asked = planner.upkeep(at)
+        flagged = [key for key, _ in flags[at]]
+        lines.append(f"  {name}: {'flagged' if flags[at] else 'not flagged'}; rows read for upkeep, mean "
+                     f"{small.mean(at):.1f} at 300 orders and {large.mean(at):.1f} at 1200, "
+                     f"{'grows' if at in grows else 'flat'}")
+        lines += [f"    {key[0]}.{key[1]}: {said}" for key, said in flags[at]]
+        lines.append(f"    one part: {', '.join(f'{k[0]}.{k[1]}' for k in one if k not in flagged) or 'none'}")
+        lines.append(f"    nothing, the lookup runs at the ask: {', '.join(f'{k[0]}.{k[1]}' for k in asked) or 'none'}")
+    named = lambda tables: [planner.tables[at] for at in sorted(tables)]
+    lines.append(f"writes the rule flags: {named(flags)}; writes that grow 1.5 times or more: {named(grows)}")
+    lines.append(f"flagged and flat: {named(set(flags) - set(grows))}; growing and not flagged: {named(set(grows) - set(flags))}")
+    lines.append(f"control, the write test counts lookups by key only: flags {named(weak)}, "
+                 f"misses growing {named(set(grows) - set(weak))}")
     lines.append(f"reads that differ when rows come back in the opposite order: {reversed_order.differing()}")
     lines.append(f"control, updates skip all upkeep: differing {no_upkeep.differing()}")
     lines.append(f"control, a write to another table skips the parts that read it: differing {no_others.differing()}")
@@ -478,10 +529,12 @@ def main():
     asks = {key for key in kept if any(site["how"] == "any?" and site["exact"]
                                        for site in planner.reads[key]["found"]["sites"])}
     assert no_flips.differing() and set(no_flips.differing()) <= asks, "it must spoil only reads that ask if any row matches"
-    late = sorted(key for key in kept if small.kept[key]["late"])
+    late = sorted(key for key in kept if small.kept[key]["late"] and small.kept[key]["free"])
     assert late and no_lookups.differing() == late, "lookups never done again must spoil the reads whose lookups moved"
     assert no_order.differing() == [("Planted", "bought_in_order")], "a list in order must not be grouped"
-    assert no_needs.differing() == [key for key in late if small.kept[key]["free"]], "the fields grouped on must count"
+    assert no_needs.differing() == late, "the fields grouped on must count"
+    assert refused == [("Planted", "noted")], "a walk the code does not say must be refused, and nothing else"
+    assert set(grows) - set(weak), "the weakened write test must miss a write that grows"
     assert all(read["class"] == "walked" for key, read in planner.reads.items() if key[1] == "mentions")
     assert all(planner.reads["Planted", name]["cut"] is None for name in ("largest", "doubled", "busiest"))
     assert ("Planted", "doubled") in reversed_order.differing(), "the planted read that leans on order must show"

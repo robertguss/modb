@@ -140,14 +140,35 @@ def planned(decl):
     return found
 
 
+def walks(found):
+    return found["walked"] | {site["table"] for site in found["sites"] if not site["equal"] and not site["range"]}
+
+
 def class_of(found, cut):
     if found["lost"]:
         return "not understood"
     if cut:
         return "kept"
-    if found["walked"] | {site["table"] for site in found["sites"] if not site["equal"] and not site["range"]}:
+    if walks(found):
         return "walked"
     return "looked up" if found["sites"] else "by key"
+
+
+def refused(found, cut):
+    """A read that walks a table its code does not pass through `walk`."""
+    return class_of(found, cut) == "walked" and bool(walks(found) - found["said"])
+
+
+def fans(cut, pairs=True):
+    """Each table a write to which must redo one part for every row that names the row it changed: the written
+    table, the table whose rows name it, and the fields they name it by, empty where the plan does not show them.
+    A part names a row when it looks it up by key itself, or, with `pairs`, when it is a pair whose outer row it is."""
+    outer, inner = cut["table"], cut.get("inner")
+    found = [(outer, inner, cut["named"])] if pairs and inner is not None else []
+    if not (cut["late"] and cut["free"]):
+        part = outer if inner is None else inner
+        found += [(table, part if row is None else (outer, inner)[row], field) for table, row, field in cut["lookups"]]
+    return found
 
 
 def grows_only(node, total, done, kind, same=frozenset()):
@@ -187,6 +208,34 @@ def looks_up(node):
     if isinstance(node, str) or not node:
         return False
     return node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["get"] or any(looks_up(child) for child in node)
+
+
+def keyed_by(work, pairs, shop):
+    """Each lookup by key in this work: the table, and which row of `pairs` and which of its fields give the key,
+    None and () where the key is not a field of one of those rows."""
+    rows, fields, tables, found = {}, {}, {}, []
+
+    def scan(node):
+        if isinstance(node, str) or not node:
+            return
+        if node[0] == "let_":
+            name, expr = node[1], node[2]
+            if expr[0] == "proj" and is_var(expr[1], pairs) and expr[2] == "0":
+                rows[name] = pairs.index(expr[1][1])
+            elif is_var(expr, rows):
+                rows[name] = rows[expr[1]]
+            elif field_of(expr, {shop}) is not None:
+                tables[name] = field_of(expr, {shop})
+            elif field_of(expr, rows) is not None:
+                fields[name] = rows[expr[1][1]], (field_of(expr, rows),)
+        if node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["get"] and is_var(node[2][0], tables):
+            key = node[2][1][1] if node[2][1][0] == "var" else None
+            found.append((tables[node[2][0][1]], *fields.get(key, (None, ()))))
+        for child in node:
+            scan(child)
+
+    scan(work)
+    return found
 
 
 def needed(work, pairs, tests):
@@ -245,10 +294,9 @@ def loop_in(tail):
 def cut_of(decl, found):
     """Where a read splits into work done for each row of one table, which can be kept, and work on the whole.
 
-    A part does no lookup by key. When its work holds one the cut is `late`: the part waits at the lookup, and the
-    rest runs when the read is asked. Where order cannot matter the cut is `free`, and waiting parts that agree on
-    the fields in `needs` share one kept entry. A list in order is kept late only as pairs of rows; for one row the
-    index is all there would be to keep."""
+    When a part's work holds a lookup by key the cut is `late`. Where order cannot matter the cut is also `free`: the
+    part waits at the lookup, the rest runs when the read is asked, and waiting parts that agree on the fields in
+    `needs` share one kept entry. Where order counts, the part does its lookups and the whole answer is kept."""
     if found["lost"]:
         return None
     shop, params = decl[2][0][0], [param[0] for param in decl[2][1:]]
@@ -347,9 +395,11 @@ def cut_of(decl, found):
     looped = cut["node"] is None
     late = any(looks_up(work) for work in ([outer["step"]] if looped else [*cut["stages"], cut["node"]]))
     free = looped and (cut["kind"] == "sum" or any_order(cut["post"], outer["total"]))
-    if late and not free and cut.get("inner") is None:
-        return None
-    needs = late and needed(outer["step"], [outer["pair"]] + ([inside[2]["pair"]] if inside else []),
-                            {id(chose["test"]) for chose in (site, inside and inside[1]) if chose})
-    return {**cut, "late": late, "free": free, "needs": needs, "table": cut["driven"][0], "names": sorted(bound),
+    pairs = [outer["pair"]] + ([inside[2]["pair"]] if inside else []) if looped else []
+    needs = late and looped and needed(outer["step"], pairs,
+                                       {id(chose["test"]) for chose in (site, inside and inside[1]) if chose})
+    lookups = keyed_by(outer["step"] if looped else [*cut["stages"], cut["node"]], pairs, shop)
+    named = tuple(field for field, _ in inside[1]["equal"]) if inside else ()
+    return {**cut, "late": late, "free": free, "needs": needs, "lookups": lookups, "named": named,
+            "table": cut["driven"][0], "names": sorted(bound),
             "fields": [bound[name] for name in sorted(bound)], "places": [params.index(name) for name in sorted(bound)]}

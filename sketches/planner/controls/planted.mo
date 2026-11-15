@@ -1,5 +1,5 @@
 module Planted
-expose largest, doubled, gifts, spend_by_city, product_buyers, revenue, unlined, busiest, bought_in_order
+expose largest, doubled, gifts, spend_by_city, product_buyers, revenue, unlined, busiest, bought_in_order, noted
 use Shop{Shop, walk}
 
 fn largest(shop: Shop, customer: Int) : Int
@@ -88,4 +88,8 @@ fn bought_in_order(shop: Shop, customer: Int) : List(Text)
     end
   end
   names
+end
+
+fn noted(shop: Shop, word: Text) : List(Int)
+  shop.orders.values.filter(fn(order) order.note.contains?(word) end).map(fn(order) order.id end).sort
 end
