@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Experiments 8 to 13. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through
-random writes, and compares every answer with real Mo running the same functions on the same rows. It refuses a
-walk the code does not say, and flags a write that must redo one part for every row that names the row it changed."""
+"""Experiments 8 to 14. Plans the plain-Mo reads of experiment 4 from their Mo Core, keeps their answers through
+random writes and through write functions agents wrote, and compares every answer with real Mo running the same
+functions on the same rows. A write redoes only the parts of reads that read a field it changed. It refuses a walk
+the code does not say, and flags a write that must redo one part for every row that names the row it changed."""
 import collections
 import json
 import pathlib
@@ -12,6 +13,7 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 TRIAL = HERE.parent / "enforcement-trial"
+WRITES = HERE.parent / "write-trial"
 sys.path.insert(0, str(TRIAL))
 
 import core
@@ -33,6 +35,8 @@ CITIES = ["Lisbon", "Porto", "Faro", "Braga", "Evora"]
 WORDS = ["gift", "call", "wrap", "fragile", "rush", "plain"]
 NAMES = ["pen", "ink", "pad", "cap", "nib", "tape", "clip", "glue", "card", "file", "lamp", "desk"]
 SHARE = [1, 1, 4, 6]
+TABLE_OF = {"customer": 0, "product": 1, "order": 2, "line": 3}
+MOVED = ("Moved", "move_order")
 
 
 def modules():
@@ -45,6 +49,23 @@ def modules():
     found["Reference"] = ((TRIAL / "reference-a.mo").read_text(), "reference", [task["name"] for task in [*TASKS, PILOT]])
     found["Planted"] = ((HERE / "controls" / "planted.mo").read_text(), "planted", [task["name"] for task in PLANTED])
     return found
+
+
+def write_modules():
+    """Each module of write functions: its Mo text and who wrote it."""
+    found = {}
+    for path in sorted((WRITES / "results").glob("writes-*.mo")):
+        _, session, model = path.stem.split("-")
+        found[session.upper()] = (path.read_text().replace("module Writes", f"module {session.upper()}", 1), model)
+    found["Moved"] = ((HERE / "controls" / "moved.mo").read_text(), "planted")
+    return found
+
+
+def signatures(text):
+    """The exposed functions that give back a Shop, each with its parameters after the shop as (name, type)."""
+    exposed = re.search(r"^expose (.*)$", text, re.M).group(1).replace(" ", "").split(",")
+    return {name: [tuple(part.strip() for part in param.split(":")) for param in params.split(",")][1:]
+            for name, params in re.findall(r"fn ([\w?!]+)\(([^)]*)\)\s*:\s*Shop\b", text) if name in exposed}
 
 
 def printer(mods):
@@ -107,7 +128,7 @@ def fresh(rng, table, key, orders):
 
 
 class Planner:
-    def __init__(self, folder, mods):
+    def __init__(self, folder, mods, writes=None):
         self.folder = folder
         (folder / "main.mo").write_text(printer(mods))
         for name, (text, _, _) in mods.items():
@@ -118,6 +139,8 @@ class Planner:
         self.tables = [name[1:-1] for name, _ in datas['"Shop.Shop"'][2][0][2]]
         self.fields = {datas[table][2][0][1]: [name[1:-1] for name, _ in datas[table][2][0][2]] for table in tables}
         self.columns = [self.fields[datas[table][2][0][1]] for table in tables]
+        self.ctors = {datas[table][2][0][1]: at for at, table in enumerate(tables)}
+        self.types = {table: at for at, table in enumerate(tables)}
         self.reads, self.sites, self.cuts, self.skipped = {}, {}, {}, set()
         for module, (_, model, names) in mods.items():
             for name in names:
@@ -134,7 +157,16 @@ class Planner:
                     self.skipped |= {id(stage) for stage in cut["stages"]}
                 self.reads[module, name] = {"decl": decl, "found": found, "cut": cut, "model": model,
                                             "class": plan.class_of(found, cut), "how": self.how(found, cut),
-                                            "refused": plan.refused(found, cut)}
+                                            "refused": plan.refused(found, cut),
+                                            "fields": plan.fields_read(decl, self.funs, self.ctors)}
+        self.writes = {}
+        for module, (text, model) in (writes or {}).items():
+            (folder / f"{module.lower()}.mo").write_text(text)
+            self.funs.update(core.program(MO, folder, f"{module.lower()}.mo")[1])
+            for name, params in signatures(text).items():
+                decl = self.funs[f'"{module}.{name}"']
+                self.writes[module, name] = {"decl": decl, "params": params, "model": model, **plan.changes(
+                    decl, self.funs, self.ctors, self.types, [len(columns) for columns in self.columns])}
 
     def how(self, found, cut):
         parts = []
@@ -174,6 +206,22 @@ class Planner:
                                           f"{self.tables[table][:-1]}{named}"))
         return found
 
+    def write_flags(self, write):
+        """The kept reads, each with a table, for which the field test flags this write function."""
+        found = []
+        for key, read in self.reads.items():
+            for table, _, _ in plan.fans(read["cut"]) if read["cut"] else []:
+                if ((table in write["removes"] or write["sets"].get(table, set()) & read["fields"].get(table, set()))
+                        and (key, table) not in found):
+                    found.append((key, table))
+        return found
+
+    def changed(self, write):
+        said = [f"{self.tables[table]}: " + ("every field" if len(places) == len(self.columns[table]) else
+                                              "+".join(self.columns[table][at] for at in sorted(places)) or "nothing")
+                for table, places in sorted(write["sets"].items())]
+        return "; ".join(said + [f"removes {self.tables[table]}" for table in sorted(write["removes"])]) or "nothing"
+
     def upkeep(self, at):
         """The kept reads a write to this table redoes one part of, and those that look it up only at the ask."""
         one, asked = [], []
@@ -194,8 +242,11 @@ class Run:
     """One store, the answers kept for it in parts, and the tally of how its reads compared with Mo."""
 
     def __init__(self, planner, orders, seed, recheck=True, order=1, skip_updates=False, skip_others=False,
-                 skip_flips=False, skip_lookups=False, skip_order=False, skip_needs=False):
+                 skip_flips=False, skip_lookups=False, skip_order=False, skip_needs=False, funcs=(), moved=0.0,
+                 skip_moved=False):
         self.planner, self.orders, self.rng = planner, orders, random.Random(seed)
+        self.funcs, self.moved, self.skip_moved, self.redone, self.fresh_key = list(funcs), moved, skip_moved, 0, 100000
+        self.faults = collections.Counter()
         self.machine = core.Machine(planner.funs, planner.sites, recheck, order)
         self.machine.cuts, self.machine.skipped, self.machine.whole = planner.cuts, planner.skipped, self.whole
         self.store = [core.Table() for _ in range(4)]
@@ -263,6 +314,7 @@ class Run:
     def drop(self, read, part):
         if part in self.parts[read]:
             where, value, entries = self.parts[read].pop(part)
+            self.redone += 1
             for entry in entries:
                 self.readers[entry].discard((read, part))
             if self.summed(read):
@@ -276,6 +328,7 @@ class Run:
     def hold(self, read, part, row, value, entries):
         where = tuple(row[1][field] for field in self.kept[read]["fields"])
         self.parts[read][part] = where, value, entries
+        self.redone += 1
         for entry in entries:
             self.readers[entry].add((read, part))
             if entry[1] not in ("key", "all"):
@@ -329,16 +382,20 @@ class Run:
         return value
 
     def after(self, at, old, new):
-        """What one write to a table does to the kept answers. Gives how many parts were worked out again."""
+        """What one write to a table does to the kept answers, for the reads that read a field it changed. Gives how
+        many parts were made or dropped."""
         if self.skip_updates and old and new:
             return 0
-        key, table, done = (old or new)[1][0], self.store[at], 0
+        key, table, start = (old or new)[1][0], self.store[at], self.redone
+        changed = None if old is None or new is None else {place for place, (a, b) in enumerate(zip(old[1], new[1])) if a != b}
+        if self.skip_moved and at == 2 and changed and 1 in changed:
+            return 0
+        cares = lambda read: changed is None or bool(changed & self.planner.reads[read]["fields"].get(at, set()))
         for read, cut in self.kept.items():
-            if cut["table"] == at:
+            if cut["table"] == at and cares(read):
                 (self.paired if cut.get("inner") is not None else self.flat)(read, key, new)
-                done += 1
         if self.skip_others:
-            return done
+            return self.redone - start
         touched = {(table, "all"), (table, "key", key)}
         for fields in self.indexed[table]:
             before, now = (row and tuple(row[1][field] for field in fields) for row in (old, new))
@@ -348,7 +405,8 @@ class Run:
                     touched.add((table, "some", fields, before))
                 if now is not None and len(table.by_equal(fields, now)) == 1:
                     touched.add((table, "some", fields, now))
-        for read, part in sorted({reader for entry in touched for reader in self.readers.get(entry, ())}, key=repr):
+        for read, part in sorted({reader for entry in touched for reader in self.readers.get(entry, ()) if cares(reader[0])},
+                                 key=repr):
             cut = self.kept[read]
             if not isinstance(part, tuple):
                 self.flat(read, part, self.store[cut["table"]].rows[part])
@@ -358,8 +416,7 @@ class Run:
                 self.pair(read, part[1], key)
             else:
                 self.paired(read, part[1], self.store[cut["table"]].rows[part[1]])
-            done += 1
-        return done
+        return self.redone - start
 
     def whole(self, cut, env):
         """The kept parts of an answer put together, for the parameters the read is being asked with."""
@@ -381,7 +438,49 @@ class Run:
         self.machine.touched += max(len(joined), 1)
         return joined
 
+    def argument(self, name, kind):
+        if name in TABLE_OF:
+            rows = self.store[TABLE_OF[name]].rows
+            return self.rng.choice(list(rows)) if rows else 1
+        if name == "id":
+            self.fresh_key += 1
+            return self.fresh_key
+        if kind == "Int":
+            return self.rng.randrange(1, 30)
+        if kind == "Status":
+            return self.rng.choice(['"Open"', '"Paid"', '"Shipped"']), ()
+        if "city" in name:
+            return self.rng.choice(CITIES)
+        if "name" in name:
+            return self.rng.choice(NAMES)
+        return " ".join(self.rng.sample(WORDS, self.rng.randrange(3)))
+
+    def call(self):
+        """One write by a write function, with random arguments: runs it, then puts its changes into the tables."""
+        key = MOVED if self.rng.random() < self.moved else self.rng.choice(self.funcs)
+        write = self.planner.writes[key]
+        args = [self.argument(name, kind) for name, kind in write["params"]]
+        try:
+            result = self.machine.call(write["decl"][1], [self.shop, *args])
+        except (NotImplementedError, StopIteration, KeyError, TypeError, IndexError, ValueError, AttributeError) as fault:
+            self.faults[key, repr(fault)[:80]] += 1
+            return key, 0, 0
+        before, adjusted = self.machine.touched, 0
+        for at in (3, 2, 1, 0):
+            held, table = result[1][at], self.store[at]
+            if held is table:
+                continue
+            assert isinstance(held, core.Draft) and held.table is table, f"{key} gave back a table that is not the shop's"
+            for gone in sorted(held.gone & table.rows.keys()):
+                adjusted += table.delete(gone)
+            for row_key, row in held.puts.items():
+                assert row[1][0] == row_key, f"{key} stored a row under another key"
+                adjusted += table.put(row)
+        return key, adjusted, self.machine.touched - before
+
     def write(self, table=None, chance=None):
+        if self.funcs and table is None:
+            return self.call()
         table = self.rng.choices(range(4), SHARE)[0] if table is None else table
         chance = self.rng.random() if chance is None else chance
         held, before = self.store[table], self.machine.touched
@@ -428,15 +527,15 @@ class Run:
     def differing(self):
         return sorted(key for key, tally in self.tally.items() if tally["same"] != tally["asked"])
 
-    def mean(self, at):
-        rows = [rows for table, _, rows in self.upkeep if table == at]
-        return sum(rows) / len(rows)
+    def mean(self, at, which=2):
+        found = [entry[which] for entry in self.upkeep if entry[0] == at]
+        return sum(found) / len(found) if found else 0.0
 
     def cost(self, names):
         lines = []
         for at, name in enumerate(names):
             mine = [(adjusted, rows) for table, adjusted, rows in self.upkeep if table == at]
-            lines.append(f"  a write to {name:10} {len(mine):4} writes; parts and index entries adjusted: mean "
+            lines.append(f"  a write to {name:10} {len(mine):4} writes; index entries adjusted and parts made or dropped: mean "
                          f"{sum(a for a, _ in mine) / len(mine):6.1f}, most {max(a for a, _ in mine):4}; "
                          f"rows read for upkeep: mean {sum(r for _, r in mine) / len(mine):7.1f}, most {max(r for _, r in mine):5}")
         rows = [rows for _, _, rows in self.upkeep]
@@ -453,7 +552,18 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     folder = OUT / "program"
     folder.mkdir(exist_ok=True)
-    planner = Planner(folder, modules())
+    planner = Planner(folder, modules(), write_modules())
+    agent_writes = [key for key, write in planner.writes.items() if write["model"] != "planted"]
+    by_function = []
+    for orders, seed in ((300, 8), (1200, 9)):
+        run = Run(planner, orders, seed=seed, funcs=agent_writes).compare()
+        for _ in range(6):
+            run.writes(100)
+            run.compare()
+        by_function.append(run)
+    unmoved = Run(planner, 300, seed=8, funcs=agent_writes, moved=0.2, skip_moved=True)
+    unmoved.writes(100)
+    unmoved.compare()
     small = Run(planner, 300, seed=8).compare()
     for _ in range(6):
         small.writes(100)
@@ -507,6 +617,37 @@ def main():
     lines.append(f"flagged and flat: {named(set(flags) - set(grows))}; growing and not flagged: {named(set(grows) - set(flags))}")
     lines.append(f"control, the write test counts lookups by key only: flags {named(weak)}, "
                  f"misses growing {named(set(grows) - set(weak))}")
+    lines += ["", "write functions, with upkeep by field:"]
+    flagged13, upkept = set(flags), {}
+    for key, write in planner.writes.items():
+        causes = planner.write_flags(write)
+        counts = [sum(entry[0] == key for entry in run.upkeep) for run in by_function]
+        means = [run.mean(key) for run in by_function]
+        parts = [run.mean(key, 1) for run in by_function]
+        grown = means[1] > 0 and means[1] >= 1.5 * means[0]
+        upkept[key] = causes, grown, counts
+        lines.append(f"  {key[0]}.{key[1]} ({write['model']}): {planner.changed(write)}")
+        lines.append(f"    experiment 13's test: {'flagged' if (set(write['sets']) | write['removes']) & flagged13 else 'not flagged'}; "
+                     f"field test: " + (", ".join(f"{r[0]}.{r[1]} ({planner.reads[r]['model']}) on {planner.tables[table]}"
+                                                for r, table in causes) or "not flagged"))
+        lines.append(f"    calls {counts[0]} at 300 orders and {counts[1]} at 1200; rows read for upkeep, mean "
+                     f"{means[0]:.1f} and {means[1]:.1f}, {'grows' if grown else 'flat'}; parts made or dropped, mean "
+                     f"{parts[0]:.1f} and {parts[1]:.1f}")
+    agents = lambda keys: [f"{key[0]}.{key[1]}" for key in keys if key in agent_writes]
+    lines.append(f"agent-written write functions: {len(agent_writes)}; flagged by experiment 13's test: "
+                 f"{len([k for k in agent_writes if (set(planner.writes[k]['sets']) | planner.writes[k]['removes']) & flagged13])}; "
+                 f"flagged by the field test: {len([k for k in agent_writes if upkept[k][0]])}")
+    lines.append(f"flagged by the field test and flat: {agents(k for k in upkept if upkept[k][0] and not upkept[k][1])}")
+    lines.append(f"growing and not flagged by the field test: {agents(k for k in upkept if upkept[k][1] and not upkept[k][0])}")
+    lines.append(f"flagged by the field test because of an agent-written read: "
+                 f"{agents(k for k in upkept if any(planner.reads[r]['model'] in ('claude', 'gpt') for r, _ in upkept[k][0]))}")
+    for label, run in zip(("300", "1200"), by_function):
+        lines.append(f"function writes at {label} orders: answers differing from Mo's {run.differing()}; "
+                     f"rows read for upkeep, mean {sum(e[2] for e in run.upkeep) / len(run.upkeep):.1f}; "
+                     f"faults {dict(run.faults)}")
+    movers = sorted(key for key, read in planner.reads.items() if read["cut"] and 1 in read["fields"].get(2, set()))
+    lines.append(f"control, upkeep skipped when a write changes an order's customer: differing {unmoved.differing()}; "
+                 f"kept reads that read an order's customer {movers}")
     lines.append(f"reads that differ when rows come back in the opposite order: {reversed_order.differing()}")
     lines.append(f"control, updates skip all upkeep: differing {no_upkeep.differing()}")
     lines.append(f"control, a write to another table skips the parts that read it: differing {no_others.differing()}")
@@ -523,6 +664,8 @@ def main():
     spans = {key for key in kept if ({site["table"] for site in planner.reads[key]["found"]["sites"]}
                                      | planner.reads[key]["found"]["keyed"]) - {planner.reads[key]["cut"]["table"]}}
     assert not small.differing() and not large.differing(), "every answer must be Mo's"
+    assert not any(run.differing() for run in by_function), "every answer under write functions must be Mo's"
+    assert unmoved.differing() and set(unmoved.differing()) <= set(movers), "a missed move must spoil only its readers"
     assert no_upkeep.differing() and set(no_upkeep.differing()) <= kept, "skipped upkeep must spoil kept answers only"
     assert no_others.differing() and set(no_others.differing()) <= spans, "it must spoil only answers that span tables"
     assert no_test.differing() == [("Planted", "gifts")], "a dropped test must be caught where the index does not cover it"

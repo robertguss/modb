@@ -94,6 +94,30 @@ class Rows:
         self.table = table
 
 
+class Draft:
+    """A stored table as a write function leaves it: its rows, with some set and some removed."""
+
+    def __init__(self, table, puts=None, gone=()):
+        self.table, self.puts, self.gone = table, dict(puts or {}), set(gone)
+
+    def get(self, key):
+        return None if key in self.gone else self.puts.get(key, self.table.rows.get(key))
+
+    def changed(self, key, row):
+        draft = Draft(self.table, self.puts, self.gone)
+        if row is None:
+            draft.puts.pop(key, None)
+            draft.gone.add(key)
+        else:
+            draft.puts[key] = row
+            draft.gone.discard(key)
+        return draft
+
+    def rows(self):
+        held = {key: self.puts.get(key, row) for key, row in self.table.rows.items() if key not in self.gone}
+        return {**held, **self.puts}
+
+
 class Captured(Exception):
     """Carries the value a read had reached at its cut, when only that value was wanted."""
 
@@ -254,9 +278,29 @@ class Machine:
             else:
                 raise NotImplementedError(head)
 
+    def drafted(self, what, args):
+        """A map operation of a write function, on a stored table or on what the function made of one."""
+        held = args[0] if isinstance(args[0], Draft) else Draft(args[0])
+        if what in ("set", "remove"):
+            return held.changed(args[1], args[2] if what == "set" else None)
+        if what == "update":
+            found = held.get(args[1])
+            value = self.run(args[3].body, {**args[3].env, args[3].params[0]: args[2] if found is None else found})
+            return held.changed(args[1], value)
+        rows = held.rows()
+        self.touched += 1 if what in ("get", "has?") else len(rows)
+        answers = {"get": lambda: option(held.get(args[1])), "has?": lambda: held.get(args[1]) is not None,
+                   "values": lambda: list(rows.values()), "keys": lambda: list(rows), "size": lambda: len(rows),
+                   "empty?": lambda: not rows, "entries": lambda: list(rows.items())}
+        if what not in answers:
+            raise NotImplementedError(f"map {what}")
+        return answers[what]()
+
     def prim(self, op, args):
         if op[0] == "map":
             table, what = args[0], op[-1][0]
+            if isinstance(table, Draft) or what not in ("values", "get", "keys"):
+                return self.drafted(what, args)
             if what == "values":
                 return Rows(table)
             if what == "get":

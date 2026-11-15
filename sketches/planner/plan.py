@@ -171,6 +171,71 @@ def fans(cut, pairs=True):
     return found
 
 
+def nodes(node):
+    if isinstance(node, str) or not node:
+        return
+    if isinstance(node[0], str):
+        yield node
+    for child in node:
+        yield from nodes(child)
+
+
+def bodies(decl, funs):
+    """The body of a function and of each function it calls, once each."""
+    seen, todo = set(), [decl]
+    while todo:
+        decl = todo.pop()
+        if decl[1] not in seen:
+            seen.add(decl[1])
+            yield decl[4]
+            todo += [funs[node[1]] for node in nodes(decl[4]) if node[0] == "call" and node[1] in funs]
+
+
+def fields_read(decl, funs, ctors):
+    """For each table, the places of the fields the function takes out of that table's rows."""
+    found = collections.defaultdict(set)
+    for body in bodies(decl, funs):
+        for node in nodes(body):
+            if node[0] == "case_":
+                for ctor, names, branch in node[2]:
+                    if ctor in ctors:
+                        found[ctors[ctor]] |= {at for at, name in enumerate(names) if mentions(branch, {name})}
+    return found
+
+
+def changes(decl, funs, ctors, types, widths):
+    """What a write function can change: for each table it sets, the places of the fields its new rows do not copy
+    from a row of the same type, every field where no row is built; and the tables it removes rows from."""
+    written, removes, built, binds, aliases = set(), set(), [], {}, {}
+    for body in bodies(decl, funs):
+        for node in nodes(body):
+            if node[0] == "case_":
+                for ctor, names, _ in node[2]:
+                    if ctor in ctors:
+                        binds.update({name: (ctor, at) for at, name in enumerate(names)})
+            if node[0] == "let_" and node[2][0] == "case_" and len(node[2][2]) == 1 and node[2][2][0][2][0] == "var":
+                aliases[node[1]] = node[2][2][0][2][1]
+            if node[0] == "prim" and node[1][0] == "map" and node[1][2][-1] in types:
+                what = node[1][-1][0]
+                if what in ("set", "update"):
+                    written.add(types[node[1][2][-1]])
+                elif what == "remove":
+                    removes.add(types[node[1][2][-1]])
+            if node[0] == "con" and node[1][-1] in types and node[2] in ctors:
+                built.append(node)
+    sets = {table: set() for table in written}
+    for con in built:
+        table = types[con[1][-1]]
+        if table in sets:
+            copied = {at for at, arg in enumerate(con[3])
+                      if arg[0] == "var" and binds.get(aliases.get(arg[1], arg[1])) == (con[2], at)}
+            sets[table] |= set(range(len(con[3]))) - copied
+    for table in written:
+        if not any(types[con[1][-1]] == table for con in built):
+            sets[table] = set(range(widths[table]))
+    return {"sets": sets, "removes": removes}
+
+
 def grows_only(node, total, done, kind, same=frozenset()):
     """No use of the running value but adding or appending to it and passing it on, and no early way out."""
     names = same | {total}
