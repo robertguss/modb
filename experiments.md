@@ -873,6 +873,44 @@ The reading for Q8 is done and recorded above. The draft predictions below come 
 | 16 | **The policy in Mo over two node operations, with two backends.** Log, roots, holders and freeing written once over `put` and `get`. Backend A is a `Map` standing in for the runtime (S); backend B is a file for each node through a capability (L) | A small policy with a narrow boundary favours S; a capability needed on every function down to the read counts against L | The policy passes over both backends, at 75%. Freeing needs a third operation that lists a node's children, at 65%. Under B every read function carries the capability, at 90% | Freeing a node without asking the holders must break a promise; backend B in a service's state must be refused by `mo check` |
 | 17 | **Freeing by holders and a sweep, through a crash.** A TLA+ model: write nodes, force the log, switch the root, drop a holder, sweep, free, with a crash between any two steps | Safe with nothing stored beyond the roots and the log favours freeing in Mo policy | The sweep holds with nothing stored beyond the roots and the log, at 80%. A sweep during a write must pin that write's new nodes until its root lands, at 70% | Switching the root before the log is forced must break crash safety; a sweep that ignores a write not yet landed must free a node a kept version later reaches |
 
+### Experiment 15 as it will be run, written 2026-11-15 before the run
+
+Robert's test for anything Mo gains is that other programs would use it. Under R and S, every service whose state holds a collection that grows gains large state and cheap versions with no code change. Under L, only a program that takes up the store library gains. This counts how many Mo services hold such state, and how many of those also want what the store's policy gives, a history.
+
+**What Claude has seen before writing this.** The names of the folders, the count of files that declare a `service` block in each (none in `examples/`, 1 in `services/`, 47 in `learnability/`), the first lines of each example, and the service block in reference section 11.5. No service's state type or handlers.
+
+**The sample.** Every `.mo` file under `~/code/mo/examples/`, `~/code/mo/services/` and `~/code/mo/learnability/` that declares a top-level `service` block. Each is one service. The report also counts distinct services: two count as the same when their state type, after expanding the types declared in the file, and their tool names are the same. The examples have no service blocks. Five of them keep state as a value that a service would hold (`account`, `rate-limit`, `job-queue`, `kv`, `todo`); they are labelled the same way, by their central state type, and reported apart.
+
+**The labels, all made by a script, `sketches/store-census/census.py`.**
+
+- **Holds a collection:** the state type, with every `struct` and `enum` declared in the same file expanded, contains `List(`, `Map(` or `Set(`.
+- **Grows:** it holds a collection, and some tool or timer handler named in the block contains `.append(`, `.push(`, `.add(`, `.insert(`, `.set(`, `.concat(`, `++` or `+ [`.
+- **Wants history:** it grows, and a tool name or a field of the state type matches `history`, `log`, `audit`, `undo`, `event`, `ledger`, `journal`, `revision` or `version`.
+
+Claude then reads ten services the script labels "grows" and five it labels "does not grow", chosen by a fixed seed, and reports how many labels he would change. The labels are not changed.
+
+**What counts.** A large share is half or more; a small share is under a quarter.
+
+- A large share that grows favours R or S: Mo's other services would use the runtime's pieces. A small share favours L.
+- If a large share grows but few want history, the runtime's shared collection is useful on its own, without the store's policy. That favours S over R, which puts the policy in the runtime too.
+
+**Predictions, Claude.**
+
+1. At least 60% of the services hold a collection that grows: 70%.
+2. Fewer than a third of those that grow want history: 55%.
+3. Counted as distinct services, the share that grows is within 15 points of the share over all files: 70%.
+4. Of the five example state cores, at least four hold a collection that grows: 75%.
+5. Of the fifteen labels Claude reads, he would change at most three: 70%.
+
+**Controls that must fail.** Three planted services in `sketches/store-census/controls/`: one with an `Int` state must come out not holding a collection; one whose `Map` is only read must come out holding a collection that does not grow; one with a `Map` that a tool adds to and a tool named `history` must come out growing and wanting history. If any comes out otherwise, the script is wrong and the run does not count.
+
+**Limits known before the run.**
+
+- The services in `learnability/` were written by agents for tasks Mo's team set. Their share says what those tasks asked for, not what Mo's users will write.
+- "Grows" is read from text. A `Map.set` that only replaces an existing key would count as growing. The hand check measures how often that misleads.
+- Types imported from another module are not expanded.
+- It counts which programs would gain, not how much.
+
 ### Where Claude stands, with what would move it
 
 - **S at 65%, L at 20%, R at 15%.** After the reading of Mo, L lost most of the cover it was thought to get from Lean. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
