@@ -334,7 +334,8 @@ An agent changes data only by calling the program's write functions, and only th
 - At landing every question the agent asked counts, by its answer.
 - Tables are part of the language, and a read is ordinary Mo that the compiler plans (2026-11-14, as the direction to design and test).
 - A slow read is first made fast by keeping its answer, and refused only when that cannot be done (2026-11-15).
-- A write is held to the same rule as a read (2026-11-15). The rule as written in section 5 is Claude's, and he has not accepted it.
+- A write is held to the same rule as a read (2026-11-15).
+- The rule for reads and writes in section 5, with the decisions on point 6 listed there (2026-11-15).
 - For the first version one operation runs at a time. This design asks to narrow that to one write at a time; he has not accepted the change.
 
 ## 8. What Mo must gain
