@@ -65,6 +65,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 6 | **Survival under refactor.** Twenty recognised filters, each put through the edits agents make: a named test function, `count`, `find`, `any?`, a `for` loop, `and` over two fields | The share still recognised | Claude Opus: under 80%, at 70%. Claude: under 80% for a recogniser that does not look inside helpers, at 75% | A filter rewritten to compare two fields of the row must be a miss |
 | 7 | **Index readiness.** A model of an index that is absent, being built, ready or out of date, with recognised reads arriving in each state | No read is admitted that then silently builds or walks | GPT Sol: recognition alone fails this and readiness-aware admission passes, at 95%. Claude: the same, at 90% | An absent index labelled ready must show an admitted read with no fast route |
 | 8 | **A stand-in for the planner, on what the compiler itself emits.** A script reads `mo check --emit=core` for the plain-Mo reads of experiment 4, sorts each into looked up, kept or walked, keeps the answers up to date through random writes, and compares them with real Mo running the same code on the same rows | The share of reads it understands from Mo Core, and whether every answer it keeps equals Mo's | Written below, before the run | A kept answer whose upkeep skips one kind of write must be caught; a plan with its test dropped must be caught; a read whose test is `contains` must come out walked |
+| 9 | **Keeping answers that span tables.** The stand-in of experiment 8, widened: an answer is kept in parts, one for each row of the table the read goes over, and a part may read other tables. A write to another table redoes only the parts that read what it touched | Which reads stop being walks or lookups, what one ask costs, and what one write then costs at two store sizes | Written below, before the run | Upkeep skipped after a write to another table must spoil kept joins and no single-table answer; a loop that reads its own running list must not be kept; a loop with two running values must not be kept |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -99,6 +100,29 @@ Robert decided on 2026-11-15 that the compiler should first try to make a slow r
 6. Added after reading the Mo Core of six of the reads and before any run: when an index hands rows back in the opposite order, none of the 21 agent-written reads changes its answer, because each sorts at the end: 70%. A planted read that leans on the order does change: 95%.
 
 **Limits known before the run.** The script is a stand-in, in Python, for a pass that would live in the compiler. It reads only the forms these 32 reads use. The agents had been told arm A's rule, so their code is tidier than code written with no rule. Speed is counted in rows touched, not timed.
+
+### Experiment 9 as it will be run, written 2026-11-15 before the run
+
+Robert agreed on 2026-11-15 to widen what can be kept, to joins and to reads across two tables.
+
+**The rule being tried.** A read is kept when it goes over one table once, row by row, and what it does for each row is separate from what it does for every other row. The script finds that split in Mo Core in two forms: a chain of `filter` and `map` calls, or a `for` loop that only adds to a number or only appends to a list. The work for one row is its *part*. A part may read other tables, which is what makes a join. The script records what each part read. A write to the table the read goes over redoes that row's part. A write to another table redoes only the parts that read what it touched. What comes after the split, such as `sort`, `unique` or `take`, runs on the parts put together when the read is asked.
+
+**What is run.** [`sketches/planner/`](sketches/planner/), with the 35 reads of experiment 8 and five more planted by Claude for this experiment: a sum across two tables by city, the buyers of a product across three tables, a product's revenue with the price read from another table, the orders with no lines, and the customer with the most orders. Every answer is again compared with real Mo.
+
+**What Claude knew before writing the predictions.** The result of experiment 8, and the Mo text of nine of the 35 reads.
+
+**Predictions, Claude:**
+
+1. On the first run that completes, at least one answer differs from Mo's: 55%. There is more machinery than in experiment 8.
+2. `idle_customers` from both agents becomes kept, and one ask reads under 5 rows at both sizes, down from about 300 and 1,140: 75%.
+3. `bought` from GPT, which only appends, becomes kept. `bought` from Claude, which looks in its own list before it appends, does not: 80%.
+4. Every `mentions` stays walked: 95%. `latest` and `large_orders` stay looked up: 90%.
+5. The two reference sums written with `.map(...).sum` become kept numbers, one row an ask: 85%.
+6. Of the 21 agent-written reads, those that walk fall from 4 to 2: 75%.
+7. Of the five planted reads, four are kept and the customer with the most orders is not: 70%.
+8. A write to a table that parts were read from costs more as the store grows. For the planted revenue read, a change to one product redoes about four times as many parts at 1,200 orders as at 300: 80%. Over all writes the mean number of rows read for upkeep stays under 30 at both sizes: 60%.
+
+**Limits known before the run.** The parts are redone, not adjusted: when an order changes, the part of its customer is worked out again from that customer's orders. A real planner could adjust it in one step. So the cost of a write here is an upper bound for this rule. The rest of experiment 8's limits stand.
 
 ### Result of experiment 8, 2026-11-15
 
