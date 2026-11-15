@@ -495,11 +495,11 @@ def main():
     lines.append("writes, by table: what each kept read must keep up when one row is written:")
     for at, name in enumerate(planner.tables):
         one, asked = planner.upkeep(at)
-        flagged = [key for key, _ in flags[at]]
-        lines.append(f"  {name}: {'flagged' if flags[at] else 'not flagged'}; rows read for upkeep, mean "
+        flagged = [key for key, _ in flags.get(at, [])]
+        lines.append(f"  {name}: {'flagged' if flags.get(at, []) else 'not flagged'}; rows read for upkeep, mean "
                      f"{small.mean(at):.1f} at 300 orders and {large.mean(at):.1f} at 1200, "
                      f"{'grows' if at in grows else 'flat'}")
-        lines += [f"    {key[0]}.{key[1]}: {said}" for key, said in flags[at]]
+        lines += [f"    {key[0]}.{key[1]}: {said}" for key, said in flags.get(at, [])]
         lines.append(f"    one part: {', '.join(f'{k[0]}.{k[1]}' for k in one if k not in flagged) or 'none'}")
         lines.append(f"    nothing, the lookup runs at the ask: {', '.join(f'{k[0]}.{k[1]}' for k in asked) or 'none'}")
     named = lambda tables: [planner.tables[at] for at in sorted(tables)]
