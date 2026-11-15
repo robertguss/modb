@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 and 9 tested it on 2026-11-15; their results are below.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8, 9 and 10 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -148,9 +148,52 @@ Nothing else changes: the same 40 reads, the same writes, the same comparison wi
 
 **Limits known before the run.** Neither change does arithmetic on a part. A price change still redoes the part of every line of that product, where multiplying a kept total of quantities by the change in price would be one step. So what remains after this experiment is still an upper bound.
 
+### Result of experiment 10, 2026-11-15
+
+Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-10.txt`](sketches/planner/results/report-10.txt).
+
+**What it shows.**
+
+- **Every answer matched Mo's, on the first run that completed.** The same 40 reads and 23,499 answers as experiment 9.
+- **Rows read for upkeep by one write, mean, experiment 9 against experiment 10:**
+
+| A write to | At 300 orders | At 1,200 orders | Grows with the store? |
+| --- | --- | --- | --- |
+| lines | 34.0, now 10.9 | 35.5, now 10.9 | No |
+| orders | 54.5, now 24.8 | 137.1, now 25.0 | No longer |
+| customers | 71.5, now 68.1 | 203.4, now 191.1 | Yes, 2.8 times |
+| products | 412.3, now 183.8 | 1,577.2, now 675.4 | Yes, 3.7 times |
+| any table | 78.1, now 35.2 | 206.0, now 83.1 | Yes, 2.4 times |
+
+- **Part of experiment 9's cost was the shortcut, and part is real.** Working out a part again accounted for all the growth in writes to orders and for more than half the cost of a write to products. What is left has one cause. A product is looked up by key from a part for every line that names it, and a customer from a part for every line they bought. Change that one row and each of those parts must change. The number of them grows with the store.
+- **So the rule for writes has a clear target.** A kept answer that reaches through a lookup by key into another table makes writes to that table grow. A kept answer that stays on its own table, or reaches the other way, from one row to its many, does not.
+- **Three reads got a part for each pair of rows**: the planted spend of a city, and `bought` from GPT and from the reference.
+- **What one ask costs did not change**, except for the reference `idle_customers`, which walks customers and asks `any?` for each. It fell from 300.3 and 1,096.5 rows to 73.3 and 82.0, because `any?` now reads one index entry.
+
+**Predictions against the result.**
+
+| Prediction | Result |
+| --- | --- |
+| 1. An answer differs from Mo's on the first complete run, 50% | Did not happen |
+| 2. Exactly three reads get a part for each pair, 75% | Held, the three named |
+| 3. A write to orders within 1.3 times between sizes, 70% | Held: 24.8 and 25.0 |
+| 4. A write to products under 500 rows at 1,200 orders, and about four times its cost at 300, 75% | The number missed: 675.4. The growth held: 3.7 times |
+| 5. A write to customers still more than doubles, 70% | Held: 2.8 times |
+| 6. Mean upkeep at 1,200 orders under 80 rows, 60% | Missed narrowly: 83.1 |
+| 7. Every ask within a tenth of experiment 9, 85% | Missed for one read, which got cheaper |
+
+**Controls.** Dropping the notice when an index entry empties or fills spoiled the three kept reads that ask `any?` and nothing else. The four controls of experiment 9 failed as before, on the same reads.
+
+**What it does not show.**
+
+- The count of rows includes the one or two rows a part is run over, so a part that does one lookup counts as two or three rows. The figures for products and customers are high by about that factor.
+- No arithmetic is done on a part, as said before the run. For the planted revenue read, a kept total of quantities for each product, multiplied by the price when asked, would make a price change cost nothing.
+- Nothing here tries the other answer to a lookup that fans out: keep the answer up to the lookup, and do the lookup when asked.
+- The limits of experiments 8 and 9 stand.
+
 ### Result of experiment 9, 2026-11-15
 
-Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-9.txt`](sketches/planner/results/report-9.txt).
+Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-9.txt`](sketches/planner/results/report-9.txt). The script as it ran is at commit `595dca7`.
 
 **What it shows.**
 
@@ -371,7 +414,8 @@ What it does not show: time. The run counted instructions and did not time the b
 - **Strict by recognising plain Mo, against a table type with its own methods: 35% for plain Mo after experiment 4.** Before the council Claude gave plain Mo 80%, about even after it, and 30% after the census. Experiment 4 removed the reason for the drop: agents told the rule write the shape. It did not restore plain Mo, because the table type did exactly as well. Claude then leaned to the table type because it asks less of Mo. Robert set that reason aside on 2026-11-14, so the 35% no longer stands.
 - **Tables in the language (I), against a table type in a library (G): 80% for I after Robert's second steer, with nothing measured.** The 55% below held back for a reason Robert has since set aside, that the writer must learn which expressions are fast. Experiment 4 also speaks against that worry: agents learned either rule from one page, 40 of 40. What would move the 80% is a finding that planning cannot keep the answer the same for a common kind of read. The reasoning as first written, at 55%: Experiment 4 does not choose between them. It gave arm G the seven index functions its tasks needed, and gave arm A the indexed fields. It never asked a question whose index did not exist yet. That is where the two differ: under G somebody must write a new function in the store for each new question, and under I the read itself says which index is needed. What the council held against plain Mo was insertion order, eager evaluation, the shape being lost before Mo Core, and built-ins the instruction count cannot see. Each is a fact about Mo today, so under Robert's steer each is a thing to change in Mo, not a reason against. What still counts against I: which expressions are fast is a rule the writer must learn, and all three reviewers warned of a hidden query language. A trial with questions that need a new index would move this number either way.
 - **Tables in the language after experiment 8: 85% for I.** The thing that would have moved the 80% down was a common read whose plan changes the answer. On this corpus none did. The two reads that changed under a reversed index are reads that already lean on an order the task did not give them.
-- **After experiment 9: keeping answers makes walks rare, and a write then needs a cost of its own.** The compiler can keep a join, and a read of it becomes cheap. The write that feeds it is then the slow part, and it can be slower than the walk it replaced. So the same rule that refuses an unmarked walk in a read should apply to a write: the compiler works out what a write must keep up, and a write whose upkeep grows with the store is an error unless the code says so. Claude holds this at 70%. What would move it: a way of adjusting a part in one step that covers the joins here, which would make the growth go away.
+- **After experiment 9: keeping answers makes walks rare, and a write then needs a cost of its own.** The compiler can keep a join, and a read of it becomes cheap. The write that feeds it is then the slow part, and it can be slower than the walk it replaced. So the same rule that refuses an unmarked walk in a read should apply to a write: the compiler works out what a write must keep up, and a write whose upkeep grows with the store is an error unless the code says so. Claude holds this at 70%. What would move it: a way of adjusting a part in one step that covers the joins here, which would make the growth go away. Robert decided it on 2026-11-15: a write is held to the same rule as a read.
+- **After experiment 10: what the write rule must catch is a lookup that fans out.** Finer parts made writes to orders and lines flat. Writes to products and customers still grow, because one of their rows is read by a part for every line that refers to it. Claude sees three answers and has tested none: refuse the read as kept, stop keeping at the lookup and do it when asked, or do arithmetic on the kept value.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
