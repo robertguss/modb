@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 to 12 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read. The rule those experiments led to is written as a draft in [design.md](design.md), section 5, for Robert to accept; experiments on kept answers stopped there at his word.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 to 13 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read. The rule those experiments led to is written as a draft in [design.md](design.md), section 5, for Robert to accept; experiments on kept answers stopped there at his word. At his request experiment 13 then ran the whole rule once: every write that grows was flagged, and writes to orders were flagged though they stay flat, because the write test sees a shape and not how many rows share it.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -264,6 +264,62 @@ The 41 reads, the writes, the seeds and the comparison with real Mo are the same
 - The line between flat and growing, 1.5 times, is Claude's.
 - The store has about 40 customers and 25 products at both sizes, and about three lines to an order. So "grows" here means more orders for each customer and more lines for each product.
 - The limits of experiment 12 stand.
+
+### Result of experiment 13, 2026-11-15
+
+Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-13.txt`](sketches/planner/results/report-13.txt). The script as it ran is at commit `9015185`.
+
+**What it shows.**
+
+- **Every answer matched Mo's, on the first run that completed.** 42 reads and 23,922 answers.
+- **One read was refused, the planted `noted`.** It walks the orders and does not say `walk`. The five other reads that walk all say it, so nothing else was refused.
+- **The write test can be worked out from the plan, and it catches every write that grows.** Writes to each table, against what was measured:
+
+| A write to | What the flagged reads must keep up | Reads that cause the flag | Rows read for upkeep, mean, at 300 and 1,200 orders | Grows? | Flagged? |
+| --- | --- | --- | --- | --- | --- |
+| customers | One part for every order that names this customer | The planted spend of a city | 14.5 and 31.7, 2.2 times | Yes | Yes |
+| products | One part for every line that names this product | The planted in-order read | 67.4 and 252.3, 3.7 times | Yes | Yes |
+| orders | One part for every line that names this order | `bought` from GPT and from the reference, the planted in-order read | 21.0 and 21.6 | No | Yes |
+| lines | One part for each kept read, nothing more | None | 9.3 and 9.3 | No | No |
+
+- **The flags are not the growing writes.** Writes to orders are flagged and stay flat. Nothing that grows went unflagged. This is the result that decides, and it says the write half of point 6 flags a shape, not growth. An order has about three lines at both sizes, and a customer has four times as many orders at the larger size. In the plan the two look the same: a part for every row that names the written row. The compiler cannot tell a few from many, because that is a fact about the rows.
+- **Grouping does not save the outer table of a pair.** `bought` from GPT and from the reference are grouped by point 3, and a write to a product costs them nothing. A write to an order still redoes a part for each of its lines, because the parts are pairs of an order and a line.
+- **Point 4 behaved as in experiment 10.** The planted in-order read, kept whole, cost 16.3 and 67.5 rows an ask, as `bought` kept whole did, and it is the only read that makes a write to a product grow. Experiment 12 cost it 161.5 rows an ask and nothing on a write to a product.
+- **What the rule costs over all writes.** At 1,200 orders a write reads 34.6 rows for upkeep on average, against 13.5 in experiment 12. Writes to products account for nearly all of the difference, through the one read point 4 keeps whole.
+
+**Predictions against the result.** All nine held. Seven were of the kind that can be worked out by hand, so they show that Claude read the plan right, not that the rule is right. The two marked "run" are the real tests: every answer is still Mo's, and every control failed where it should.
+
+| Prediction | Result |
+| --- | --- |
+| 1. Run: an answer differs from Mo's on the first complete run, 20% | Did not happen |
+| 2. By hand: only `noted` is refused, 95% | Held |
+| 3. By hand: classes by key 3, kept 24, looked up 9, walked 6; agent-written unchanged, 90% | Held |
+| 4. By hand: customers, orders and products flagged, lines not, with the causes named, 90% | Held |
+| 5. By hand, the deciding one: customers and products grow, orders and lines do not; orders flagged and flat; nothing growing unflagged, 80% | Held |
+| 6. By hand: products 200 to 300 and 50 to 85, 3.0 to 4.5 times; customers 25 to 40 and at least 1.8 times; orders 20 to 27; lines 8.5 to 11; any write 28 to 45, 65% | Held: 252.3 and 67.4, 3.7 times; 31.7, 2.2 times; 21.0 and 21.6; 9.3 and 9.3; 34.6 |
+| 7. By hand: the in-order read 14 to 19 and 60 to 75 rows an ask, 75% | Held: 16.3 and 67.5 |
+| 8. Run: the eight controls of experiment 12 fail as before, with the two named changes, 80% | Held |
+| 9. By hand: the weakened test flags products alone and misses customers, 90% | Held |
+
+**Controls.**
+
+- The planted walk that does not say `walk` was refused, and nothing else was.
+- The weakened write test, lookups by key only, flagged products alone. It missed customers, which grows.
+- Rows in the opposite order, upkeep skipped, upkeep for another table skipped, the test dropped after the index, and no notice when an index entry empties or fills each spoiled the same reads as in experiment 12.
+- Lookups never done again spoiled four reads, not five, because the in-order read no longer waits at a lookup. Named before the run.
+- A list grouped though its order counts spoiled the in-order read and nothing else. It now does so by making that read wait and group, as named before the run.
+- Grouping on no fields spoiled the four grouped reads, as before.
+
+**What went wrong on the way.** The first full run finished and its closing checks passed. Its summary line counted writes to lines as flagged, though the table above it said "not flagged". The cause was Claude's report code: asking a `defaultdict` for a table with no flag added an empty entry. The fix touched only the report. The run was done again at commit `9015185`, and that report is the one recorded. A trial on stores of 60 and 240 orders ran before the first full run and gave no difference from Mo.
+
+**What it does not show.**
+
+- **A bound on a reference.** The finding points to one missing input: how many rows can name one row. The code could state it, for example that an order has at most some number of lines, or the store could measure it. Neither was tried.
+- **Write functions.** The writes are random writes to each table. A flag here lands on a table, not on code someone wrote. The reads named as causes are the data for where the accepting word should go, which is still open.
+- **Point 4 for a part for one row.** No read here has a part for one row with a lookup where order counts. Point 4 was run only on pairs.
+- **The two shapes the test does not look for:** a part that reads an index of another table by something other than its own row's key, and a part that reads a whole table. No read here has either.
+- **The line between flat and growing,** 1.5 times, is Claude's. Every write was well clear of it: 1.0 or 1.03 times, or 2.2 times and more.
+- The limits written before the run stand, and so do those of experiments 8 to 12.
 
 ### Result of experiment 12, 2026-11-15
 
@@ -642,6 +698,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **After experiment 10: what the write rule must catch is a lookup that fans out.** Finer parts made writes to orders and lines flat. Writes to products and customers still grow, because one of their rows is read by a part for every line that refers to it. Claude sees three answers and has tested none: refuse the read as kept, stop keeping at the lookup and do it when asked, or do arithmetic on the kept value.
 - **After experiment 11: doing the lookup when asked is real and weak.** It made writes flat and cheap, 10.7 rows against 83.1. It made the four reads it touched cost about what keeping nothing costs. So it is a choice between who pays, and the compiler cannot make it, because it turns on how often a row changes against how often the read is asked. Claude's view, at 70%: keep the whole answer by default, report the write that grows, and let the code say which it wants. What would move it: grouping before the lookup, which should make both sides cheap for sums and for lists without repeats. That is untested.
 - **After experiment 12: grouping before the lookup works where the key repeats and order does not count, and the compiler can find it.** That moves the 70% above. Claude's view now, at 75%: where a part looks up another table, the compiler groups before the lookup when it can show order does not count, and keeps the whole answer otherwise. It reports what each write must keep up, in the terms it knows: one part for every line that names this product. A write whose upkeep is one part for each row that refers to the written row is the growing kind, and is an error unless the code says so. What is still open is small beside that: which lookup to wait at, totalling before a lookup, and more shapes that do not lean on order.
+- **After experiment 13: the rule runs whole, and the write half of point 6 is too coarse as written.** The read error refused exactly the one planted walk. The write test, worked out from the plan alone, flagged every write that grew and one that did not: a write to an order redoes a part for each of its lines, and an order has about three. The compiler sees "one part for every row that names this row" and cannot see how many rows that is. Claude's view, at 70%: keep the test as the compiler's report, and let the code state a bound on a reference, such as at most so many lines to an order, so a flagged write with a stated bound is not an error. Without that, every program with a pair of an order and its lines must say the word for writes that never grow. What would move it: a corpus where few-to-one references are rare, or a store that can measure the bound for itself.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
