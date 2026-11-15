@@ -848,13 +848,24 @@ Application code is the same under all three, because tables are part of the lan
 - A sweep nobody runs costs space, so retention and collection are explicit policy under every option.
 - Forgetting has to be designed in. Datomic Cloud still cannot excise data.
 
+### What reading Mo settled (Q8), 2026-11-15
+
+Read in `~/code/mo` by a search agent; Claude checked five of its citations against the source.
+
+- **Lean treats collections as values with no layout.** "`map` is an association list in insertion order, with distinct keys" (`formal/MoCore/Value.lean:63`). A tree on disk under R or S changes no meaning in Lean.
+- **Lean does not model services, crashes or durability.** "Simulation is not modeled by mocore" (`formal/MoCore/Prim.lean:806`). Files are modelled as whole text, a list of path and contents, with no bytes at a place and no forcing to disk. So the cover Lean would give a library store is its pure code, not its disk steps. That takes most of L's "the Lean model covers it" away.
+- **Lean is not proved to match the C runtime.** "the C code is not proved" (`formal/README.md:338`). Agreement is checked by running the same programs on both and comparing outcomes.
+- **Today the runtime keeps a service's state in SQLite:** one file, a whole snapshot every 100 messages and a log of the messages since, with `synchronous=EXTRA` (`src/host/store.c:205`). The runtime already owns the durable mechanism and leaves the policy (what a message is, when to snapshot) to the service loop. That is the shape of S on a small scale.
+- **A `Map` is one hash table in one block,** copied whole when it has more than one holder (`src/heap/table.c`). Nothing lets a value live outside memory. R and S both need a new kind of value in the heap.
+- **`mo test` crashes only between steps, on a store in memory** (reference section 12.5). Crashes inside a commit are tested by C tests that kill the process after a statement (`tests/test_service_store.c`) and by killing a real server at random. Under every option the store's crash testing needs more than `mo test` has.
+
 ### What the experiments must decide
 
 Whether the store's policy can be ordinary Mo over a narrow set of node operations (S), whether L's capability can reach the store without spreading through every function, and how many Mo programs other than the database would gain. Robert also answers two questions: must any large value live on disk, or only tables (Q7), and must the stored format be independent of the runtime's layout and readable outside Mo (Q9).
 
 ### The experiments
 
-Before any of them, Claude reads what `~/code/mo/formal/` defines for collections and services, and how `runtime/` saves state (Q8). The draft predictions below come from the plan. Each experiment gets its own section with final predictions before it runs.
+The reading for Q8 is done and recorded above. The draft predictions below come from the plan. Each experiment gets its own section with final predictions before it runs.
 
 | # | What is built or measured | The result that decides | Draft predictions | Control that must fail |
 | --- | --- | --- | --- | --- |
@@ -864,9 +875,9 @@ Before any of them, Claude reads what `~/code/mo/formal/` defines for collection
 
 ### Where Claude stands, with what would move it
 
-- **S at 60%, L at 25%, R at 15%.** Before the research panel: 50%, 20% and 30%.
+- **S at 65%, L at 20%, R at 15%.** After the reading of Mo, L lost most of the cover it was thought to get from Lean. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
 - **Toward R:** experiment 16 shows the Mo policy is thin or awkward; Robert answers Q7 "any value" and Q9 "no".
-- **Toward L:** the capability threads cleanly through experiment 16; the reading shows the Lean definition covers file steps a runtime store would lose; experiment 15 finds few programs with growing state.
+- **Toward L:** the capability threads cleanly through experiment 16; experiment 15 finds few programs with growing state.
 - **Toward S:** experiment 16 passes with a boundary of two or three operations; experiment 17 shows the sweep needs only a list of a node's children from the runtime.
 
 ## Decisions waiting for options and experiments
