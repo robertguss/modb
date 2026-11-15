@@ -96,6 +96,7 @@ Robert decided on 2026-11-15 that the compiler should first try to make a slow r
 3. The classes come out as: `product_name` by key; `orders_of`, `large_orders`, `latest`, `bought`, `city_customers` looked up; `paid_total`, `open_count`, `units_sold` kept; `mentions` walked; `idle_customers` walked, because keeping it needs two tables at once and the script handles one: 75% that every understood read lands in the class listed.
 4. On the first complete run at least one answer the script keeps differs from Mo's: 50%. Whatever still differs after repair is reported as failing.
 5. A kept read touches one entry at every store size, and the upkeep of a write is bounded by the number of things kept on its table, not by the size of the store: 90%.
+6. Added after reading the Mo Core of six of the reads and before any run: when an index hands rows back in the opposite order, none of the 21 agent-written reads changes its answer, because each sorts at the end: 70%. A planted read that leans on the order does change: 95%.
 
 **Limits known before the run.** The script is a stand-in, in Python, for a pass that would live in the compiler. It reads only the forms these 32 reads use. The agents had been told arm A's rule, so their code is tidier than code written with no rule. Speed is counted in rows touched, not timed.
 
