@@ -56,12 +56,13 @@ def service(text):
 
 
 def central(text):
-    firsts = re.findall(r"^(?:pub )?fn \w+[?!]?\(\w+: ([A-Z]\w*)", text, re.M)
+    shape = r"([A-Z][\w.]*(?:\([^)]*\))?)" if "--siblings" in sys.argv else r"([A-Z]\w*)"
+    firsts = re.findall(r"^(?:pub )?fn \w+[?!]?\(\w+: " + shape, text, re.M)
     return max(set(firsts), key=firsts.count) if firsts else ""
 
 
-def label(text, kind, handlers):
-    types = {**blocks(text, "struct"), **blocks(text, "enum")}
+def label(text, kind, handlers, around=""):
+    types = {**blocks(around, "struct"), **blocks(around, "enum"), **blocks(text, "struct"), **blocks(text, "enum")}
     full = expand(kind, types)
     holds = bool(COLLECTION.search(full))
     funs = functions(text)
@@ -71,10 +72,11 @@ def label(text, kind, handlers):
     return {"holds": holds, "grows": grows, "history": wants, "key": (re.sub(r"\s+", " ", full), tuple(sorted(handlers)))}
 
 
-def label_service(path):
+def label_service(path, siblings=False):
     text = path.read_text()
     found = service(text)
-    return None if found is None else label(text, found[0], found[1])
+    around = "\n".join(p.read_text() for p in path.parent.glob("*.mo") if p != path) if siblings else ""
+    return None if found is None else label(text, found[0], found[1], around)
 
 
 def check_controls():
@@ -94,7 +96,7 @@ def main():
     if "--controls" in sys.argv:
         return
     files = sorted(p for f in FOLDERS for p in (MO / f).rglob("*.mo") if re.search(r"^service\b", p.read_text(), re.M))
-    rows = [(p.relative_to(MO), label_service(p)) for p in files]
+    rows = [(p.relative_to(MO), label_service(p, "--siblings" in sys.argv)) for p in files]
     total = len(rows)
     holds = sum(r["holds"] for _, r in rows)
     grows = [(p, r) for p, r in rows if r["grows"]]

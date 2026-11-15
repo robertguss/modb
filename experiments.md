@@ -826,7 +826,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 ## Decision 2. Is the store a library written in Mo or part of the runtime?
 
-**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work. No experiment has run.
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls.
 
 **The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
 
@@ -910,6 +910,39 @@ Claude then reads ten services the script labels "grows" and five it labels "doe
 - "Grows" is read from text. A `Map.set` that only replaces an existing key would count as growing. The hand check measures how often that misleads.
 - Types imported from another module are not expanded.
 - It counts which programs would gain, not how much.
+
+### Result of experiment 15, 2026-11-15
+
+Run as committed in `51c0f2d`. The report is [sketches/store-census/results/report-15.txt](sketches/store-census/results/report-15.txt). A second run after the result, with two fixes, is in [report-15-siblings.txt](sketches/store-census/results/report-15-siblings.txt).
+
+**Headline.** Mo's own code is too thin to count. The 48 files that declare a service are three programs: Mo's task queue, written 46 times in the learnability trials, and two small services from a preflight check. The one real service, the task queue, does what Robert's test asks about. Its state holds every job in a `Map(Int, Job)`, `submit` adds one each time, and its note to agents says "the limit of 5,000 counts every job ever submitted, including Done and Dead, and never falls". A payload "is kept for good". So Mo's only real service keeps its whole history and stops at a fixed size. Under R or S it would gain large state with no change to its code. Under L it would have to be rewritten onto the store library.
+
+**What the script found, as run.** 1 of 48 services holds a collection that grows. That is the preflight service `grow`, whose state is `List(Text)`. The script did not expand `Queue`, which is declared in a sibling module, `job-queue.mo`; that limit was written before the run. The second run expanded types from sibling modules: 34 of 48 then hold a collection, but still only 1 grows, because the queue's handlers pass the work to `JobQueue.submit` in the other module and the text check looks only at the handler's own body.
+
+**By hand.** Claude read the three distinct programs. The task queue grows: `after.jobs = after.jobs.set(id, Job(...))` in `job-queue.mo`. `grow` grows. The third, `clients`, holds an `Int`. Of the five example state cores, four hold a collection that grows: `job-queue` and `kv`, and also `todo` (`List(Item)`) and `rate-limit` (`buckets: Map(Text, Bucket)`, one bucket per client), which the script misread as `List` and `Decimal`. `account` holds a balance and no collection.
+
+**Predictions.**
+
+1. At least 60% of the services hold a collection that grows: failed as run, at 2%. By hand, 47 of the 48 files do, but they are two programs.
+2. Fewer than a third of those that grow want history: held as run, at 0 of 1, which says nothing. By hand the task queue keeps every job for good, which is a history in all but name.
+3. Counted as distinct services, the share that grows is within 15 points of the share over all files: failed. The script found 5 distinct services and 20% growing, against 2% over all files.
+4. At least four of the five example state cores hold a collection that grows: failed as run, at 2 of 5, because the script misread two state types. By hand, 4 of 5.
+5. Of the fifteen labels Claude reads, he would change at most three: failed. Only six could be drawn, one labelled "grows" and five "does not grow". Claude would change four of the six, every copy of the task queue.
+
+**Controls.** All three planted services came out as planted.
+
+**What it means.** Q1 cannot be settled by counting Mo's code: there is one real service. That service fits the case for R and S. It keeps a collection that grows with every call, never forgets, and stops at a fixed limit. Why the limit is 5,000 is not stated. Section 8 line 3 records that a service's state is saved whole on every write and stops at about 125,000 small rows. That this is the reason is inference. Claude's lean does not move: S at 65%, L at 20%, R at 15%. One program is too few to move it.
+
+**What went wrong.**
+
+- The text check for "grows" looks only inside the handler's own body. Every real service in the sample passes the work to another module, so the check missed all of them. The controls passed because each planted service does the work in its handler.
+- Choosing a core's state type by the type of the first parameter cut `List(Item)` down to `List`, and picked `Decimal` for `rate-limit`.
+- The second run fixed sibling types and the state-type cut. It did not fix the check for growth, and Claude stopped there rather than tune the script to the answer.
+
+**What it does not show.**
+
+- How many programs Mo's users will write with state that grows. Mo has no users' services to count.
+- Whether the task queue's limit comes from the whole-state save.
 
 ### Where Claude stands, with what would move it
 

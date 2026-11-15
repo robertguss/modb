@@ -1,0 +1,63 @@
+controls: all three came out as planted
+services: 48
+hold a collection: 34 of 48 (71%)
+hold a collection that grows: 1 of 48 (2%)
+of those that grow, want history: 0 of 1 (0%)
+distinct services: 6; grow: 1 of 6 (17%); want history: 0
+example state cores:
+  account: state Account; holds False; grows False; history False
+  rate-limit: state Decimal; holds False; grows False; history False
+  job-queue: state Queue; holds True; grows True; history False
+  kv: state Store; holds True; grows True; history False
+  todo: state List(Item); holds True; grows True; history False
+each service:
+  learnability/phase4/preflight/clients/main.mo: holds False; grows False; history False
+  learnability/phase4/preflight/grow/main.mo: holds True; grows True; history False
+  learnability/phase4/testdata/variants/synthetic/hidden/broken/main.mo: holds True; grows False; history False
+  learnability/phase4/testdata/variants/synthetic/hidden/reference/main.mo: holds True; grows False; history False
+  learnability/phase4/testdata/variants/synthetic/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-1/slot-1/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-1/slot-1/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-1/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-1/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-2/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-2/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-3/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-3/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-4/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-2-original/slot-4/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-1/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-1/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-2/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-2/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-3/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-3/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-4/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/experiment-4/slot-4/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-1/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-1/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-2/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-2/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-3/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-3/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-4/serve/main.mo: holds True; grows False; history False
+  learnability/phase5/results/qualified-analysis/slot-4/task-queue/main.mo: holds True; grows False; history False
+  learnability/phase6/door/planted/p01/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p02/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p04/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p05/main.mo: holds True; grows False; history False
+  learnability/phase6/door/planted/p06/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p08/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p10/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p11/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p12/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p13/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p15/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p16/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p18/main.mo: holds False; grows False; history False
+  learnability/phase6/door/planted/p19/main.mo: holds False; grows False; history False
+  learnability/phase6/preflight/service-promise/faulty/main.mo: holds True; grows False; history False
+  learnability/phase6/preflight/service-promise/promised/main.mo: holds True; grows False; history False
+  services/task-queue/main.mo: holds True; grows False; history False
+to read by hand, grows: ['learnability/phase4/preflight/grow/main.mo']
+to read by hand, does not grow: ['learnability/phase4/preflight/clients/main.mo', 'learnability/phase6/door/planted/p05/main.mo', 'learnability/phase4/testdata/variants/synthetic/hidden/reference/main.mo', 'learnability/phase5/results/experiment-2-original/slot-3/serve/main.mo', 'learnability/phase5/results/experiment-4/slot-1/task-queue/main.mo']

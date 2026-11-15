@@ -211,3 +211,8 @@ Known limits: one Mo function can hold only so many rows (E1153), so the rows ar
 ## write-trial
 
 The sessions of experiment 14 in [experiments.md](../experiments.md): fresh agents write the functions that change the shop, choosing the changes themselves and told nothing of kept answers. `PROMPT.md` and `TASK.md` are what each session got, with the store of the enforcement trial. `setup.py setup` makes four session folders under `build/write-trial/`; `setup.py collect` copies what each left into `results/`, as `writes-<session>-<model>.mo` with its tests beside it. The planner reads the functions from there.
+
+## store-census
+
+Experiment 15 in [experiments.md](../experiments.md), Decision 2. `census.py` labels every Mo file under `~/code/mo/examples/`, `services/` and `learnability/` that declares a service: does its state hold a collection, does a handler add to it, does it want history. `controls/` holds three planted services that must come out as planted. `python3 census.py` is the run as committed; `--siblings` also expands types declared in sibling modules. Results in `results/`. The check for growth reads only a handler's own body, so it misses work passed to another module; the result says how much that cost.
+
