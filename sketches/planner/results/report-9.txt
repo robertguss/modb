@@ -1,0 +1,63 @@
+read                         by        class       same as Mo, 300       1200  rows read per ask  how
+S01.orders_of                claude    kept           294/294        84/84         6.9     27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+S02.orders_of                gpt       kept           294/294        84/84         6.9     27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+S05.product_name             claude    by key         196/196        56/56         1.0      1.0  products by key
+S06.product_name             gpt       by key         196/196        56/56         1.0      1.0  products by key
+S09.large_orders             claude    looked up      770/770       220/220      167.8    659.2  orders ranged on total
+S10.large_orders             gpt       looked up      770/770       220/220      167.8    659.2  orders ranged on total
+S13.paid_total               claude    kept           294/294        84/84         1.0      1.0  a number kept for each customer, a part for each row of orders; a part reads: orders by customer+status
+S14.paid_total               gpt       kept           294/294        84/84         1.0      1.0  a number kept for each customer, a part for each row of orders; a part reads: orders by customer
+S17.open_count               claude    kept             7/7           2/2          1.0      1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+S18.open_count               gpt       kept             7/7           2/2          1.0      1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+S21.bought                   claude    looked up      294/294        84/84        44.2    189.0  orders by customer; lines by order; products by key
+S22.bought                   gpt       kept           294/294        84/84        16.3     67.5  a list kept for each customer, a part for each row of orders; a part reads: orders by customer; lines by order; products by key
+S25.units_sold               claude    kept           196/196        56/56         1.0      1.0  a number kept for each product, a part for each row of lines; a part reads: lines by product
+S26.units_sold               gpt       kept           196/196        56/56         1.0      1.0  a number kept for each product, a part for each row of lines; a part reads: lines by product
+S29.latest                   claude    looked up     3528/3528     1008/1008       6.8     27.6  orders by customer
+S30.latest                   gpt       looked up     3528/3528     1008/1008       6.8     27.6  orders by customer
+S33.mentions                 claude    walked          35/35         10/10       306.1   1215.0  orders read whole at a test, says walk
+S34.mentions                 gpt       walked          35/35         10/10       306.1   1215.0  orders read whole, says walk
+S37.idle_customers           claude    kept             7/7           2/2          1.7      7.5  a list kept as one, a part for each row of customers; a part reads: orders by customer; customers read whole, says walk
+S38.idle_customers           gpt       kept             7/7           2/2          1.7      7.5  a list kept as one, a part for each row of customers; a part reads: orders by customer; customers read whole, says walk
+S91.city_customers           claude    kept            42/42         12/12         6.4      7.6  a list kept for each city, a part for each row of customers; a part reads: customers by city
+Reference.orders_of          reference kept           294/294        84/84         6.9     27.6  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+Reference.product_name       reference by key         196/196        56/56         1.0      1.0  products by key
+Reference.large_orders       reference looked up      770/770       220/220      167.8    659.2  orders ranged on total
+Reference.paid_total         reference kept           294/294        84/84         2.3      9.7  a list kept for each customer, a part for each row of orders; a part reads: orders by customer+status
+Reference.open_count         reference kept             7/7           2/2          1.0      1.0  a number kept as one, a part for each row of orders; a part reads: orders by status
+Reference.bought             reference kept           294/294        84/84        16.3     67.5  a list kept for each customer, a part for each row of orders; a part reads: orders by customer; lines by order; products by key
+Reference.units_sold         reference kept           196/196        56/56        31.6    124.2  a list kept for each product, a part for each row of lines; a part reads: lines by product
+Reference.latest             reference looked up     3528/3528     1008/1008       6.8     27.6  orders by customer
+Reference.mentions           reference walked          35/35         10/10       306.1   1215.0  orders read whole at a test, says walk
+Reference.idle_customers     reference walked           7/7           2/2        300.3   1096.5  orders by customer; customers read whole, says walk
+Reference.city_customers     reference kept            42/42         12/12         6.4      7.6  a list kept for each city, a part for each row of customers; a part reads: customers by city
+Planted.largest              planted   looked up      294/294        84/84         6.8     27.6  orders by customer
+Planted.doubled              planted   looked up      294/294        84/84         6.8     27.6  orders by customer
+Planted.gifts                planted   kept           294/294        84/84         1.5      4.8  a list kept for each customer, a part for each row of orders; a part reads: orders by customer
+Planted.spend_by_city        planted   kept            42/42         12/12         1.0      1.0  a number kept for each city, a part for each row of customers; a part reads: customers by city; orders by customer
+Planted.product_buyers       planted   kept           196/196        56/56        24.2    105.8  a list kept for each product, a part for each row of lines; a part reads: lines by product; customers by key; orders by key
+Planted.revenue              planted   kept           196/196        56/56         1.0      1.0  a number kept for each product, a part for each row of lines; a part reads: lines by product; products by key
+Planted.unlined              planted   kept             7/7           2/2         28.9     77.0  a list kept as one, a part for each row of orders; a part reads: lines by order; orders read whole, says walk
+Planted.busiest              planted   walked           7/7           2/2        300.3   1096.5  orders by customer; customers read whole, says walk
+
+answers compared with Mo's: 23499
+agent-written reads planned from Mo Core with every answer the same as Mo's: 21 of 21
+classes, agent-written: by key 2, kept 12, looked up 5, walked 2
+classes, all: by key 3, kept 23, looked up 9, walked 5
+reads whose answers differed from Mo's: at 300 orders [], at 1200 []
+upkeep at 300 orders, over 600 writes:
+  a write to customers    39 writes; parts and index entries adjusted: mean   22.8, most   43; rows read for upkeep: mean    71.5, most   149
+  a write to products     55 writes; parts and index entries adjusted: mean   66.7, most  121; rows read for upkeep: mean   412.3, most   776
+  a write to orders      205 writes; parts and index entries adjusted: mean   21.8, most   29; rows read for upkeep: mean    54.5, most   119
+  a write to lines       301 writes; parts and index entries adjusted: mean   10.6, most   13; rows read for upkeep: mean    34.0, most    84
+  any write: rows read for upkeep, mean 78.1
+upkeep at 1200 orders, over 600 writes:
+  a write to customers    48 writes; parts and index entries adjusted: mean   58.1, most  124; rows read for upkeep: mean   203.4, most   425
+  a write to products     48 writes; parts and index entries adjusted: mean  243.3, most  424; rows read for upkeep: mean  1577.2, most  2810
+  a write to orders      199 writes; parts and index entries adjusted: mean   21.9, most   31; rows read for upkeep: mean   137.1, most   276
+  a write to lines       305 writes; parts and index entries adjusted: mean   10.8, most   13; rows read for upkeep: mean    35.5, most    79
+  any write: rows read for upkeep, mean 206.0
+reads that differ when rows come back in the opposite order: [('Planted', 'doubled'), ('S02', 'orders_of'), ('S10', 'large_orders')]
+control, updates skip all upkeep: differing [('Planted', 'gifts'), ('Planted', 'product_buyers'), ('Planted', 'revenue'), ('Planted', 'spend_by_city'), ('Planted', 'unlined'), ('Reference', 'bought'), ('Reference', 'city_customers'), ('Reference', 'open_count'), ('Reference', 'orders_of'), ('Reference', 'paid_total'), ('Reference', 'units_sold'), ('S01', 'orders_of'), ('S02', 'orders_of'), ('S13', 'paid_total'), ('S14', 'paid_total'), ('S17', 'open_count'), ('S18', 'open_count'), ('S22', 'bought'), ('S25', 'units_sold'), ('S26', 'units_sold'), ('S91', 'city_customers')]
+control, a write to another table skips the parts that read it: differing [('Planted', 'product_buyers'), ('Planted', 'revenue'), ('Planted', 'spend_by_city'), ('Planted', 'unlined'), ('Reference', 'bought'), ('S22', 'bought'), ('S37', 'idle_customers'), ('S38', 'idle_customers')]
+control, the test is dropped after the index: differing [('Planted', 'gifts')]

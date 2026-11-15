@@ -196,14 +196,14 @@ Result of the test on 2026-11-14: `1 passed, 0 failed, 0 stopped`. It checks tha
 
 ## planner
 
-The claim under test, for experiment 8 in [experiments.md](../experiments.md): a compiler can plan ordinary Mo reads over stored tables, working out for itself which indexes and which answers to keep. The result is there.
+The claim under test, for experiments 8 and 9 in [experiments.md](../experiments.md): a compiler can plan ordinary Mo reads over stored tables, working out for itself which indexes and which answers to keep, including answers that span tables. The results are there.
 
-`core.py` reads the Mo Core that `mo check --emit=core` prints and runs it, over tables that hold their own indexes. `plan.py` finds every table read in a function and gives the function a class: by key, looked up, kept or walked. `planner.py` takes the plain-Mo reads agents wrote in the enforcement trial, plans them, applies random writes, and at each checkpoint runs the same functions in real Mo on the same rows and compares every answer. `controls/planted.mo` holds three reads that must not be kept, one of which leans on the order of the table and one of which has a test that goes beyond its index.
+`core.py` reads the Mo Core that `mo check --emit=core` prints and runs it, over tables that hold their own indexes. It can stop a run at a cut, put a kept value in at a cut, and record what a run read. `plan.py` finds every table read in a function and gives the function a class: by key, looked up, kept or walked. A read is kept when it goes over one table once and its work for each row is separate; `cut_of` finds where that work ends. `planner.py` takes the plain-Mo reads agents wrote in the enforcement trial, plans them, applies random writes, and at each checkpoint runs the same functions in real Mo on the same rows and compares every answer. A kept answer is held in parts, one for each row, with a record of what each part read, so a write to another table redoes only the parts that read what it touched. `controls/planted.mo` holds eight reads written to test the rule: three that must not be kept, four that span tables, and one whose test goes beyond its index.
 
 ```sh
 python3 sketches/planner/planner.py
 ```
 
-It takes about six minutes and writes `build/planner/report.txt`; the report of the recorded run is in `results/`. It ends with five checks that must hold: skipped upkeep spoils every kept answer and nothing else, a dropped test is caught, every `mentions` is walked, no planted read is kept, and the planted read that leans on order shows it.
+It takes about ten minutes and writes `build/planner/report.txt`; the reports of the recorded runs are `results/report-8.txt` and `results/report-9.txt`. The script as it ran for experiment 8 is at commit `f55a416`. It ends with seven checks that must hold: every answer is Mo's, skipped upkeep spoils kept answers only, upkeep skipped after a write to another table spoils only answers that span tables, a dropped test is caught, every `mentions` is walked, the three planted reads that must not be kept are not, and the planted read that leans on order shows it.
 
-Known limits: one Mo function can hold only so many rows (E1153), so the rows are written 400 to a function. The script knows only the Mo Core forms and built-in steps these reads use, and stops with the name of any other.
+Known limits: one Mo function can hold only so many rows (E1153), so the rows are written 400 to a function. The script knows only the Mo Core forms and built-in steps these reads use, and stops with the name of any other. A part is worked out again when something it read changes; it is never adjusted in one step.
