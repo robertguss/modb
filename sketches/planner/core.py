@@ -98,6 +98,10 @@ class Captured(Exception):
     """Carries the value a read had reached at its cut, when only that value was wanted."""
 
 
+class Waiting(Exception):
+    """Raised at a lookup by key, when a part is to be run only as far as its first one."""
+
+
 class Held:
     def __init__(self, params, body, env=None):
         self.params, self.body, self.env = params, body, env
@@ -144,12 +148,13 @@ class Machine:
     `cuts` maps a node to the cut it belongs to. In mode "part" a run stops at its cut and gives the value reached;
     in mode "whole" the cut gives what `whole` holds for it, and the calls in `skipped` are not run at all.
     `log`, when it is a set, collects what was read: a key, an index entry, whether an index entry has any row,
-    or all of a table. `again` counts lookups by key of a row already in `got`."""
+    or all of a table. `again` counts lookups by key of a row already in `got`. While `waits` is set a lookup by key
+    stops the run."""
 
     def __init__(self, funs, sites=None, recheck=True, order=1):
         self.funs, self.sites, self.recheck, self.order, self.touched = funs, sites or {}, recheck, order, 0
         self.cuts, self.skipped, self.mode, self.whole, self.log = {}, set(), None, None, None
-        self.got, self.again = set(), 0
+        self.got, self.again, self.waits = set(), 0, False
 
     def noted(self, *entry):
         if self.log is not None:
@@ -255,6 +260,8 @@ class Machine:
             if what == "values":
                 return Rows(table)
             if what == "get":
+                if self.waits:
+                    raise Waiting
                 self.touched += 1
                 self.again += (id(table), args[1]) in self.got
                 self.got.add((id(table), args[1]))

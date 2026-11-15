@@ -129,7 +129,7 @@ def planned(decl):
             return facts[0]
         if head == "call" and SITE.search(node[1]) and [fact and fact[0] for fact in facts] == ["rows", "test"]:
             found["sites"].append({"node": node, "table": facts[0][1], "how": SITE.search(node[1]).group(1),
-                                   **test_of(facts[1][1])})
+                                   "test": facts[1][1], **test_of(facts[1][1])})
             found["count"][facts[0][1]] += 1
             return "picked", node
         for fact in facts:
@@ -189,6 +189,44 @@ def looks_up(node):
     return node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["get"] or any(looks_up(child) for child in node)
 
 
+def needed(work, pairs, tests):
+    """The fields this work reads of each row it goes over, outside the tests that chose the rows. None for a row
+    used whole. `pairs` names what each loop holds its row and the rest of its list in."""
+    rows, read = {}, [set() for _ in pairs]
+
+    def scan(node):
+        if isinstance(node, str) or not node or id(node) in tests:
+            return
+        if node[0] == "let_" and node[2][0] == "proj" and is_var(node[2][1], pairs) and node[2][2] == "0":
+            rows[node[1]] = pairs.index(node[2][1][1])
+        elif node[0] == "let_" and is_var(node[2], rows):
+            rows[node[1]] = rows[node[2][1]]
+        elif node[0] == "case_" and is_var(node[1], rows) and field_of(node, rows) is not None:
+            if read[rows[node[1][1]]] is not None:
+                read[rows[node[1][1]]].add(field_of(node, rows))
+        elif is_var(node, rows):
+            read[rows[node[1]]] = None
+        elif node[0] == "proj" and is_var(node[1], pairs) and node[2] == "0":
+            read[pairs.index(node[1][1])] = None
+        else:
+            for child in node:
+                scan(child)
+            return
+        if node[0] == "let_":
+            scan(node[3])
+
+    scan(work)
+    return [fields if fields is None else tuple(sorted(fields)) for fields in read]
+
+
+def any_order(post, total):
+    """Whether what follows the cut gives the same answer for the kept list in any order: it is sorted before any
+    other use, with or without `unique` first."""
+    if post[0] == "let_" and post[2][0] == "prim" and post[2][1][-1] == ["unique"] and post[2][2] == [["var", total]]:
+        post, total = post[3], post[1]
+    return post[0] == "call" and "::List.sort(" in post[1] and post[2] == [["var", total]]
+
+
 def loop_in(tail):
     """The pieces of a `for` loop that carries one running value, as Mo Core writes it, or None."""
     try:
@@ -207,8 +245,10 @@ def loop_in(tail):
 def cut_of(decl, found):
     """Where a read splits into work done for each row of one table, which can be kept, and work on the whole.
 
-    A part does no lookup by key. When the work for a pair of rows holds one, the cut is `late`: the pair is kept and
-    the work runs when the read is asked. When the work for one row holds one, the index is all there is to keep."""
+    A part does no lookup by key. When its work holds one the cut is `late`: the part waits at the lookup, and the
+    rest runs when the read is asked. Where order cannot matter the cut is `free`, and waiting parts that agree on
+    the fields in `needs` share one kept entry. A list in order is kept late only as pairs of rows; for one row the
+    index is all there would be to keep."""
     if found["lost"]:
         return None
     shop, params = decl[2][0][0], [param[0] for param in decl[2][1:]]
@@ -237,7 +277,8 @@ def cut_of(decl, found):
         return None
 
     def loop_inside(outer, table):
-        """The inner table and site when the loop's body is itself a loop and the value changes only in there."""
+        """The inner table, site and loop when the loop's body is itself a loop, nothing is looked up before it, and
+        the value changes only in there."""
         before, inside = [], outer["step"]
         while inside[0] == "let_":
             before.append(inside)
@@ -246,24 +287,25 @@ def cut_of(decl, found):
         onward = ["jump", outer["loop"], [["proj", ["var", outer["pair"]], "1"], ["var", total]]]
         if not inner or inner["total"] != total or inner["post"] != onward:
             return None
-        if any(let[1] == total or mentions(let[2], {total}) for let in before):
+        if any(let[1] == total or mentions(let[2], {total}) or looks_up(let[2]) for let in before):
             return None
         picked = source(inner["start"][2][0], {**defs, **{let[1]: let[2] for let in before}})
         if picked and picked[1] and picked[1]["equal"] and picked[0] != table and found["count"][picked[0]] == 1:
-            return picked[0]
+            return picked[0], picked[1], inner
         return None
 
     stale = {let[1] for let in lets if source(let[2])}
-    cut, outer = None, loop_in(tail)
+    cut, inside, outer = None, None, loop_in(tail)
     if outer:
         first = resolve(["var", outer["total"]])
         kind = ("sum" if first == ["lit", ["int", "0"]] else
                 "list" if first[0] == "prim" and first[1][0] == "list" and first[1][-1] == ["lit", "0"] else None)
         driven = source(outer["start"][2][0])
         if kind and driven and grows_only(outer["step"], outer["total"], outer["done"], kind):
+            inside = loop_inside(outer, driven[0])
             cut = {"kind": kind, "driven": driven, "start": outer["start"], "ended": outer["ended"],
                    "done": outer["done"], "post": outer["post"], "node": None, "stages": [],
-                   "inner": loop_inside(outer, driven[0])}
+                   "inner": inside and inside[0]}
     if not cut:
         driven, bag, stages, last = None, set(), [], None
         for name, expr, post in [(let[1], let[2], let[3]) for let in lets] + [(None, tail, None)]:
@@ -302,8 +344,12 @@ def cut_of(decl, found):
              if occurrences(decl[4], name) > (occurrences(cut["post"], name) if cut["post"] else 0)}
     if not early <= set(bound):
         return None
-    late = any(looks_up(work) for work in ([outer["step"]] if cut["node"] is None else [*cut["stages"], cut["node"]]))
-    if late and cut.get("inner") is None:
+    looped = cut["node"] is None
+    late = any(looks_up(work) for work in ([outer["step"]] if looped else [*cut["stages"], cut["node"]]))
+    free = looped and (cut["kind"] == "sum" or any_order(cut["post"], outer["total"]))
+    if late and not free and cut.get("inner") is None:
         return None
-    return {**cut, "late": late, "table": cut["driven"][0], "names": sorted(bound),
+    needs = late and needed(outer["step"], [outer["pair"]] + ([inside[2]["pair"]] if inside else []),
+                            {id(chose["test"]) for chose in (site, inside and inside[1]) if chose})
+    return {**cut, "late": late, "free": free, "needs": needs, "table": cut["driven"][0], "names": sorted(bound),
             "fields": [bound[name] for name in sorted(bound)], "places": [params.index(name) for name in sorted(bound)]}

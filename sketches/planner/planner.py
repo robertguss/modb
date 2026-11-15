@@ -25,7 +25,7 @@ PLANTED = [{"name": name, "sweep": sweep, "call": f"{name}(Shop.large{', ' + arg
                ("largest", ["customer in 0..42"], "customer"), ("doubled", ["customer in 0..42"], "customer"),
                ("gifts", ["customer in 0..42"], "customer"), ("spend_by_city", CITY, "city"),
                ("product_buyers", ["product in 0..28"], "product"), ("revenue", ["product in 0..28"], "product"),
-               ("unlined", [], ""), ("busiest", [], "")]]
+               ("unlined", [], ""), ("busiest", [], ""), ("bought_in_order", ["customer in 0..42"], "customer")]]
 BY_NAME = {task["name"]: task for task in [*TASKS, PILOT, *PLANTED]}
 CITIES = ["Lisbon", "Porto", "Faro", "Braga", "Evora"]
 WORDS = ["gift", "call", "wrap", "fragile", "rush", "plain"]
@@ -152,8 +152,12 @@ class Planner:
         rows = (f"pair of rows of {self.tables[cut['table']]} and {self.tables[cut['inner']]}"
                 if cut.get("inner") is not None else f"row of {self.tables[cut['table']]}")
         if cut["late"]:
-            return (f"each {rows} kept {'for each ' + each if each else 'as one'}, the rest of its part run at the ask; "
-                    "it reads: " + "; ".join(parts))
+            by = [f"row of {self.tables[table]}" if field is None else f"{self.tables[table]}.{self.columns[table][field]}"
+                  for table, fields in zip((cut["table"], cut.get("inner")), cut["needs"])
+                  for field in ([None] if fields is None else fields)]
+            held = f"one entry and a count for each {' and '.join(by) or 'answer'}" if cut["free"] else f"each {rows} in order"
+            return (f"{held}, kept {'for each ' + each if each else 'as one'}; the lookup and the rest of a part run "
+                    "at the ask; it reads: " + "; ".join(parts))
         return (f"a {'number' if cut['kind'] == 'sum' else 'list'} kept {'for each ' + each if each else 'as one'}, "
                 f"a part for each {rows}; a part reads: " + "; ".join(parts))
 
@@ -162,7 +166,7 @@ class Run:
     """One store, the answers kept for it in parts, and the tally of how its reads compared with Mo."""
 
     def __init__(self, planner, orders, seed, recheck=True, order=1, skip_updates=False, skip_others=False,
-                 skip_flips=False, skip_lookups=False):
+                 skip_flips=False, skip_lookups=False, skip_order=False, skip_needs=False):
         self.planner, self.orders, self.rng = planner, orders, random.Random(seed)
         self.machine = core.Machine(planner.funs, planner.sites, recheck, order)
         self.machine.cuts, self.machine.skipped, self.machine.whole = planner.cuts, planner.skipped, self.whole
@@ -174,7 +178,7 @@ class Run:
         self.lists = {key: collections.defaultdict(dict) for key in self.kept}
         self.readers, self.indexed = collections.defaultdict(set), collections.defaultdict(set)
         self.skip_updates, self.skip_others, self.skip_flips, self.upkeep = skip_updates, skip_others, skip_flips, []
-        self.skip_lookups = skip_lookups
+        self.skip_lookups, self.skip_order, self.skip_needs = skip_lookups, skip_order, skip_needs
         self.owned = {key: collections.defaultdict(set) for key in self.kept}
         self.tally = collections.defaultdict(lambda: collections.Counter())
         for at, table in enumerate(self.store):
@@ -184,20 +188,50 @@ class Run:
             for _ in range(count):
                 self.write(table, 0.0)
 
-    def reached(self, read, alone, row):
-        """Runs a read up to its cut over these tables. Gives the value reached and what was read on the way."""
+    def reached(self, read, alone, row, waits=False):
+        """Runs a read up to its cut over these tables. Gives the value reached and what was read on the way. With
+        `waits` it stops at the first lookup by key and gives `core.Waiting` for the value."""
         cut, decl = self.kept[read], self.planner.reads[read]["decl"]
         args = [None] * (len(decl[2]) - 1)
         for place, field in zip(cut["places"], cut["fields"]):
             args[place] = row[1][field]
-        self.machine.mode, self.machine.log = "part", set()
+        self.machine.mode, self.machine.log, self.machine.waits = "part", set(), waits
         try:
             self.machine.call(decl[1], [('"Shop"', tuple(alone)), *args])
             raise AssertionError(f"a part of {read} ran past its cut")
         except core.Captured as reached:
             return reached.args[0], self.machine.log
+        except core.Waiting:
+            return core.Waiting, self.machine.log
         finally:
-            self.machine.mode, self.machine.log = None, None
+            self.machine.mode, self.machine.log, self.machine.waits = None, None, False
+
+    def over(self, read, row, other=None, waits=False):
+        """Runs a part: the read up to its cut, over one row of its table and, for a pair, one of the inner table."""
+        cut, alone = self.kept[read], list(self.store)
+        alone[cut["table"]] = core.Table([row])
+        if other is not None:
+            alone[cut["inner"]] = core.Table([other])
+        return self.reached(read, alone, row, waits)
+
+    def waits(self, read):
+        return self.kept[read]["late"] and not self.skip_lookups
+
+    def place(self, read, part, row, other=None):
+        """Works out a part and holds it. Where the read does its lookups when asked, the part stops at the first
+        one and is held by its group: the fields the rest of it reads, or itself where order counts."""
+        cut = self.kept[read]
+        value, log = self.over(read, row, other, self.waits(read))
+        if value is core.Waiting and not (cut["free"] or self.skip_order):
+            value = "at", part
+        elif value is core.Waiting:
+            value = ("at", *([] if self.skip_needs else [
+                held[1] if fields is None else tuple(held[1][field] for field in fields)
+                for held, fields in zip((row, other), cut["needs"])]))
+        else:
+            assert not (self.waits(read) and value), f"a part of {read} ended with {value} and no lookup"
+        self.hold(read, part, row, value, {entry for entry in log if entry[0] in self.store
+                                           and not (cut["late"] and entry[1] == "key")})
 
     def drop(self, read, part):
         if part in self.parts[read]:
@@ -210,7 +244,7 @@ class Run:
                 self.lists[read][where].pop(part, None)
 
     def summed(self, read):
-        return self.kept[read]["kind"] == "sum" and not self.kept[read]["late"]
+        return self.kept[read]["kind"] == "sum" and not self.waits(read)
 
     def hold(self, read, part, row, value, entries):
         where = tuple(row[1][field] for field in self.kept[read]["fields"])
@@ -228,10 +262,7 @@ class Run:
         """Works out again the part of a kept answer that belongs to one row, or drops it when the row is gone."""
         self.drop(read, key)
         if row is not None:
-            alone = list(self.store)
-            alone[self.kept[read]["table"]] = core.Table([row])
-            value, log = self.reached(read, alone, row)
-            self.hold(read, key, row, value, {entry for entry in log if entry[0] in self.store})
+            self.place(read, key, row)
 
     def paired(self, read, key, row):
         """For a loop inside a loop: notes which inner rows belong to this outer row, and makes a part for each."""
@@ -259,24 +290,14 @@ class Run:
         mine = [entry for entry in self.parts[read].get(("of", key), ((), 0, ()))[2] if entry[0] is self.store[cut["inner"]]]
         if row is None or other is None or not any(inner in entry[0].by_equal(*entry[1:]) for entry in mine):
             return
-        if cut["late"] and not self.skip_lookups:
-            self.machine.touched += 2
-            self.hold(read, part, row, True, set())
-        else:
-            value, log = self.together(read, row, other)
-            self.hold(read, part, row, value, {entry for entry in log if entry[0] in self.store
-                                               and not (cut["late"] and entry[1] == "key")})
+        self.place(read, part, row, other)
         self.owned[read][key].add(part)
 
-    def together(self, read, row, other):
-        cut, alone = self.kept[read], list(self.store)
-        alone[cut["table"]], alone[cut["inner"]] = core.Table([row]), core.Table([other])
-        return self.reached(read, alone, row)
-
     def asked(self, read, part):
-        """Runs the rest of a kept pair when its read is asked: one row for the pair and one for each lookup."""
+        """Runs a waiting part when its read is asked: one row for the kept entry and one for each lookup."""
         cut, before, mode = self.kept[read], self.machine.touched, self.machine.mode
-        value, log = self.together(read, self.store[cut["table"]].rows[part[0]], self.store[cut["inner"]].rows[part[1]])
+        value, log = self.over(read, *(self.store[cut[side]].rows[key] for side, key in
+                                       zip(("table", "inner"), part if isinstance(part, tuple) else [part])))
         self.machine.mode, self.machine.touched = mode, before + 1 + sum(entry[1] == "key" for entry in log)
         return value
 
@@ -324,9 +345,10 @@ class Run:
         second = self.store[cut["inner"]].arrived if cut.get("inner") is not None else {}
         ordered = sorted(parts, key=lambda part: (turn * first[part[0]], turn * second[part[1]])
                          if isinstance(part, tuple) else (turn * first[part], 0))
-        if cut["late"] and not self.skip_lookups:
-            values = [self.asked(read, part) for part in ordered]
-            self.machine.touched += not ordered
+        if self.waits(read):
+            count = collections.Counter(parts.values())
+            values = [self.asked(read, part) * count.pop(parts[part]) for part in ordered if parts[part] in count]
+            self.machine.touched += not values
             return sum(values) if cut["kind"] == "sum" else [item for value in values for item in value]
         joined = [item for part in ordered for item in parts[part]]
         self.machine.touched += max(len(joined), 1)
@@ -411,6 +433,7 @@ def main():
     reversed_order, no_upkeep = control(planner, order=-1), control(planner, skip_updates=True)
     no_others, no_test = control(planner, skip_others=True), control(planner, recheck=False)
     no_flips, no_lookups = control(planner, skip_flips=True), control(planner, skip_lookups=True)
+    no_order, no_needs = control(planner, skip_order=True), control(planner, skip_needs=True)
 
     lines = [f"{'read':28} {'by':9} {'class':10} {'same as Mo, 300':>16} {'1200':>10} {'rows read per ask':>18} "
              f"{'a row looked up twice counted once':>35}  how"]
@@ -438,7 +461,9 @@ def main():
     lines.append(f"control, a write to another table skips the parts that read it: differing {no_others.differing()}")
     lines.append(f"control, the test is dropped after the index: differing {no_test.differing()}")
     lines.append(f"control, no notice when an index entry empties or fills: differing {no_flips.differing()}")
-    lines.append(f"control, a kept pair's lookups are never done again: differing {no_lookups.differing()}")
+    lines.append(f"control, a waiting part's lookups are never done again: differing {no_lookups.differing()}")
+    lines.append(f"control, a list is grouped though its order counts: differing {no_order.differing()}")
+    lines.append(f"control, waiting parts are grouped on no fields: differing {no_needs.differing()}")
     report = "\n".join(lines) + "\n"
     (OUT / "report.txt").write_text(report)
     print(report)
@@ -455,6 +480,8 @@ def main():
     assert no_flips.differing() and set(no_flips.differing()) <= asks, "it must spoil only reads that ask if any row matches"
     late = sorted(key for key in kept if small.kept[key]["late"])
     assert late and no_lookups.differing() == late, "lookups never done again must spoil the reads whose lookups moved"
+    assert no_order.differing() == [("Planted", "bought_in_order")], "a list in order must not be grouped"
+    assert no_needs.differing() == [key for key in late if small.kept[key]["free"]], "the fields grouped on must count"
     assert all(read["class"] == "walked" for key, read in planner.reads.items() if key[1] == "mentions")
     assert all(planner.reads["Planted", name]["cut"] is None for name in ("largest", "doubled", "busiest"))
     assert ("Planted", "doubled") in reversed_order.differing(), "the planted read that leans on order must show"

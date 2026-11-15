@@ -1,5 +1,5 @@
 module Planted
-expose largest, doubled, gifts, spend_by_city, product_buyers, revenue, unlined, busiest
+expose largest, doubled, gifts, spend_by_city, product_buyers, revenue, unlined, busiest, bought_in_order
 use Shop{Shop, walk}
 
 fn largest(shop: Shop, customer: Int) : Int
@@ -76,4 +76,16 @@ fn busiest(shop: Shop) : Int
     end
   end
   best
+end
+
+fn bought_in_order(shop: Shop, customer: Int) : List(Text)
+  var names = []
+  for order in shop.orders.values.filter(fn(order) order.customer == customer end)
+    for line in shop.lines.values.filter(fn(line) line.order == order.id end)
+      if shop.products.get(line.product) is Some(product)
+        names = names.append(product.name)
+      end
+    end
+  end
+  names
 end
