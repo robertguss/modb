@@ -2,7 +2,7 @@
 
 Claude's draft of 2026-11-14, written at Robert's request after his steer that the work had become "too focused on what can Mo do today and not what Mo needs to be able to do". It designs the parts as if Mo already had what they need. Section 8 lists what that is. It was re-ordered the same day at Robert's decision: the ordinary application is the base case, and agents are a layer on top.
 
-On 2026-11-15 the rule for reads and writes was added to section 5, from experiments 8 to 12 in [experiments.md](experiments.md). Sections 3, 7, 8 and 9 were brought into line with it.
+On 2026-11-15 the rule for reads and writes was added to section 5, from experiments 8 to 12 in [experiments.md](experiments.md). Sections 3, 7, 8 and 9 were brought into line with it. Robert accepted the rule the same day, after experiments 13 and 14.
 
 Nothing here is decided unless it says "decided by Robert". The ideas come from [design-ideas.md](design-ideas.md), which keeps their history and the earlier work behind each. The measurements are evidence for the list of what Mo must gain. They do not shape the design.
 
@@ -200,7 +200,7 @@ A tree of this shape, written in Mo as it stands, kept a version for 778 bytes a
 
 ### The rule for reads and writes
 
-Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a query. The experiments are numbers 8 to 14 in [experiments.md](experiments.md), which holds every figure below with its predictions and controls.
+Claude's draft of 2026-11-15, accepted by Robert the same day. A read here is one call of a query. The experiments are numbers 8 to 14 in [experiments.md](experiments.md), which holds every figure below with its predictions and controls.
 
 **Decided by Robert.**
 
@@ -211,7 +211,7 @@ Claude's draft of 2026-11-15, for Robert to accept. A read here is one call of a
 - Removing a row that other rows still name is refused, unless the code says to remove those rows too (2026-11-15).
 - For a write that must redo one part for each row that names the row it changed, the code says so on the kept read that causes it, not on the write. The write's plan report shows the cost and names the read (2026-11-15).
 
-**The rule.** Not accepted, apart from the write half of point 6.
+**The rule.** Accepted by Robert on 2026-11-15. The items under "Open inside the rule" stay open.
 
 1. **The compiler sorts every read into one of four classes.**
 
@@ -365,7 +365,7 @@ Three smaller matters belong to Mo whatever is built on it. A map held in a reco
 
 ## 9. What this draft leaves open
 
-- **Whether Robert accepts it.** He has decided the order of its parts and the points in section 7. He has not accepted the rest. The newest part waiting on him is the rule for reads and writes in section 5.
+- **Whether Robert accepts it.** He has decided the order of its parts, the points in section 7 and the rule for reads and writes in section 5. He has not accepted the rest.
 - **Library or runtime.** The store can be a library written in Mo, where every step that touches the disk is visible and can be simulated, or part of the runtime, where any value can live on disk. Line 3 above is where that is chosen. Claude leans to the library.
 - **Names by hash or by number.** Hashes let anyone check history and compare versions. Numbers are cheaper and do not fight erasing.
 - **Which real data goes in first.** [What real data of yours goes in first?](issues/12-what-real-data-goes-in-first.md) was closed unanswered.
