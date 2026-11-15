@@ -238,10 +238,6 @@ def cut_of(decl, found):
                 stale |= bag
                 bag, last = {name}, ("list", expr, post)
                 stages.append(expr)
-            elif driven and expr[0] == "call" and "::List.sum(" in expr[1] and is_var(expr[2][0], bag) and last:
-                stale |= bag
-                last = ("sum", expr, post)
-                break
             elif mentions(expr, bag):
                 break
         if last:
