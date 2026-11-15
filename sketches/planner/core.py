@@ -143,7 +143,8 @@ class Machine:
 
     `cuts` maps a node to the cut it belongs to. In mode "part" a run stops at its cut and gives the value reached;
     in mode "whole" the cut gives what `whole` holds for it, and the calls in `skipped` are not run at all.
-    `log`, when it is a set, collects what was read: a key, an index entry, or all of a table."""
+    `log`, when it is a set, collects what was read: a key, an index entry, whether an index entry has any row,
+    or all of a table."""
 
     def __init__(self, funs, sites=None, recheck=True, order=1):
         self.funs, self.sites, self.recheck, self.order, self.touched = funs, sites or {}, recheck, order, 0
@@ -170,9 +171,14 @@ class Machine:
         for name, expr in site["before"]:
             env = {**env, name: self.run(expr, env)}
         if site["equal"]:
+            fields = tuple(field for field, _ in site["equal"])
             values = tuple(self.run(other, env) for _, other in site["equal"])
-            keys = rows.table.by_equal(tuple(field for field, _ in site["equal"]), values)
-            self.noted(rows.table, tuple(field for field, _ in site["equal"]), values)
+            keys = rows.table.by_equal(fields, values)
+            if site["how"] == "any?" and site["exact"]:
+                self.noted(rows.table, "some", fields, values)
+                keys = sorted(keys)[:1]
+            else:
+                self.noted(rows.table, fields, values)
         else:
             field, op, other = site["range"]
             keys = rows.table.by_range(field, op, self.run(other, env))

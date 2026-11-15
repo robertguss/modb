@@ -44,7 +44,7 @@ def without(env, params):
 def test_of(test):
     """The fields a test sets equal to, or ranges against, a value that does not depend on the row."""
     row = test[1][0][0]
-    fields, tied, before, found = {}, {row}, [], []
+    fields, tied, before, found, loose = {}, {row}, [], [], []
 
     def side(atom):
         if is_var(atom, fields):
@@ -52,12 +52,14 @@ def test_of(test):
         return None if mentions(atom, tied) else ("other", atom)
 
     def compared(node):
-        if node[0] != "prim" or node[1][0] not in ("eq", "cmp"):
-            return
-        op = "eq" if node[1][0] == "eq" else node[1][-1][0]
-        left, right = (side(atom) for atom in node[2])
-        if left and right and {left[0], right[0]} == {"field", "other"}:
-            found.append((left[1], op, right[1]) if left[0] == "field" else (right[1], FLIP.get(op, op), left[1]))
+        if node[0] == "prim" and node[1][0] in ("eq", "cmp"):
+            op = "eq" if node[1][0] == "eq" else node[1][-1][0]
+            left, right = (side(atom) for atom in node[2])
+            if left and right and {left[0], right[0]} == {"field", "other"}:
+                found.append((left[1], op, right[1]) if left[0] == "field" else (right[1], FLIP.get(op, op), left[1]))
+                if op == "eq":
+                    return
+        loose.append(node)
 
     def tail(node):
         while node[0] == "let_":
@@ -79,7 +81,8 @@ def test_of(test):
     tail(test[2])
     equal = sorted({field: other for field, op, other in reversed(found) if op == "eq"}.items())
     ranges = [cond for cond in found if cond[1] != "eq"]
-    return {"before": before, "equal": equal, "range": ranges[0] if ranges else None}
+    return {"before": before, "equal": equal, "range": ranges[0] if ranges else None,
+            "exact": bool(equal) and not loose}
 
 
 def planned(decl):
@@ -179,6 +182,21 @@ def occurrences(node, name):
     return 1 if node == ["var", name] else sum(occurrences(child, name) for child in node)
 
 
+def loop_in(tail):
+    """The pieces of a `for` loop that carries one running value, as Mo Core writes it, or None."""
+    try:
+        join, done, ((total, _),), after, (inner, loop, ((rest, _), (again, _)), body, start) = tail
+        case, (_, op, (walked,)), ((_, _, ended), (_, (pair,), step)) = body
+        if (join == inner == "join" and case == "case_" and again == total and op[-1] == ["uncons"]
+                and walked == ["var", rest] and ended == ["jump", done, [["var", total]]]
+                and start[:2] == ["jump", loop] and start[2][1] == ["var", total]):
+            return {"done": done, "total": total, "post": after, "loop": loop, "start": start, "ended": ended,
+                    "step": step, "pair": pair}
+    except (ValueError, TypeError, IndexError):
+        pass
+    return None
+
+
 def cut_of(decl, found):
     """Where a read splits into work done for each row of one table, which can be kept, and work on the whole."""
     if found["lost"]:
@@ -191,39 +209,51 @@ def cut_of(decl, found):
     defs = {let[1]: let[2] for let in lets}
     sites = {id(site["node"]): site for site in found["sites"]}
 
-    def resolve(expr):
+    def resolve(expr, defs=defs):
         while expr[0] == "var" and expr[1] in defs and defs[expr[1]] != expr:
             expr = defs[expr[1]]
         return expr
 
-    def source(expr):
-        node = resolve(expr)
+    def source(expr, defs=defs):
+        node = resolve(expr, defs)
         if id(node) in sites:
             return sites[id(node)]["table"], sites[id(node)]
         if node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["values"]:
-            inner = resolve(node[2][0])
+            inner = resolve(node[2][0], defs)
             while inner[0] == "call" and "Shop.walk(" in inner[1]:
-                inner = resolve(inner[2][0])
+                inner = resolve(inner[2][0], defs)
             if field_of(inner, {shop}) is not None:
                 return field_of(inner, {shop}), None
         return None
 
+    def loop_inside(outer, table):
+        """The inner table and site when the loop's body is itself a loop and the value changes only in there."""
+        before, inside = [], outer["step"]
+        while inside[0] == "let_":
+            before.append(inside)
+            inside = inside[3]
+        inner, total = loop_in(inside), outer["total"]
+        onward = ["jump", outer["loop"], [["proj", ["var", outer["pair"]], "1"], ["var", total]]]
+        if not inner or inner["total"] != total or inner["post"] != onward:
+            return None
+        if any(let[1] == total or mentions(let[2], {total}) for let in before):
+            return None
+        picked = source(inner["start"][2][0], {**defs, **{let[1]: let[2] for let in before}})
+        if picked and picked[1] and picked[1]["equal"] and picked[0] != table and found["count"][picked[0]] == 1:
+            return picked[0]
+        return None
+
     stale = {let[1] for let in lets if source(let[2])}
-    cut = None
-    try:
-        join, done, ((total, _),), after, (inner, loop, ((rest, _), (again, _)), body, start) = tail
-        case, (_, op, (walked,)), ((_, _, ended), (_, _, step)) = body
-        first = resolve(["var", total])
+    cut, outer = None, loop_in(tail)
+    if outer:
+        first = resolve(["var", outer["total"]])
         kind = ("sum" if first == ["lit", ["int", "0"]] else
                 "list" if first[0] == "prim" and first[1][0] == "list" and first[1][-1] == ["lit", "0"] else None)
-        if (join == inner == "join" and case == "case_" and again == total and op[-1] == ["uncons"]
-                and walked == ["var", rest] and ended == ["jump", done, [["var", total]]] and kind
-                and start[:2] == ["jump", loop] and start[2][1] == ["var", total] and source(start[2][0])
-                and grows_only(step, total, done, kind)):
-            cut = {"kind": kind, "driven": source(start[2][0]), "start": start, "ended": ended, "done": done,
-                   "post": after, "node": None, "stages": []}
-    except (ValueError, TypeError, IndexError):
-        pass
+        driven = source(outer["start"][2][0])
+        if kind and driven and grows_only(outer["step"], outer["total"], outer["done"], kind):
+            cut = {"kind": kind, "driven": driven, "start": outer["start"], "ended": outer["ended"],
+                   "done": outer["done"], "post": outer["post"], "node": None, "stages": [],
+                   "inner": loop_inside(outer, driven[0])}
     if not cut:
         driven, bag, stages, last = None, set(), [], None
         for name, expr, post in [(let[1], let[2], let[3]) for let in lets] + [(None, tail, None)]:
