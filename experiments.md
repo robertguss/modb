@@ -66,6 +66,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 7 | **Index readiness.** A model of an index that is absent, being built, ready or out of date, with recognised reads arriving in each state | No read is admitted that then silently builds or walks | GPT Sol: recognition alone fails this and readiness-aware admission passes, at 95%. Claude: the same, at 90% | An absent index labelled ready must show an admitted read with no fast route |
 | 8 | **A stand-in for the planner, on what the compiler itself emits.** A script reads `mo check --emit=core` for the plain-Mo reads of experiment 4, sorts each into looked up, kept or walked, keeps the answers up to date through random writes, and compares them with real Mo running the same code on the same rows | The share of reads it understands from Mo Core, and whether every answer it keeps equals Mo's | Written below, before the run | A kept answer whose upkeep skips one kind of write must be caught; a plan with its test dropped must be caught; a read whose test is `contains` must come out walked |
 | 9 | **Keeping answers that span tables.** The stand-in of experiment 8, widened: an answer is kept in parts, one for each row of the table the read goes over, and a part may read other tables. A write to another table redoes only the parts that read what it touched | Which reads stop being walks or lookups, what one ask costs, and what one write then costs at two store sizes | Written below, before the run | Upkeep skipped after a write to another table must spoil kept joins and no single-table answer; a loop that reads its own running list must not be kept; a loop with two running values must not be kept |
+| 10 | **Adjusting a kept answer in one step.** The stand-in of experiment 9 with finer parts: a loop inside a loop gets one part for each pair of rows, and a test that only asks whether any row matches is answered from the index and told only when that flips | How much of a write's upkeep in experiment 9 came from working parts out again, and how much remains | Written below, before the run | Notices of a flip dropped must spoil only reads that ask whether any row matches; the controls of experiment 9 must still fail as before |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -123,6 +124,29 @@ Robert agreed on 2026-11-15 to widen what can be kept, to joins and to reads acr
 8. A write to a table that parts were read from costs more as the store grows. For the planted revenue read, a change to one product redoes about four times as many parts at 1,200 orders as at 300: 80%. Over all writes the mean number of rows read for upkeep stays under 30 at both sizes: 60%.
 
 **Limits known before the run.** The parts are redone, not adjusted: when an order changes, the part of its customer is worked out again from that customer's orders. A real planner could adjust it in one step. So the cost of a write here is an upper bound for this rule. The rest of experiment 8's limits stand.
+
+### Experiment 10 as it will be run, written 2026-11-15 before the run
+
+Robert decided on 2026-11-15 that a write is held to the same rule as a read: upkeep that grows with the store is an error unless the code says so. This experiment asks how much of the growth seen in experiment 9 is real.
+
+**What changes.** Two things, both in `sketches/planner/`.
+
+- **A part for each pair of rows.** When a kept read has a loop inside its loop, and the running value changes only inside the inner loop, the script keeps one part for each pair of an outer row and an inner row. A write to an inner row then redoes one pair, not everything the outer row holds.
+- **"Does any row match?" from the index.** When a test is covered exactly by its index, `any?` is answered by whether the index entry is empty. A part that asked is told only when the entry goes from empty to not empty or back.
+
+Nothing else changes: the same 40 reads, the same writes, the same comparison with real Mo.
+
+**Predictions, Claude:**
+
+1. On the first run that completes, at least one answer differs from Mo's: 50%.
+2. Exactly three reads get a part for each pair: the planted spend of a city, and `bought` from GPT and from the reference: 75%.
+3. A write to orders stops growing with the store: its mean upkeep at 1,200 orders is within 1.3 times its mean at 300. In experiment 9 it was 2.5 times: 70%.
+4. A write to products at 1,200 orders reads under 500 rows on average, down from 1,577, and still costs about four times what it costs at 300: 75%. A product is read by a part for every line that names it, and that number grows with the store.
+5. A write to customers still more than doubles between the two sizes: 70%. The planted buyers read keeps a customer's name in a part for every line they bought.
+6. Over all writes the mean upkeep at 1,200 orders falls from 206 rows to under 80: 60%.
+7. What one ask costs stays within a tenth of experiment 9 for every read: 85%.
+
+**Limits known before the run.** Neither change does arithmetic on a part. A price change still redoes the part of every line of that product, where multiplying a kept total of quantities by the change in price would be one step. So what remains after this experiment is still an upper bound.
 
 ### Result of experiment 9, 2026-11-15
 
