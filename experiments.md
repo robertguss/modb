@@ -68,6 +68,7 @@ Merged from the three reviews. The order is Claude's: cheapest and most likely t
 | 9 | **Keeping answers that span tables.** The stand-in of experiment 8, widened: an answer is kept in parts, one for each row of the table the read goes over, and a part may read other tables. A write to another table redoes only the parts that read what it touched | Which reads stop being walks or lookups, what one ask costs, and what one write then costs at two store sizes | Written below, before the run | Upkeep skipped after a write to another table must spoil kept joins and no single-table answer; a loop that reads its own running list must not be kept; a loop with two running values must not be kept |
 | 10 | **Adjusting a kept answer in one step.** The stand-in of experiment 9 with finer parts: a loop inside a loop gets one part for each pair of rows, and a test that only asks whether any row matches is answered from the index and told only when that flips | How much of a write's upkeep in experiment 9 came from working parts out again, and how much remains | Written below, before the run | Notices of a flip dropped must spoil only reads that ask whether any row matches; the controls of experiment 9 must still fail as before |
 | 11 | **Doing the lookup when the read is asked.** The stand-in of experiment 10 with one change: a part no longer reads another table by key. Where the part is for a pair of rows, the pair is kept and the rest of the part runs when the read is asked. Where the part is for one row, nothing would be kept but the index, so the read is not kept | What a write to the looked-up table then costs, and what an ask costs against keeping the whole answer and against keeping nothing | Written below, before the run | Lookups that are never done again after the pair is made must spoil exactly the reads whose lookups moved; the controls of experiment 10 must still fail as before |
+| 12 | **Grouping before the lookup.** The stand-in of experiment 11 with one change: parts that stop at a lookup are grouped by the fields the rest of the part reads, and each group is kept once with a count. An ask does the lookup and the rest once for each group. A list is grouped only where the code sorts it before any other use | Whether the compiler can find the grouping from Mo Core alone, and what an ask and a write then cost against experiments 10 and 11 | Written below, before the run | Grouping on no fields must spoil exactly the grouped reads; grouping a planted read whose order counts must spoil exactly that read; lookups never done again must spoil exactly the reads that wait at a lookup; the controls of experiment 10 must still fail as before |
 
 Experiments 1, 3, 5, 6 and 7 need nothing but Mo as it stands and a script. Experiments 2 and 4 need agent sessions, which cost money.
 
@@ -179,6 +180,42 @@ The same 40 reads, the same writes and the same comparison with real Mo. Experim
 - Making a pair is counted as two rows read.
 - Nothing is grouped. One kept entry for each distinct product, with a count, would shorten both the kept list and the lookups. So would a kept total of quantities for the revenue read. Neither is built.
 - The store has about 40 customers and 25 products at both sizes. So lines for each product, and orders for each customer, grow with the store here. In a real shop they need not.
+
+### Experiment 12 as it will be run, written 2026-11-15 before the run
+
+Experiment 11 moved the lookup to the ask and found the ask then costs about what keeping nothing costs. Robert agreed on 2026-11-15 to test grouping before the lookup.
+
+**What changes.** All in `sketches/planner/`.
+
+- **A part stops at its first lookup by key.** When the part is made, it is run as far as that lookup and no further. A part that gets there is held waiting.
+- **Waiting parts are grouped.** The planner reads from Mo Core which fields of the row the part reads, leaving out the tests that chose the row. Two parts that agree on those fields must give the same value, so they share one kept entry with a count. For `bought` that is one entry for each product a customer bought. For the planted revenue it is one for each quantity of a product.
+- **An ask runs the rest once for each group.** It does the lookup and what follows over one row of the group. A number is multiplied by the count. A list is repeated that many times.
+- **A list is grouped only where its order cannot matter.** The rule: after the loop the list is sorted before any other use, with or without `unique` first. A number is always grouped. Where a list's order counts, each pair of rows is kept in order, as in experiment 11.
+- **So a part for one row is worth keeping again.** The planted revenue and buyers reads go back to kept.
+- **One new planted read**, `bought_in_order`, which gives a customer's product names in the order of their lines and does not sort. It must not be grouped.
+
+The other 40 reads, the writes and the comparison with real Mo are the same.
+
+**What Claude expects, and where it said too much.** Claude told Robert the revenue read should cost about two rows an ask. This design will not reach that. It groups rows that agree on every field the part reads, and the part reads the quantity. It does not know that quantity times price can be totalled before the price is known. So revenue should cost one entry for each quantity, 1 to 9, and a lookup for each. Totalling first is a further step and is not built.
+
+**Predictions, Claude:**
+
+1. On the first run that completes, at least one answer differs from Mo's: 45%. The grouping rests on two things read from Mo Core for the first time, the fields a part reads and whether order counts.
+2. Five reads wait at a lookup. `bought` from GPT and the reference are grouped by the line's product, the planted revenue by product and quantity, the planted buyers by the line's order, and the planted in-order read is not grouped. Classes over all 41 reads: kept 24, looked up 9: 80%.
+3. An ask of `bought` reads between 45 and 60 rows at 1,200 orders and between 23 and 32 at 300: 70%. That is under the 67.5 it cost kept whole, and far under the 161.5 of experiment 11. It grows less than 2.3 times between the sizes, because a customer cannot have more entries than there are products.
+4. An ask of the planted revenue reads between 14 and 20 rows at both sizes, and between 8 and 11 with a row looked up twice counted once: 75%. It was 248.4 in experiment 11 and 1.0 kept whole.
+5. An ask of the planted buyers at 1,200 orders reads between 330 and 372 rows, against 369.8: 70%. Grouping buys almost nothing here, because nearly every line of a product belongs to a different order.
+6. A write to products reads 0.0 rows at both sizes. Writes to lines and to orders stay within 1.3 times between the sizes, under 12 and under 28 rows. The mean over all writes at 1,200 orders is under 18: 70%. The new planted read adds its own upkeep, about 2 rows on a write to a line and 7 on a write to an order, so the figures sit a little above experiment 11.
+7. An ask of the planted in-order read at 1,200 orders reads between 150 and 175 rows, like `bought` in experiment 11: 75%.
+
+**Limits known before the run.**
+
+- The script counts one row for each group an ask reads. It finds the groups by counting the waiting parts at the ask. A real engine would keep the count with the entry.
+- At the ask the script runs the rest of a part over one whole row of the group. A real engine would keep only the fields that matter.
+- No totalling before the lookup, as said above.
+- Every lookup by key is treated alike. The script does not ask which lookup fans out.
+- A part that sometimes ends with something to add and no lookup is not handled. The script stops if it meets one.
+- The rule for order knows one shape, sorted before any other use. A list used in another way that does not lean on order is not grouped.
 
 ### Result of experiment 11, 2026-11-15
 
