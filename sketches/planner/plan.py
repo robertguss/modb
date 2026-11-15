@@ -182,6 +182,13 @@ def occurrences(node, name):
     return 1 if node == ["var", name] else sum(occurrences(child, name) for child in node)
 
 
+def looks_up(node):
+    """Whether this work reads a table by key."""
+    if isinstance(node, str) or not node:
+        return False
+    return node[0] == "prim" and node[1][0] == "map" and node[1][-1] == ["get"] or any(looks_up(child) for child in node)
+
+
 def loop_in(tail):
     """The pieces of a `for` loop that carries one running value, as Mo Core writes it, or None."""
     try:
@@ -198,7 +205,10 @@ def loop_in(tail):
 
 
 def cut_of(decl, found):
-    """Where a read splits into work done for each row of one table, which can be kept, and work on the whole."""
+    """Where a read splits into work done for each row of one table, which can be kept, and work on the whole.
+
+    A part does no lookup by key. When the work for a pair of rows holds one, the cut is `late`: the pair is kept and
+    the work runs when the read is asked. When the work for one row holds one, the index is all there is to keep."""
     if found["lost"]:
         return None
     shop, params = decl[2][0][0], [param[0] for param in decl[2][1:]]
@@ -292,5 +302,8 @@ def cut_of(decl, found):
              if occurrences(decl[4], name) > (occurrences(cut["post"], name) if cut["post"] else 0)}
     if not early <= set(bound):
         return None
-    return {**cut, "table": cut["driven"][0], "names": sorted(bound),
+    late = any(looks_up(work) for work in ([outer["step"]] if cut["node"] is None else [*cut["stages"], cut["node"]]))
+    if late and cut.get("inner") is None:
+        return None
+    return {**cut, "late": late, "table": cut["driven"][0], "names": sorted(bound),
             "fields": [bound[name] for name in sorted(bound)], "places": [params.index(name) for name in sorted(bound)]}

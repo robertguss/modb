@@ -144,11 +144,12 @@ class Machine:
     `cuts` maps a node to the cut it belongs to. In mode "part" a run stops at its cut and gives the value reached;
     in mode "whole" the cut gives what `whole` holds for it, and the calls in `skipped` are not run at all.
     `log`, when it is a set, collects what was read: a key, an index entry, whether an index entry has any row,
-    or all of a table."""
+    or all of a table. `again` counts lookups by key of a row already in `got`."""
 
     def __init__(self, funs, sites=None, recheck=True, order=1):
         self.funs, self.sites, self.recheck, self.order, self.touched = funs, sites or {}, recheck, order, 0
         self.cuts, self.skipped, self.mode, self.whole, self.log = {}, set(), None, None, None
+        self.got, self.again = set(), 0
 
     def noted(self, *entry):
         if self.log is not None:
@@ -255,6 +256,8 @@ class Machine:
                 return Rows(table)
             if what == "get":
                 self.touched += 1
+                self.again += (id(table), args[1]) in self.got
+                self.got.add((id(table), args[1]))
                 self.noted(table, "key", args[1])
                 return option(table.rows.get(args[1]))
             if what == "keys":
