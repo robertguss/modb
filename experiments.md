@@ -13,7 +13,7 @@ How this file works:
 
 ## Decision 1. How is a fast read enforced?
 
-**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8, 9, 10 and 11 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read.
+**Status:** open. Experiments 1, 4 and 5 ran on 2026-11-14; their results are below the table of experiments. Option D is closed as a gate. Robert chose option I as the direction on 2026-11-14, and on 2026-11-15 decided that a slow read is first made fast by keeping its answer, and refused only when that cannot be done. Experiments 8 to 12 tested it on 2026-11-15; their results are below. Robert also decided on 2026-11-15 that a write is held to the same rule as a read.
 
 **The idea it belongs to.** "Plain Mo is the query language", idea 1 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html): the compiler turns certain shapes of ordinary collection code into index lookups. Robert agreed on 2026-11-14 to try it with no new query syntax, and asked how the fast shapes are enforced.
 
@@ -216,6 +216,63 @@ The other 40 reads, the writes and the comparison with real Mo are the same.
 - Every lookup by key is treated alike. The script does not ask which lookup fans out.
 - A part that sometimes ends with something to add and no lookup is not handled. The script stops if it meets one.
 - The rule for order knows one shape, sorted before any other use. A list used in another way that does not lean on order is not grouped.
+
+### Result of experiment 12, 2026-11-15
+
+Run with `python3 sketches/planner/planner.py`. The full table is in [`sketches/planner/results/report-12.txt`](sketches/planner/results/report-12.txt). The script as it ran is at commit `0782258`.
+
+**What it shows.**
+
+- **Every answer matched Mo's, on the first run that completed.** 41 reads and 23,877 answers.
+- **The planner found the grouping from Mo Core alone.** It grouped `bought` by the line's product, the planted revenue by product and quantity, and the planted buyers by the line's order. It left the planted in-order read ungrouped. No new syntax was needed for these reads.
+- **Rows read by one ask at 1,200 orders, under each way of keeping:**
+
+| Read | Kept whole, experiment 10 | Lookup at the ask, experiment 11 | Grouped, experiment 12 | Nothing kept |
+| --- | --- | --- | --- | --- |
+| `bought`, GPT and reference | 67.5 | 161.5 | 51.5 | 189.0 |
+| planted revenue | 1.0 | 248.4 | 17.4, or 9.7 with a row looked up twice counted once | 248.4 |
+| planted buyers | 105.8 | 369.8 | 350.1 | 369.8 |
+
+- **Rows read for upkeep by one write, mean, at 1,200 orders:**
+
+| A write to | Kept whole, experiment 10 | Lookup at the ask, experiment 11 | Grouped, experiment 12 |
+| --- | --- | --- | --- |
+| lines | 10.9 | 5.5 | 8.5 |
+| orders | 25.0 | 16.1 | 20.1 |
+| customers | 191.1 | 31.7 | 31.7 |
+| products | 675.4 | 0.0 | 0.0 |
+| any table | 83.1 | 10.7 | 13.5 |
+
+Experiment 12 has one more kept read than experiment 11, the planted in-order read, and two reads kept again. That is why its writes to lines and orders sit a little higher.
+
+- **Grouping makes both sides cheap where the lookup key repeats.** A customer buys the same products again and again, so `bought` holds at most one entry for each product. At 1,200 orders it is cheaper to ask than the whole kept answer was, and a write to a product costs nothing. It grew 2.0 times between the sizes where the whole answer grew 4.1 times, and it cannot pass twice the number of products.
+- **Revenue fell from 248 rows to 17, not to 2.** It holds one entry for each quantity of a product, 1 to 9. The last step needs the planner to know that quantity times price can be totalled before the price is known. That is not built.
+- **Grouping does nothing where the key does not repeat.** The buyers read looks up an order from each line, and the lines of a product nearly all belong to different orders. The lookup that fans out there is the second one, of the customer. A part that kept through the order and waited at the customer would hold at most one entry for each customer. The script cannot do that: it waits at the first lookup.
+- **A list whose order counts cannot be grouped.** The planted in-order read costs what `bought` cost in experiment 11, 161.5 rows.
+
+**Predictions against the result.** All seven went as predicted.
+
+| Prediction | Result |
+| --- | --- |
+| 1. An answer differs from Mo's on the first complete run, 45% | Did not happen |
+| 2. Five reads wait at a lookup, grouped as named; kept 24, looked up 9, 80% | Held |
+| 3. `bought` between 45 and 60 rows at 1,200 orders and 23 and 32 at 300, growing under 2.3 times, 70% | Held: 51.5 and 26.1, 2.0 times |
+| 4. Revenue between 14 and 20 rows at both sizes, 8 to 11 counted once, 75% | Held: 17.0 and 17.4; 9.5 and 9.7 |
+| 5. Buyers between 330 and 372 rows at 1,200 orders, 70% | Held: 350.1 |
+| 6. Products 0.0; lines under 12 and orders under 28, both flat; mean at 1,200 orders under 18, 70% | Held: 8.5 and 8.5; 19.5 and 20.1; 13.5 |
+| 7. The in-order read between 150 and 175 rows at 1,200 orders, 75% | Held: 161.5 |
+
+The predictions of experiments 11 and 12 all held, and that says less than it seems. The script counts rows by fixed rules, so its costs can be worked out by hand before it runs. What the runs test is the part that cannot be worked out: that every answer is still Mo's, and that each control fails where it should.
+
+**Controls.** Grouping on no fields spoiled the four grouped reads and nothing else. Grouping the planted in-order read spoiled that read and nothing else. Lookups never done again spoiled the five reads that wait at a lookup and nothing else. The five controls of experiment 10 failed as before.
+
+**What it does not show.**
+
+- Whether real programs sort their lists as often as these do. Three of the four list reads here end in `unique` and `sort`, because the task asked for sorted names. Where a program wants its rows in table order, grouping is closed.
+- The rule for order knows one shape. A count, a set or a test for membership also does not lean on order, and none is recognised.
+- Which lookup to wait at. The script waits at the first. The buyers read needs the second.
+- Totalling before the lookup.
+- The limits written before the run stand, and so do those of experiments 8 to 11. The store still has about 40 customers and 25 products at both sizes.
 
 ### Result of experiment 11, 2026-11-15
 
@@ -536,6 +593,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **After experiment 9: keeping answers makes walks rare, and a write then needs a cost of its own.** The compiler can keep a join, and a read of it becomes cheap. The write that feeds it is then the slow part, and it can be slower than the walk it replaced. So the same rule that refuses an unmarked walk in a read should apply to a write: the compiler works out what a write must keep up, and a write whose upkeep grows with the store is an error unless the code says so. Claude holds this at 70%. What would move it: a way of adjusting a part in one step that covers the joins here, which would make the growth go away. Robert decided it on 2026-11-15: a write is held to the same rule as a read.
 - **After experiment 10: what the write rule must catch is a lookup that fans out.** Finer parts made writes to orders and lines flat. Writes to products and customers still grow, because one of their rows is read by a part for every line that refers to it. Claude sees three answers and has tested none: refuse the read as kept, stop keeping at the lookup and do it when asked, or do arithmetic on the kept value.
 - **After experiment 11: doing the lookup when asked is real and weak.** It made writes flat and cheap, 10.7 rows against 83.1. It made the four reads it touched cost about what keeping nothing costs. So it is a choice between who pays, and the compiler cannot make it, because it turns on how often a row changes against how often the read is asked. Claude's view, at 70%: keep the whole answer by default, report the write that grows, and let the code say which it wants. What would move it: grouping before the lookup, which should make both sides cheap for sums and for lists without repeats. That is untested.
+- **After experiment 12: grouping before the lookup works where the key repeats and order does not count, and the compiler can find it.** That moves the 70% above. Claude's view now, at 75%: where a part looks up another table, the compiler groups before the lookup when it can show order does not count, and keeps the whole answer otherwise. It reports what each write must keep up, in the terms it knows: one part for every line that names this product. A write whose upkeep is one part for each row that refers to the written row is the growing kind, and is an error unless the code says so. What is still open is small beside that: which lookup to wait at, totalling before a lookup, and more shapes that do not lean on order.
 - **The growth test as a check: closed by experiment 5.** Before it ran Claude gave it 15%.
 
 ## Decisions waiting for options and experiments
