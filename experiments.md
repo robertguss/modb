@@ -826,7 +826,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 ## Decision 2. Is the store a library written in Mo or part of the runtime?
 
-**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node.
+**Status:** open between S and R. Robert dropped L on 2026-11-16, after experiment 16. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node.
 
 **The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
 
@@ -838,7 +838,7 @@ Application code is the same under all three, because tables are part of the lan
 
 | | Option | Where it stands after the research panel |
 | --- | --- | --- |
-| L | Library. The whole store is Mo code over bytes at a place in a file and a hash. A service must be allowed to hold a capability | The stores still in wide use are libraries: SQLite, LMDB, Mnesia, Irmin. One capability for every disk step is what simulation testing wants. A pure library was also criticised for putting too much on the programmer |
+| L | **Dropped by Robert on 2026-11-16.** Library. The whole store is Mo code over bytes at a place in a file and a hash. A service must be allowed to hold a capability | The stores still in wide use are libraries: SQLite, LMDB, Mnesia, Irmin. One capability for every disk step is what simulation testing wants. A pure library was also criticised for putting too much on the programmer |
 | R | Runtime ("the store is the heap"). Large `Map`, `Set` and `List` values live on disk as trees of nodes named by hash, freed by counts | Weakened. The runtime's layout becomes a format kept for ever: PJama struggled with class evolution and was stopped, and Motoko needed a compatibility check at every upgrade. Counts kept on disk are fragile in Btrfs |
 | S | Split. The runtime gives collections whose copies share nodes, and reading and writing a node by name with a hash. The log, roots, holders, views kept current, history and erasure are Mo code on top | Strengthened. Earlier work split it this way more than once: "Bulk Types: Built-In or Add-On?" (1991), E, ANU-OPJ, Unison's storage abilities |
 
@@ -1082,9 +1082,8 @@ The Mo files were committed in `f2ffc51` before any run. Mo refused one line of 
 
 ### Where Claude stands, with what would move it
 
-- **S at 70%, L at 18%, R at 12%.** After experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
+- **S at 80%, R at 20%.** Robert dropped L on 2026-11-16, and its share went to the two in proportion, rounded. Before that, S at 70%, L at 18%, R at 12%, after experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
 - **Toward R:** Robert answers Q7 "any value" and Q9 "no".
-- **Toward L:** Robert answers Q9 "yes, and the format must be the library's own"; experiment 17 shows the sweep needs help the runtime cannot give.
 - **Toward S:** experiment 17 shows the sweep needs only a list of a node's children from the runtime.
 
 ## Decisions waiting for options and experiments
