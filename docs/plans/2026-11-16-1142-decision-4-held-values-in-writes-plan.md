@@ -93,8 +93,8 @@ All runs use the frozen Mo binary at `build/enforcement-trial/mo`. None writes t
 
 ## 6. Order, and where Robert decides
 
-1. **Robert accepts, changes or cuts this plan.**
-2. Write "Decision 4" in `experiments.md` in the shape of Decision 3. Move its line out of "Decisions waiting". Commit.
+1. **Robert accepts, changes or cuts this plan.** Accepted as written on 2026-11-16.
+2. Write "Decision 4" in `experiments.md` in the shape of Decision 3. Move its line out of "Decisions waiting". Commit. Done on 2026-11-16.
 3. **Optional research panel. Robert accepts or skips.** Claims about earlier work: what a reader gets after a key is destroyed in stores that replay events; whether workflow engines can replay a history whose payload can no longer be read; how "same email" is checked over values that are held apart; what the EU guidance says of a kept hash or token; how systems with labels on sensitive data choose their release functions. Claude recommends accepting, at 60%. Everything Claude knows about these is from memory and unchecked, and the panel for Decision 3 corrected five of 25 such claims and added a use nobody had listed. The reason to skip is cost.
 4. **Robert answers Q1:** what a run of the record must give after an erasure. This comes before the experiments because "another history is acceptable" makes option D enough, and experiment 21 then matters little.
 5. Experiment 21, then 20. Predictions are committed before each. Cheapest first.

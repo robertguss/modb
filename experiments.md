@@ -1447,9 +1447,87 @@ These rest on the reading and on argument. Nothing has been measured.
   - What is done with a run that is meant to differ. Experiment 18 says it is another history, not a repair.
   - Whether an entry also holds what its call changed.
 
+## Decision 4. May a write function open a held value?
+
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-16-1142-decision-4-held-values-in-writes-plan.md) on 2026-11-16. Nothing has been run.
+
+**The idea it belongs to.** "Absence as a type", idea 3 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html). A field typed `Held(T)` is kept in history as a reference. The bytes live in a vault outside the tree and the record, keyed by the person they belong to. Opening the field gives the value or `Erased`, and the compiler asks for both arms. Erasing a person deletes their vault entries and touches nothing else.
+
+**Robert has not accepted held values.** The ideation holds candidates. This decision takes them as the working answer and keeps one option that does without them.
+
+**What rests on it.** Erasing one person's data from every version, need 8 of `design.md` section 4. Decision 3 made it harder: the record of calls is kept for good and each entry holds the call's arguments and its reply. So a person's data sits in the old versions of the tree, in the arguments in the record, and in the replies in the record, and none of the three is thrown away.
+
+**The question.** A write that opens a held value and acts on it has put something of that value into the state. After the person is erased, running the record again gives a different state, or the state still holds what should be gone. Decision 3 already calls a run that is meant to differ "another history". So the question is whether a run may differ because of an erasure, without anyone having asked for that.
+
+### The options
+
+They run from the strictest to the loosest. Under each, code that only replies to a caller may open a held value.
+
+| | Option | What it gives | What it asks |
+| --- | --- | --- | --- |
+| A | **Never open.** A write function may store a held value, move it, copy it and drop it. It may not look inside | The state, and every run of the record, are the same before and after an erasure | Every check on the value happens at the door, before it is held. "Is this email taken" needs a token kept beside the reference. No write may act on what a personal value says, such as an age or a country |
+| B | **Facts at the door.** When a value is held, the program works out a few declared facts from it, such as "is an adult" or "which country". They are kept in the tree as ordinary data. Writes read the facts and never the value | A, and writes that act on the declared facts | Each fact is kept for good and is about the person. Someone must judge each one. A new fact is an upgrade |
+| C | **Tests, with the answer in the record.** A write may put a small test to a held value and get a yes, a no or `Erased`. The entry in the record keeps each answer. A run of the record uses the kept answer and does not open the value | Writes that act on a personal value. A run of the record gives the same state after an erasure | The kept answers are about the person and are never erased. A run through corrected code may put a test that has no kept answer |
+| D | **Open, and the `Erased` arm runs afterwards.** A write may open a held value. A run of the record after an erasure takes the `Erased` arm | Any write logic. Nothing worked out from the value is kept in the record | Every run after an erasure may differ from what happened, for other people too. What a write copied out of the value into the state stays there unless the types stop it |
+| E | **No held values.** A person is erased by taking every entry that holds their data out of the record and the tree, and running the rest again | Nothing new in the types | History is rewritten. Other callers' replies change. A person's data also sits in entries that other callers made |
+
+Two things the options do not settle alone:
+
+- **The token.** A token that says "same email" is worked out from the email. In EU law data replaced by a stand-in is still personal data ([deleting personal data from history](wiki/ideas/deleting-personal-data-from-history.md)). If the token is erased with the person, "is this email taken" gives a different answer in a later run, and option A no longer gives the same state. This is inference. Experiment 20 tests it.
+- **Replies.** The record keeps replies. A reply that shows an opened value would keep the bytes for good. So a reply in the record must hold the reference, under every option but E.
+
+### What is already settled
+
+Decided by Robert, in earlier decisions:
+
+- The record of calls is kept for good and can be run again through upgrades (Decision 3).
+- The record must be able to be run again with a different result on purpose. No run is promised to give the same result for ever (Decision 3, Q1 and Q6).
+- At landing every question the agent asked counts, by its answer (`design.md` section 7).
+
+From the experiments and the reading so far:
+
+- **An entry that can be run again holds the call's arguments, its caller and its reply** (experiment 18).
+- **A run with ten calls taken out changed the reply to 15 of the other 20 calls** (experiment 18). Option E is that run.
+- **Mo can already hide a type's insides.** `expose Order` gives the type without its fields, so code outside the module can only pass it to the module's functions (`~/code/mo/docs/reference/README.md`, section 10.2). Read only; experiment 20 tries it.
+- **Mo has nothing that says one function may open and another may not.** That is line 13 of `design.md` section 8.
+
+From earlier work, in the wiki and the two research panels:
+
+- **Every store that keeps history treats erasing as a second-class step** ([deleting personal data from history](wiki/ideas/deleting-personal-data-from-history.md)).
+- **Destroying a key is the usual answer for a kept history** ([panel of 2026-11-15](docs/plans/2026-11-15-storage-research-panel.md), row 23; only vendor pages were found).
+- **The EU board's guidance points to keeping personal data outside the record, by reference** (the same wiki page).
+- **Taking one event out of the middle of a kept log is heavy or lossy** ([panel of 2026-11-16](docs/plans/2026-11-16-log-replay-research-panel.md), rows 13 and 25).
+
+### What the experiments must decide
+
+Whether a run after an erasure differs under each option, and by how much (Q2), and how often a write needs what a personal value says (Q3). Robert answers what a run of the record must give after an erasure (Q1). Whether a kept token, fact or answer is still the person's data (Q4) is argued from the wiki and is Robert's. Whether the types can stop a write copying an opened value into the state (Q5) is argued, and experiment 20 shows what Mo refuses today.
+
+### The experiments
+
+The draft predictions come from the plan. Each experiment gets its own section with final predictions before it runs. Experiment 21 runs first, as the cheaper.
+
+| # | What is built or measured | The result that decides | Draft predictions | Control that must fail |
+| --- | --- | --- | --- | --- |
+| 20 | **A run of the record after an erasure.** A sketch in `sketches/held-values/` on the pattern of experiment 18. A held value is a type with hidden insides, and the vault is a map handed to the run. A story of about 30 calls by three people, with the writes written four times for options A to D. Each is run with a full vault, then with one person erased, then through corrected code that puts one new test. Option E is the same story with that person's entries taken out | The same state after erasure under A and C, with nothing of the person found, points to them. A change to other people's replies under D shows what D costs. A cannot be chosen as it stands if erasing the token changes a later reply | A with a kept token gives the same state and replies, at 85%. A with the token erased turns a later refusal into an acceptance, at 85%. C gives the same state in a faithful run, at 80%, and falls to `Erased` in the corrected-code run, at 75%. D changes at least one reply to another person, at 80%, and fewer than 5 of their replies, at 60%. Under E the erased bytes are still found in an entry another person made, at 90%. Today's Mo refuses code outside the module that reads a held value's insides, at 85%, and has no way to let a reply open while a write may not, at 80% | A write that copies the opened value into the state as plain text: the search must find the erased bytes. Erasing nobody must change nothing |
+| 21 | **What writes do with personal values.** A census of the 36 write functions agents wrote in experiment 14 (`sketches/write-trial/results/`, a shop with customers who have a name and a city). Each is sorted by what it does with a personal field: stores it, compares it for sameness, checks its form, or acts on what it says | Nearly all "stores it" or "compares for sameness" points to A. A fair share of "acts on what it says" points to C or D | Under one in five of the functions that touch a personal field do more than store it, at 60%. None acts on what the value says, at 55% | A planted function that branches on the city must be sorted as "acts on what it says" |
+
+**The limits, said now.** The story and the four sets of writes in experiment 20 are Claude's own. There is no real vault to compare with. The census in experiment 21 is one shop, written by agents who were told nothing about personal data.
+
+### Where Claude stands, with what would move it
+
+These rest on reading and on argument. Nothing has been measured.
+
+- **C at 35%, A at 25%, D at 25%, B at 10%, E at 5%.**
+- **For C:** it is the rule the design already has for an agent's world, where a question counts by its answer. A faithful run stays the same after an erasure.
+- **A write that opens a value can copy it into the state,** where erasing does not reach. So C and D are safe only if the types stop that, or if what comes out of the value is small.
+- **The token decides more than it looks.** If a kept token is the person's data, option A cannot check "is it taken" and stay the same after an erasure.
+- **The options can be mixed.** A could be the rule, with C for a write that declares its test.
+- **Toward D:** Robert answers Q1 with "another history is acceptable"; experiment 20 shows an erasure changes few replies.
+- **Toward A:** experiment 21 finds writes almost never need what a personal value says; Robert accepts a kept token.
+- **Away from C:** experiment 20 shows kept answers are useless to a run through corrected code; Robert counts a kept answer as the person's data.
+
 ## Decisions waiting for options and experiments
 
-These came out of the same ideation. None has an experiment designed.
+One is left from the same ideation. It has no experiment designed.
 
 - **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's. Experiment 17 bears on it too: with names by hash a write can give back a node that nothing reached, so a sweep that runs beside the writer must be told of every node written; with names by number it need not be.
-- **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.
