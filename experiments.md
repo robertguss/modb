@@ -1082,7 +1082,7 @@ The Mo files were committed in `f2ffc51` before any run. Mo refused one line of 
 
 ### Where Claude stands, with what would move it
 
-- **S at 80%, R at 20%.** Robert dropped L on 2026-11-16, and its share went to the two in proportion, rounded. Before that, S at 70%, L at 18%, R at 12%, after experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
+- **S at 85%, R at 15%.** Robert dropped L on 2026-11-16, and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
 - **Toward R:** Robert answers Q7 "any value" and Q9 "no".
 - **Toward S:** experiment 17 shows the sweep needs only a list of a node's children from the runtime.
 
