@@ -113,8 +113,8 @@ All runs use the frozen Mo binary at `build/enforcement-trial/mo`. None writes t
 4. **Robert answers Q1:** what must the record be able to do. Answered on 2026-11-16: be run again with a different result on purpose, which is taking a caller's work out or putting the state right after a bug fix. A whole rebuild with the same result is not asked for. This comes before the experiments because "being read is enough" makes experiment 18 unnecessary.
 5. Experiment 19, then 18. Predictions are committed before each. Cheapest first. Both were run on 2026-11-16; the results are in `experiments.md`.
 6. **Robert decides between A, B, C and D.** Claude gives a recommendation and a confidence then. Decided on 2026-11-16: D. Claude recommended D at 55%, without the promise that a run from the first call gives the same result for ever; whether that promise is part of it comes back with step 7.
-7. **Q9 of Decision 2 comes back, as Q6 here:** is the stored format freed by a rebuild, by writing the state out, or not at all for now. Robert decides.
-8. Bring `design.md` section 4, section 8 line 9 and section 9 into line. Commit. Done on 2026-11-16 for the decision in step 6, with sections 5 and 7 as well. Step 7's answer will change section 9 again.
+7. **Q9 of Decision 2 comes back, as Q6 here:** is the stored format freed by a rebuild, by writing the state out, or not at all for now. Robert decides. Decided on 2026-11-16: by writing the state out. Claude recommended it at 75%. So D carries no promise that a run from the first call gives the same result for ever.
+8. Bring `design.md` section 4, section 8 line 9 and section 9 into line. Commit. Done on 2026-11-16 for the decision in step 6, with sections 5 and 7 as well. Sections 4, 7 and 9 were changed again for step 7's answer.
 
 Robert can stop after any step. Each experiment stands alone.
 

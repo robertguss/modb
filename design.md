@@ -153,7 +153,7 @@ Section 5 has the rule and what it was tested on.
 
 **The record can be run again through upgrades** (decided by Robert on 2026-11-16, Decision 3 in `experiments.md`). Each call runs under its own version's code, and each upgrade's function runs in its place. Experiment 18 did this over three versions of a small program and matched real services. It was not tried with a tool whose arguments change, with a later build of Mo, or with an entry erased.
 
-Whether a run from the first call must give the same state for ever is not decided. Only that would let the tree be rebuilt from the record, and the stored format be changed that way.
+**The stored format is freed by writing the whole state out** in a form that does not depend on the layout, and reading it back (decided by Robert on 2026-11-16). It is not freed by a rebuild from the record. So nothing rests on a run from the first call giving the same state for ever, and that is not promised.
 
 Only the log entry has to reach the disk before a reply is sent.
 
@@ -349,9 +349,10 @@ An agent changes data only by calling the program's write functions, and only th
 - The data store is part of Mo's runtime, not a library written in Mo and not split between the two (2026-11-16, after experiments 15 to 17).
 - Any `Map`, `Set` or `List` in a service's state can live on disk and grow past memory. A version is kept while a value still refers to it (2026-11-16).
 - Nodes nothing refers to are freed by a sweep from the values the state holds, not by counts kept on disk (2026-11-16).
-- The stored format is not decided now. Stored data carries a format version number, and nothing is promised about a format that stays the same or that a tool outside Mo can read (2026-11-16).
+- Stored data carries a format version number, and nothing is promised about a format that stays the same or that a tool outside Mo can read (2026-11-16).
 - The record of calls must be able to be run again with a different result on purpose: one caller's work taken out, or the state put right after a bug is fixed. Rebuilding the whole state from the first call with the same result is not asked for (2026-11-16).
 - The record can be run through upgrades, with each version's code kept (2026-11-16, after experiments 18 and 19).
+- A change to the stored format is made by writing the whole state out in a form that does not depend on the layout, and reading it back. Not by a rebuild from the record (2026-11-16).
 - For the first version one operation runs at a time. This design asks to narrow that to one write at a time; he has not accepted the change.
 
 ## 8. What Mo must gain
@@ -383,7 +384,7 @@ Three smaller matters belong to Mo whatever is built on it. A map held in a reco
 ## 9. What this draft leaves open
 
 - **Whether Robert accepts it.** He has decided the order of its parts, the points in section 7 and the rule for reads and writes in section 5. He has not accepted the rest.
-- **What frees the stored format.** The runtime's layout is the stored format. It can be freed by a rebuild from the record, by writing the whole state out in a form that does not depend on the layout, or not at all for now. A rebuild needs every later build of Mo to give the same result for an old call, which nothing has tested.
+- **The form the state is written out in** when the stored format changes. Mo saves a snapshot today in a form that carries its own description. Nothing checked it against a state held as a tree on disk.
 - **What is done with a run that is meant to differ,** and whether an entry also holds what its call changed.
 - **What the record's runs were not tried with:** a tool whose arguments change between versions, a later build of Mo, code named by hash, handlers that use the time, and an entry erased.
 - **Views kept current and erasing,** inside the runtime. Neither has been sketched.

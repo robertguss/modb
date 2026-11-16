@@ -837,7 +837,7 @@ What it does not show: time. The run counted instructions and did not time the b
 - **The library option is dropped** (2026-11-16, after experiment 16).
 - **Any `Map`, `Set` or `List` in a service's state must be able to live on disk and grow past memory** (2026-11-16, Q7). Not only declared tables, and not any value at all. Tables are built on the same collection.
 - **The store is part of the runtime, R** (2026-11-16). Nodes nothing refers to are freed by a sweep, not by counts kept on disk. The log decision is taken up next.
-- **The stored format is not decided now** (2026-11-16, Q9). Nobody uses the store yet, so nothing is promised about a format that stays the same or that a tool outside Mo can read. One guard: stored data carries a format version number. The question comes back when the log decision below is made, or when the first data that must outlive a change to the runtime exists.
+- **The stored format is not decided now** (2026-11-16, Q9). Nobody uses the store yet, so nothing is promised about a format that stays the same or that a tool outside Mo can read. One guard: stored data carries a format version number. The question comes back when the log decision below is made, or when the first data that must outlive a change to the runtime exists. It came back as Q6 of Decision 3 and was answered the same day: a change of format is made by writing the state out and reading it back.
 
 ### The options
 
@@ -1140,7 +1140,7 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 
 ## Decision 3. Is the log of calls kept whole through a snapshot and an upgrade?
 
-**Status:** decided on 2026-11-16. Robert chose D: the record can be run through upgrades, with each version's code kept. What frees the stored format (Q6) is still his to answer. Robert accepted [the plan](docs/plans/2026-11-16-0238-decision-3-the-log-kept-whole-plan.md) on 2026-11-16. [A research panel](docs/plans/2026-11-16-log-replay-research-panel.md) ran first, then experiments 19 and 18.
+**Status:** decided on 2026-11-16. Robert chose D: the record can be run through upgrades, with each version's code kept. The stored format is freed by writing the state out, not by a rebuild (Q6). Robert accepted [the plan](docs/plans/2026-11-16-0238-decision-3-the-log-kept-whole-plan.md) on 2026-11-16. [A research panel](docs/plans/2026-11-16-log-replay-research-panel.md) ran first, then experiments 19 and 18.
 
 **The idea it belongs to.** "The log is the truth", idea 4 in `design-ideas.md` and idea 2 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html). `design.md` section 4 says the tree can be rebuilt from the log, and section 8 line 9 asks for "a log the program owns".
 
@@ -1192,6 +1192,7 @@ Three models checked 25 claims about earlier systems against pages fetched that 
 
 - **Q1, 2026-11-16: the record must be able to be run again with a different result on purpose.** That covers taking one caller's work out, and putting the state right after a bug is fixed. Being read is included. Rebuilding the whole state from the first call with the same result as before is not asked for.
 - **Option D, 2026-11-16, after experiments 19 and 18.** He was asked it in these words: "a record that can be run through upgrades, with each version's code kept". Claude had recommended D without its strongest promise, that a run from the first call gives the same result for ever. His answer was the one letter. So that promise is not recorded as decided either way, and it comes back with Q6, because a rebuild from the record is the one use that needs it.
+- **Q6, 2026-11-16: the stored format is freed by writing the whole state out in a form that does not depend on the layout, and reading it back.** Not by a rebuild from the record. Claude recommended it at 75% and Robert agreed. This answers Q9 of Decision 2. It follows that nothing rests on a run from the first call giving the same result for ever, so D does not carry that promise.
 
 What follows, as inference:
 
@@ -1442,8 +1443,7 @@ These rest on the reading and on argument. Nothing has been measured.
 - **What carried it:** his answer to Q1 asks for runs that reach back through an upgrade, because a bug fix is an upgrade. Experiment 18 made three such runs match real services with little kept. Experiment 19 found no cost in time that rules it out once the state is not encoded whole.
 - **Not tested, and still against D:** a later build of Mo giving the same result for an old call, a tool whose arguments change between versions, code named by hash, handlers that use the time, and erasing from the record.
 - **Still open under D:**
-  - What frees the stored format (Q6).
-  - Whether a run from the first call must give the same result for ever.
+  - The form the state is written out in. Mo's MOSV is such a form today; nothing checked it against a state held as a tree on disk.
   - What is done with a run that is meant to differ. Experiment 18 says it is another history, not a repair.
   - Whether an entry also holds what its call changed.
 
