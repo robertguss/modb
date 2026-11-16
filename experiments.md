@@ -1138,10 +1138,73 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 - **Where Claude stood at the end:** R at 65%, S at 35%. Before Robert's lean: S at 75%, R at 25%. Earlier: S at 80% and R at 20% after experiment 17; S at 85% and R at 15% when L was dropped; S at 70%, L at 18%, R at 12% after experiment 16; 65%, 20% and 15% after the reading of Mo; 60%, 25% and 15% after the research panel; 50%, 20% and 30% before it.
 - **Still open under R:** views kept current and erasing have not been sketched, and the runtime's layout is the stored format until the log decision says otherwise.
 
+## Decision 3. Is the log of calls kept whole through a snapshot and an upgrade?
+
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-16-0238-decision-3-the-log-kept-whole-plan.md) on 2026-11-16.
+
+**The idea it belongs to.** "The log is the truth", idea 4 in `design-ideas.md` and idea 2 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html). `design.md` section 4 says the tree can be rebuilt from the log, and section 8 line 9 asks for "a log the program owns".
+
+**What rests on it.** The stored format, Q9 of Decision 2, which Robert put off. The store is in the runtime, so the runtime's layout is the format on disk. If the whole state can be rebuilt from the log, that layout is free to change. If not, something else must carry the data across a change of layout.
+
+### The options
+
+Each holds everything in the one above it.
+
+| | Option | What it gives | What it asks |
+| --- | --- | --- | --- |
+| A | A tail only, as today. Calls are kept back to the last snapshot | Recovery after a crash | Nothing new |
+| B | A record that is read, not run. Every committed call is kept for good: the function's name, its arguments, the caller, the time, the code it ran under, and the root after | Audit | Room to grow, and an entry that names its function and its caller |
+| C | A record that can be run back to the last upgrade. Older versions' calls are a record only | B, and taking one caller's work out within one version of the program | B, and the first state of each version kept |
+| D | A record that can be run from the first call, with the code that ran each call and every upgrade's function run again in its place | C through every upgrade. The whole state can be rebuilt, so the stored format is free | C, and every past version of the code kept and runnable for ever, and every later runtime giving the same result for an old call |
+
+The stored format can be freed in two ways: by a rebuild from the record, which only D gives, or by writing the whole state out in a form that does not depend on the layout and reading it back, which works under every option. Mo already has such a form, MOSV.
+
+### What reading Mo settled, 2026-11-16
+
+Read in `~/code/mo` by a search agent; Claude checked five of its citations against the source.
+
+- **A snapshot is taken every 100 logged calls and deletes every log row in the same step** (`src/base/limits.h:365`, `src/host/store.c:471-476`). One snapshot is kept.
+- **A log row holds** the handler's number, the arrival time, the arguments, a checksum of the state the call produced, and a hash of the compiled program (`src/base/log-record.h:6-28`). It holds no function name, no caller and no state before.
+- **Calls that only read are not logged,** and neither is a call that returns an error.
+- **Recovery runs the handlers again** and compares the checksum. A row written under a different compiled program is refused (`src/vm/service.c:298`).
+- **An upgrade runs the tail under the old code, turns the old state into the new with one function, saves a snapshot and deletes the log** (`src/host/store-programs.c:304-312`).
+- **Mo keeps a record of each upgrade for good:** old and new source hashes, old and new types, and the function used (`store-programs.c:18-21`). It keeps the snapshots before the last two upgrades, up to 32 MiB.
+- **Saved values carry their own description,** and decoding refuses bytes whose description differs from the current type (`src/heap/saved.c:439-442`, `:552`). Old bytes can always be read for what they are.
+- **Mo's own plan says not to keep old rows in this log:** "never retain pre-snapshot rows in the recovery log, whose readers expect a post-snapshot tail", and history needs "a separate compatible archive if selected" (`docs/plans/2026-11-03-1704-feat-phase4-see-inside-plan.md:154`).
+
+What follows:
+
+- **The recovery tail and a kept record are two things.** Options B, C and D are about a separate record. The tail can stay as it is.
+- **Option B is closer than it looked.** What is missing is the function's name, the caller, and keeping the rows.
+- **A row names its code by a hash of the compiled program.** A new compiler would give the same source a new hash, so an entry that is to be run years later needs a name for its code that a new compiler does not change. Inference; nothing was run.
+
+### What the experiments must decide
+
+Whether a record can be run across an upgrade and what must be kept for it (Q2), and what keeping every call costs in bytes and in time to run it again (Q3). Robert answers what the record must be able to do (Q1), and afterwards what frees the stored format (Q6). Q4, a later runtime giving the same result, and Q5, erasing from the record, are argued in the plan and not tested.
+
+### The experiments
+
+The draft predictions come from the plan. Each experiment gets its own section with final predictions before it runs. Experiment 19 runs first, as the cheaper.
+
+| # | What is built or measured | The result that decides | Draft predictions | Control that must fail |
+| --- | --- | --- | --- | --- |
+| 18 | **Running a record across an upgrade.** A small service in three versions: the second changes what a handler does, the third changes the shape of the state. A rebuild runs each call with its own version's code and each upgrade function in its place, and is compared with a service really upgraded by the frozen `mo` | A rebuild that needs only each version's code and the upgrade functions means D is possible. Anything more is something Mo would have to keep | The rebuild gives the same state, at 75%. Three versions of one module must each be renamed to sit in one program, at 85%. The old types must be kept as well as the old code, at 80% | Running every call with the newest code must give a different state; leaving out an upgrade function must fail to compile or give a different state |
+| 19 | **What a kept record costs.** Bytes for each logged call and time to run each again, measured on Mo's own store and worked out for a million calls | Hours to run a million calls again points away from D as the way to change the stored format. Minutes leaves D open | A row for a call with small arguments is under 200 bytes, at 70%. A million calls run again in under five minutes, at 55% | A call that only reads must add no bytes; a call that returns an error must add none |
+
+### Where Claude stands, with what would move it
+
+These rest on the reading and on argument. Nothing has been measured.
+
+- **C at 40%, B at 30%, D at 20%, A at 10%.**
+- **Throwing calls away is the one choice here that cannot be undone,** so B is safer than A whatever else is decided.
+- **How far back the record can be run can be decided later,** if each entry holds enough from the start: the function's name, the arguments, the caller, the time, a name for the code that a new compiler does not change, and the root after.
+- **Toward D:** experiment 18 needs only the code of each version and the upgrade functions; experiment 19 shows a rebuild takes minutes; Robert wants taking a caller's work out to reach across upgrades.
+- **Toward B:** Robert answers Q1 with "being read is enough".
+- **Toward A:** nothing found so far.
+
 ## Decisions waiting for options and experiments
 
 These came out of the same ideation. None has an experiment designed.
 
-- **Does the log run unbroken through an upgrade?** Next, by Robert's decision of 2026-11-16. Idea 2. Today an upgrade deletes the log's tail. Decision 2's Q9 waits on this: if the log is kept whole, the tree can always be rebuilt from it and the format of a stored node is free to change; if it is not, the stored nodes are the only copy and their format matters. Today a snapshot also deletes the log.
 - **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's. Experiment 17 bears on it too: with names by hash a write can give back a node that nothing reached, so a sweep that runs beside the writer must be told of every node written; with names by number it need not be.
 - **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.
