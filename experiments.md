@@ -1258,6 +1258,65 @@ What does keeping every call cost: how many bytes a call takes in the log, and h
 - **The machine is shared.** Processor time is less disturbed by that than time on the clock, and both are reported.
 - **The frozen `mo` is a debug build** unless shown otherwise; ticket 11 used an optimised one. The result says which, and times from a debug build are an upper bound.
 
+### Result of experiment 19, 2026-11-16
+
+Run with `python3 sketches/log-cost/cost.py build/enforcement-trial/mo 1,1000,10000,50000 15`. The numbers are in `sketches/log-cost/results/cost-19.json`. The frozen `mo` is built without optimisation (`-O0`), so every time here is an upper bound. The load average was between 5 and 7 on 8 processors.
+
+**Bytes.** The same at every state size.
+
+| Call | Bytes in the log |
+| --- | --- |
+| `put` with a value of 7 bytes | 130 |
+| `put` with a value of 64 bytes | 187 |
+| `put` with a value of 1,000 bytes | 1,123 |
+
+A row is its arguments and 123 bytes more. The state takes 76 bytes for each row of 64 bytes (a snapshot of 50,000 rows is 3,800,086 bytes).
+
+**Time to run one call again.** Processor time of a start with 99 rows in the log, less a start with none, over 99. Medians of 15 starts.
+
+| Rows in the state | Start, no rows in the log | Start, 99 rows in the log | One call run again |
+| --- | --- | --- | --- |
+| 1 | 229 ms | 220 ms | not seen |
+| 1,000 | 233 ms | 663 ms | 4.3 ms |
+| 10,000 | 268 ms | 4,364 ms | 41 ms |
+| 50,000 | 426 ms | 21,098 ms | 209 ms |
+
+- **The part that grows is about 4.2 ms for every 1,000 rows of state.**
+- **The fixed part was not seen.** At 1 row the two medians differ by 9 ms the wrong way, inside the spread of either set. Resampling the 15 starts 20,000 times puts the difference under 17 ms at 97.5%, which is under 0.17 ms a call.
+
+**Worked out for a million calls with a value of 64 bytes.**
+
+| | Bytes | Time to run them all again |
+| --- | --- | --- |
+| The log | 187 MB | |
+| The state, if every call adds a row | 76 MB | |
+| As today's Mo does it, state held at 50,000 rows | | 58 hours |
+| The fixed part only | | under 3 minutes |
+
+**The predictions.**
+
+| # | Prediction | Result |
+| --- | --- | --- |
+| 1 | A row for a small call is under 200 bytes, 80% | Held: 130 |
+| 2 | 1,000 bytes of value make it 993 longer, 85% | Held: exactly 993 |
+| 3 | The row is the same length at any state size, 90% | Held |
+| 4 | The growing part is 0.3 to 0.9 ms for every 1,000 rows, 70% | **Failed: 4.2 ms** |
+| 5 | The fixed part is under 300 microseconds, 65% | Held as an upper bound only: under 170 |
+| 6 | The method can see the fixed part, 50% | **Failed** |
+| 7 | Today's Mo at 50,000 rows needs over five hours for a million calls, 75% | Held: 58 hours |
+| 8 | The log of a million calls is larger than the state they build, 75% | Held: 187 MB against 76 MB |
+
+**The controls.** Five calls to `get` added no row. Five calls to `refuse` were answered with an error and added no row. At 10,000 rows the start with 99 rows used 4,364 ms against 268 ms, so the method sees replay.
+
+**Why prediction 4 failed.** It came from ticket 11, which measured a live write on an optimised build. Two things differ here. Measured afterwards with `live.py` on the same unoptimised binary, a live `put` at 10,000 rows uses 21.7 ms of processor more than a `get`, which is 2.2 ms for every 1,000 rows against ticket 11's 0.65. So the build accounts for a factor of about 3. And a call run again in recovery costs about twice a live one (41 ms against 21.7 ms at 10,000 rows; 4.3 against 1.2 at 1,000). What recovery does that a live call does not was not looked for.
+
+**What it means for Decision 3.**
+
+- **Time does not rule out running a long record again, once the state is not encoded whole on every call.** That is the store Robert chose in Decision 2. With today's Mo it is ruled out: the time grows with the state on every call.
+- **This is the cost of taking one caller's work out as well,** since every call after the first one removed is run again.
+- **Bytes are the standing cost.** A log of calls is larger than the state it builds, by 2.5 times here when every call adds a row, and without limit when calls overwrite. An entry that also names its function, its caller and the root after would be longer.
+- **Not shown:** the fixed part itself, only a bound on it. A handler that does real work costs that work again.
+
 ### Experiment 18 as it will be run, written 2026-11-16 before any code
 
 Can a record of calls be run again across an upgrade, and what must be kept for it? Since Robert's answer to Q1 the runs that matter most are the two that are meant to give a different result: one caller's calls taken out, and old calls run through corrected code. The run that gives the same result is still made, because the other two are built on it.

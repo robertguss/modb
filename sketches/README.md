@@ -246,3 +246,16 @@ Two controls, each of which must fail and did:
 - `mo check` on `control-b-service.mo` gives E0104.
 
 What it does not show: any cost, a crash inside a write, names by hash, or a function value that captures the store.
+
+## log-cost
+
+Not a claim but a measurement, for experiment 19 in [experiments.md](../experiments.md): how many bytes a logged call takes in a Mo store, and how long a call takes to run again at recovery. The numbers and what they mean are in that experiment's result.
+
+`main.mo` is the service of `service-timing` with one more tool, `refuse`, which returns an error. The scripts write to `build/log-cost/`, which git ignores.
+
+```sh
+python3 sketches/log-cost/cost.py $MO 1,1000,10000,50000 15   # bytes of a log row; processor time of 15 starts with 0 and with 99 rows in the log
+python3 sketches/log-cost/live.py $MO 10000                   # processor time of a live put and get; run after cost.py at that size
+```
+
+`cost.py` kills the service to leave a known number of rows in the log, and reads the store's file from a copy. A start is timed until the service has answered one `get`.
