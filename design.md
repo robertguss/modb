@@ -6,6 +6,8 @@ On 2026-11-15 the rule for reads and writes was added to section 5, from experim
 
 On 2026-11-16 Robert decided that the data store is part of Mo's runtime, after experiments 15 to 17. Sections 2, 7, 8 and 9 were brought into line with it.
 
+The same day Robert decided that the record of calls can be run again through upgrades, after experiments 18 and 19. Sections 4, 5, 7, 8 and 9 were brought into line with it.
+
 Nothing here is decided unless it says "decided by Robert". The ideas come from [design-ideas.md](design-ideas.md), which keeps their history and the earlier work behind each. The measurements are evidence for the list of what Mo must gain. They do not shape the design.
 
 ## 1. What it is for
@@ -129,7 +131,7 @@ Section 5 has the rule and what it was tested on.
 4. **Survive a crash at any moment** with nothing half-written.
 5. **Find the differences between two versions** at a cost in proportion to the differences.
 6. **Find things without reading everything.**
-7. **Keep the log of calls for good.**
+7. **Keep the record of calls for good, and be able to run it again through upgrades.**
 8. **Forget on purpose:** free a version nobody holds, and erase one person's data from every version.
 9. **Let readers run while the writer writes.**
 
@@ -144,12 +146,16 @@ Section 5 has the rule and what it was tested on.
 | The order of writes | New nodes first, then the log entry forced to disk, then the root is switched. Nothing is ever overwritten | 4 |
 | Shared nodes | Two versions share every node that neither changed, and a shared node has the same name in both. Walking only where the names differ finds the differences | 5 |
 | Views kept current | A view is a function from the data to other data. An index and a saved answer are views. The store updates each one from the rows a write changed | 6 |
-| The log of calls | One file that only grows. Each entry names the function called, its arguments, its caller, and the root before and after | 7 |
-| Code stored by hash | Each write function is kept under the hash of its checked form, and a log entry names the function by that hash. An old call can then always be run again with the code that ran at the time | 7 |
+| The record of calls | Kept for good, apart from the short tail the runtime keeps to recover from a crash. Each entry names the function called, the code it ran under, its arguments, its caller, its reply, and the root before and after | 7 |
+| Code stored by hash | Each write function is kept under the hash of its checked form, and a log entry names the function by that hash. An old call can then always be run again with the code that ran at the time. Each version's types and each upgrade's function from old state to new are kept the same way, because a run through an upgrade needs them (experiment 18) | 7 |
 | Holders | A version is kept while the main line, an open world or the history policy holds its root. A node no kept version reaches is freed | 8 |
 | Readers on roots | A reader holds a root, which never changes, so it does not wait for the writer | 9 |
 
-The tree can be rebuilt from the log, because the same call always gives the same result. Only the log has to reach the disk before a reply is sent.
+**The record can be run again through upgrades** (decided by Robert on 2026-11-16, Decision 3 in `experiments.md`). Each call runs under its own version's code, and each upgrade's function runs in its place. Experiment 18 did this over three versions of a small program and matched real services. It was not tried with a tool whose arguments change, with a later build of Mo, or with an entry erased.
+
+Whether a run from the first call must give the same state for ever is not decided. Only that would let the tree be rebuilt from the record, and the stored format be changed that way.
+
+Only the log entry has to reach the disk before a reply is sent.
 
 **What it offers the database.** Seven operations, in plain words: read a row of a version; change a row, giving a new version; keep a version; list the rows of a version; list the differences between two versions; add an entry to the log; say which versions are still held.
 
@@ -196,7 +202,9 @@ A tree of this shape, written in Mo as it stands, kept a version for 778 bytes a
 
 **One query, start to finish.** It takes the current root and reads from it. The root never changes, so the query does not wait for a write and never sees half of one.
 
-**The log is the truth.** Audit is reading the log. Taking one caller's work out is replaying the log without its calls; the later calls that are then refused are the ones that depended on it.
+**The record is the truth.** Audit is reading it. Taking one caller's work out is running it again without that caller's calls. Putting the state right after a bug is fixed is running the old calls through the corrected code. Both reach back through upgrades.
+
+**Such a run gives another history, not a repair.** In experiment 18, taking 10 of 30 calls out changed the reply to 15 of the other 20: two calls that had been done were refused, and one that had been refused was done. What is done with the result is not designed. Claude's inference is that it is a proposal, with a list of the calls that changed, for someone to accept.
 
 **A change of shape is an upgrade of the program,** with a function from the old types to the new ones. Mo already upgrades a running service this way.
 
@@ -342,6 +350,8 @@ An agent changes data only by calling the program's write functions, and only th
 - Any `Map`, `Set` or `List` in a service's state can live on disk and grow past memory. A version is kept while a value still refers to it (2026-11-16).
 - Nodes nothing refers to are freed by a sweep from the values the state holds, not by counts kept on disk (2026-11-16).
 - The stored format is not decided now. Stored data carries a format version number, and nothing is promised about a format that stays the same or that a tool outside Mo can read (2026-11-16).
+- The record of calls must be able to be run again with a different result on purpose: one caller's work taken out, or the state put right after a bug is fixed. Rebuilding the whole state from the first call with the same result is not asked for (2026-11-16).
+- The record can be run through upgrades, with each version's code kept (2026-11-16, after experiments 18 and 19).
 - For the first version one operation runs at a time. This design asks to narrow that to one write at a time; he has not accepted the change.
 
 ## 8. What Mo must gain
@@ -358,7 +368,7 @@ Each line is an ability other programs would also use, which is Robert's test fo
 | 6 | Run reads while a write runs | Base | Queries, read programs and worlds, which hold a root that never changes | Any service with slow reads | One operation at a time. A read waited 91 ms behind writes |
 | 7 | Accept a caller's program while running, check it, and run it holding only what the caller holds | Layer | Read programs and proposals | Plug-ins, rules a user writes, any service that is extended while it runs | New code arrives only by upgrading the whole service. `mo query` runs a caller's function on a copy that takes 28 seconds to fetch at 50,000 rows |
 | 8 | Tell callers apart, and hand a caller a grant that can be narrowed | Layer | Grants, helpers, the accountable write | Any service with more than one user | One token for a whole service |
-| 9 | Keep a log the program owns, with reads in it | Both | History, audit and replay in the base; asking again in the layer | Any service that must show what happened | A read is not logged, and a snapshot deletes the log |
+| 9 | Keep a record of every call for good, with reads in it, and keep each version's code, types and upgrade functions so that an old call can be run again | Both | History, audit, and runs with a caller taken out or a bug put right in the base; asking again in the layer | Any service that must show what happened, or put right what a bug did | A read is not logged, a snapshot deletes the log and an upgrade deletes its tail. A row names its handler by number, names its code by a hash of the compiled program, and holds no caller. A logged call takes its arguments and 123 bytes (experiment 19) |
 | 10 | Check a promise when a write lands, not only in a test | Base | Rules written once | Any service with a rule that must always hold | A promise is checked by `mo test` only, so a rule is written twice |
 | 11 | Simulate a disk that tears, loses and corrupts writes, and many callers at once | Base | Checking the store and the landing rule | Any program that writes files | Simulation has neither |
 | 12 | Take and give more than a few kilobytes in one request | Layer | Read programs and their answers | Any service that moves documents | A request is at most 16 KiB and a reply 32 KiB |
@@ -373,7 +383,9 @@ Three smaller matters belong to Mo whatever is built on it. A map held in a reco
 ## 9. What this draft leaves open
 
 - **Whether Robert accepts it.** He has decided the order of its parts, the points in section 7 and the rule for reads and writes in section 5. He has not accepted the rest.
-- **Whether the log runs unbroken through a snapshot and an upgrade.** Today a snapshot deletes the log and an upgrade deletes its tail. With the store in the runtime, the runtime's layout is the stored format, and a log kept whole is what lets that layout change later. This is the next decision.
+- **What frees the stored format.** The runtime's layout is the stored format. It can be freed by a rebuild from the record, by writing the whole state out in a form that does not depend on the layout, or not at all for now. A rebuild needs every later build of Mo to give the same result for an old call, which nothing has tested.
+- **What is done with a run that is meant to differ,** and whether an entry also holds what its call changed.
+- **What the record's runs were not tried with:** a tool whose arguments change between versions, a later build of Mo, code named by hash, handlers that use the time, and an entry erased.
 - **Views kept current and erasing,** inside the runtime. Neither has been sketched.
 - **Names by hash or by number.** Hashes let anyone check history and compare versions. Numbers are cheaper and do not fight erasing. With hashes, a sweep that runs beside the writer must be told of every node written while it runs (experiment 17).
 - **Which real data goes in first.** [What real data of yours goes in first?](issues/12-what-real-data-goes-in-first.md) was closed unanswered.
