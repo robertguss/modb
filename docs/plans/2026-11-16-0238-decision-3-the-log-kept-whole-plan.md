@@ -110,7 +110,7 @@ All runs use the frozen Mo binary at `build/enforcement-trial/mo`. None writes t
 1. **Robert accepts, changes or cuts this plan.**
 2. Write "Decision 3" in `experiments.md` in the shape of Decision 2. Move its line out of "Decisions waiting". Commit.
 3. **Optional research panel. Robert accepts or skips.** Robert accepted on 2026-11-16 and it was run; see section 3. Claims about earlier work on running a history again after the code changed: how workflow engines version code that is replayed, how stores that keep events read old ones, how other durable runtimes upgrade a running program, and what stores that keep a log as the truth do at a change of format. Claude recommends accepting, at 60%. Everything Claude knows about these is from memory and unchecked, and the panel on Decision 2 refuted two of 31 such claims, one of them in part. The reason to skip is cost, and that experiment 18 tests the central point directly.
-4. **Robert answers Q1:** what must the record be able to do. This comes before the experiments because "being read is enough" makes experiment 18 unnecessary.
+4. **Robert answers Q1:** what must the record be able to do. Answered on 2026-11-16: be run again with a different result on purpose, which is taking a caller's work out or putting the state right after a bug fix. A whole rebuild with the same result is not asked for. This comes before the experiments because "being read is enough" makes experiment 18 unnecessary.
 5. Experiment 19, then 18. Predictions are committed before each. Cheapest first.
 6. **Robert decides between A, B, C and D.** Claude gives a recommendation and a confidence then.
 7. **Q9 of Decision 2 comes back, as Q6 here:** is the stored format freed by a rebuild, by writing the state out, or not at all for now. Robert decides.
@@ -138,6 +138,8 @@ What would move it:
 - **Toward D:** experiment 18 needs only the code of each version and the upgrade functions; experiment 19 shows a rebuild takes minutes; Robert wants taking a caller's work out to reach across upgrades.
 - **Toward B:** Robert answers Q1 with "being read is enough".
 - **Toward A:** nothing found so far.
+
+**After Robert's answer to Q1: C 60%, D 30%, B 7%, A 3%.** The answer asks for a record that can be run, which A and B do not give.
 
 **After the panel, 2026-11-16: C 40%, B 35%, D 15%, A 10%.** D went down because the engines that do what D does drop old code when its runs end, and the one system that keeps it for good is moving away. B went up because a record kept to be read is the well-worn way. Still nothing measured.
 

@@ -1188,6 +1188,17 @@ Three models checked 25 claims about earlier systems against pages fetched that 
 - **Records kept whole hold what was decided. Logs of calls are kept only to the next snapshot.** Mo's log holds calls. Inference: an entry could also hold what its call changed, and a record of changes can be rebuilt from with no old code.
 - **A use the plan did not list:** running old calls through corrected code on purpose, so a fixed bug also puts the state right. It is added to Q1.
 
+### Decided by Robert
+
+- **Q1, 2026-11-16: the record must be able to be run again with a different result on purpose.** That covers taking one caller's work out, and putting the state right after a bug is fixed. Being read is included. Rebuilding the whole state from the first call with the same result as before is not asked for.
+
+What follows, as inference:
+
+- **A and B are not enough.** A keeps no record. B keeps one that is only read.
+- **The choice left is how far back a run must reach:** to the last upgrade (C), or through upgrades (D, or something short of it).
+- **A run that is meant to differ cannot be checked by the row's checksum.** A later call may also fail, or do something else, once an earlier call is gone. What happens then is open.
+- **Putting the state right after a bug fix runs old calls through new code.** It needs the old calls' arguments to be readable by the new code, and the state from before those calls. It does not need the old code.
+
 ### What the experiments must decide
 
 Whether a record can be run across an upgrade and what must be kept for it (Q2), and what keeping every call costs in bytes and in time to run it again (Q3). Robert answers what the record must be able to do (Q1), and afterwards what frees the stored format (Q6). Q4, a later runtime giving the same result, and Q5, erasing from the record, are argued in the plan and not tested.
@@ -1212,6 +1223,7 @@ These rest on the reading and on argument. Nothing has been measured.
 - **Toward B:** Robert answers Q1 with "being read is enough".
 - **Toward A:** nothing found so far.
 - **After the panel, 2026-11-16: C at 40%, B at 35%, D at 15%, A at 10%.** The engines that do what D does drop old code when its runs end. Nothing measured yet.
+- **After Robert's answer to Q1: C at 60%, D at 30%, B at 7%, A at 3%.** The answer asks for a record that can be run, which A and B do not give. Whether a run must reach through an upgrade is what separates C from D, and experiment 18 is where that is tried.
 
 ## Decisions waiting for options and experiments
 
