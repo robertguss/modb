@@ -1449,7 +1449,7 @@ These rest on the reading and on argument. Nothing has been measured.
 
 ## Decision 4. May a write function open a held value?
 
-**Status:** open. Robert accepted [the plan](docs/plans/2026-11-16-1142-decision-4-held-values-in-writes-plan.md) on 2026-11-16. Nothing has been run.
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-16-1142-decision-4-held-values-in-writes-plan.md) on 2026-11-16. [A research panel](docs/plans/2026-11-16-held-values-research-panel.md) ran the same day. No experiment has been run.
 
 **The idea it belongs to.** "Absence as a type", idea 3 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html). A field typed `Held(T)` is kept in history as a reference. The bytes live in a vault outside the tree and the record, keyed by the person they belong to. Opening the field gives the value or `Erased`, and the compiler asks for both arms. Erasing a person deletes their vault entries and touches nothing else.
 
@@ -1498,6 +1498,22 @@ From earlier work, in the wiki and the two research panels:
 - **The EU board's guidance points to keeping personal data outside the record, by reference** (the same wiki page).
 - **Taking one event out of the middle of a kept log is heavy or lossy** ([panel of 2026-11-16](docs/plans/2026-11-16-log-replay-research-panel.md), rows 13 and 25).
 
+### What the research panel settled, 2026-11-16
+
+Three models checked 27 claims about earlier systems against pages fetched that day; [the record](docs/plans/2026-11-16-held-values-research-panel.md) has a quote for each. 20 were confirmed, five were confirmed in part, and two were refuted in part.
+
+- **A held value is not new.** The pattern was written down in 2019, and two libraries put the two cases in a type: a Rust library that holds the value apart and gives back an option, and a platform whose field reads as `Present` or `Erased`. Claude's claim that nobody had built such a type was refuted in part. None of them has a rule that a write may not open one while a reply may.
+- **In use today, code reads the erased case afterwards.** Every library checked gives a stand-in or an "erased" case and carries on. That is option D for reading. None promises that the record can be run again with the same result.
+- **Engines that do run a record again keep the answer.** They never work a result out twice, and a payload they cannot read stops the run. That is the move option C makes.
+- **"Is this email taken" is checked outside the record everywhere,** in a table that can be changed. The one platform that keeps tokens drops a person's tokens at erasure. So a later run gets a different answer unless the first answer was kept. This supports the worry about option A; experiment 20 still has to show it.
+- **A kept token is the person's data for whoever can still link it.** The EU court said so in 2025, and the EU board's final guidance of July 2026 says a keyed hash stops being linkable only once its secret is deleted. A token that says "same email" across people needs a secret they share. Inference: such a token must go at erasure.
+- **The types can stop a copy, in part.** The Rust library's opened reference cannot be written back into stored data. This bears on Q5.
+- **Two systems refuse new data for a person once erased.** The plan did not have this.
+- **Option E has no earlier example.** Systems mask or delete entries. None runs the rest again.
+- **Not settled:** whether a kept yes or no about a person, or a kept fact, is still that person's data. Nothing found speaks to it.
+
+What it changes in experiment 20, to be written into its final predictions: the "is it taken" check is a lookup kept outside the record, as earlier systems do it, and the story gains a call that writes new data for a person already erased.
+
 ### What the experiments must decide
 
 Whether a run after an erasure differs under each option, and by how much (Q2), and how often a write needs what a personal value says (Q3). Robert answers what a run of the record must give after an erasure (Q1). Whether a kept token, fact or answer is still the person's data (Q4) is argued from the wiki and is Robert's. Whether the types can stop a write copying an opened value into the state (Q5) is argued, and experiment 20 shows what Mo refuses today.
@@ -1525,6 +1541,7 @@ These rest on reading and on argument. Nothing has been measured.
 - **Toward D:** Robert answers Q1 with "another history is acceptable"; experiment 20 shows an erasure changes few replies.
 - **Toward A:** experiment 21 finds writes almost never need what a personal value says; Robert accepts a kept token.
 - **Away from C:** experiment 20 shows kept answers are useless to a run through corrected code; Robert counts a kept answer as the person's data.
+- **After the panel, 2026-11-16: C at 40%, D at 25%, A at 20%, B at 10%, E at 5%.** The systems that run a record again keep the answer, which is C. The "is it taken" check sits outside the record in every system found, which weakens A alone. D is what libraries do today for reading, but none of them promises a run of the record. Nothing measured yet.
 
 ## Decisions waiting for options and experiments
 
