@@ -58,3 +58,9 @@ Ticket [10](../issues/10-one-comparison-across-families.md). Read the overview, 
 
 - New page: [comparisons/families](comparisons/families.md): one table of the ten families; 50 borrowable ideas ranked by how many of the overview's nine gaps each helps close (the ranking is inference); 15 pairs or groups that cannot be combined; the nine gaps plus two from idea pages; and what the wiki cannot settle.
 - Updated: [index](index.md) (new Comparisons group), [overview](overview.md) (link to the comparison).
+
+## [2026-11-16] lint | A keyed hash after its secret is deleted
+
+A research panel for Decision 4 (`docs/plans/2026-11-16-held-values-research-panel.md`) fetched the EU board's final blockchain guidelines. Paragraph 52 narrows a claim on one page.
+
+- Updated: [ideas/deleting-personal-data-from-history](ideas/deleting-personal-data-from-history.md): a keyed hash stops being linkable once its secret is deleted, with the board's conditions.
