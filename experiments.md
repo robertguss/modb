@@ -1080,6 +1080,14 @@ The Mo files were committed in `f2ffc51` before any run. Mo refused one line of 
 - Anything about cost. Backend A is a `Map` saved whole.
 - A crash inside a write, names by hash, or more than one writer.
 
+### Experiment 17 as it will be run, written 2026-11-16 before the model
+
+The predictions are in [models/sweep-predictions.md](models/sweep-predictions.md), written before `models/Sweep.tla` exists. The model has four switches and 32 settings.
+
+- **What is new since the plan.** Two things Claude thought of while writing the predictions. Recovery runs the logged writes again from the snapshot's root, so a sweep that frees that root's nodes may break recovery. And with names by hash, a write can give back a node that nothing reached, which a sweep running beside it may then free.
+- **The plan's two controls stay:** switching the root before the log is forced, and a sweep that ignores a write not yet landed.
+- **Since Robert dropped L,** the result bears on S against R: can the sweep be a call written in Mo, or does it need the runtime to tell it of every node written while it runs.
+
 ### Where Claude stands, with what would move it
 
 - **S at 85%, R at 15%.** Robert dropped L on 2026-11-16, and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
