@@ -4,6 +4,8 @@ Claude's draft of 2026-11-14, written at Robert's request after his steer that t
 
 On 2026-11-15 the rule for reads and writes was added to section 5, from experiments 8 to 12 in [experiments.md](experiments.md). Sections 3, 7, 8 and 9 were brought into line with it. Robert accepted the rule the same day, after experiments 13 and 14.
 
+On 2026-11-16 Robert decided that the data store is part of Mo's runtime, after experiments 15 to 17. Sections 2, 7, 8 and 9 were brought into line with it.
+
 Nothing here is decided unless it says "decided by Robert". The ideas come from [design-ideas.md](design-ideas.md), which keeps their history and the earlier work behind each. The measurements are evidence for the list of what Mo must gain. They do not shape the design.
 
 ## 1. What it is for
@@ -35,7 +37,7 @@ part of the program               not part of the program
 THE DATABASE     tables, indexes, write functions run whole, promises, the log of calls
         |        asks the store for: a version, a row, a change, the differences between two versions
 THE DATA STORE   a tree of nodes written once, roots, the log on disk, views kept current, freeing
-        |        asks Mo for: bytes at a place in a file, forced to disk, and a hash
+        |        part of Mo's runtime: a Map, Set or List in a service's state is stored this way
 MO               the language, the runtime, capabilities
 ```
 
@@ -336,6 +338,10 @@ An agent changes data only by calling the program's write functions, and only th
 - A slow read is first made fast by keeping its answer, and refused only when that cannot be done (2026-11-15).
 - A write is held to the same rule as a read (2026-11-15).
 - The rule for reads and writes in section 5, with the decisions on point 6 listed there (2026-11-15).
+- The data store is part of Mo's runtime, not a library written in Mo and not split between the two (2026-11-16, after experiments 15 to 17).
+- Any `Map`, `Set` or `List` in a service's state can live on disk and grow past memory. A version is kept while a value still refers to it (2026-11-16).
+- Nodes nothing refers to are freed by a sweep from the values the state holds, not by counts kept on disk (2026-11-16).
+- The stored format is not decided now. Stored data carries a format version number, and nothing is promised about a format that stays the same or that a tool outside Mo can read (2026-11-16).
 - For the first version one operation runs at a time. This design asks to narrow that to one write at a time; he has not accepted the change.
 
 ## 8. What Mo must gain
@@ -344,9 +350,9 @@ Each line is an ability other programs would also use, which is Robert's test fo
 
 | # | Mo must be able to | For | The design uses it for | Who else would use it | Mo today |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Write bytes at a place in a file, read from a place, force them to disk, and rename a file | Base | The store's own file and log | Any program that keeps data: logs, caches, downloads | A file is read whole. Text can be written whole or added at the end. Bytes cannot be written, and there is no reading or writing at a place, no forcing to disk and no renaming |
-| 2 | Hash bytes | Base | Naming nodes and code | Checksums, finding duplicates, signatures | No such function |
-| 3 | Let a service keep data outside its one saved state | Base | The store, held by the program that uses it | Any service whose data grows, such as Mo's task queue | The whole state is re-saved on every write: 17 ms plus 0.66 ms for every 1,000 small rows, and writes stop at about 125,000 rows. A service's state and handlers may hold no capability |
+| 1 | Write bytes at a place in a file, read from a place, force them to disk, and rename a file | Base | Nothing since 2026-11-16: the runtime keeps the store's file and log itself | Any program that keeps data: logs, caches, downloads | A file is read whole. Text can be written whole or added at the end. Bytes cannot be written, and there is no reading or writing at a place, no forcing to disk and no renaming |
+| 2 | Hash bytes | Base | Naming code. Nodes are named inside the runtime | Checksums, finding duplicates, signatures | No such function |
+| 3 | Keep a large `Map`, `Set` or `List` in a service's state on disk, reading and writing only the nodes a call touches | Base | The store, which is the runtime's | Any service whose data grows, such as Mo's task queue | The whole state is re-saved on every write: 17 ms plus 0.66 ms for every 1,000 small rows, and writes stop at about 125,000 rows. A service's state and handlers may hold no capability |
 | 4 | Keep a large collection whose copies share what did not change | Base | The tree | Undo, snapshots, any program that keeps old states | A `Map` is one block and a changed copy is a whole copy. Written as a library, an insert took 33 times a `Map` insert |
 | 5 | Give a call the work it needs, set by the service, and refuse a call without counting it against the service | Layer | Read programs and landings of any size | Any service with one slow tool | A fixed 1,048,576 instructions, about 26 ms. Fifteen refused calls, five to a minute, stop the service |
 | 6 | Run reads while a write runs | Base | Queries, read programs and worlds, which hold a root that never changes | Any service with slow reads | One operation at a time. A read waited 91 ms behind writes |
@@ -362,13 +368,14 @@ Each line is an ability other programs would also use, which is Robert's test fo
 
 Three smaller matters belong to Mo whatever is built on it. A map held in a record is copied every time it changes. Every call spends about 10 ms in the layer that reads the request. The child process that compiles arriving code runs with the server's own access.
 
-**The order Claude would take them in.** Lines 1 to 4 are the data store, and nothing else can be built without them. Lines 6, 9, 10, 11, 14 and 15 finish the base. Lines 5, 7, 8, 12 and 13 are the layer for outside callers.
+**The order Claude would take them in.** Lines 3 and 4 are the data store, and nothing else can be built without them. Line 1 is no longer asked for by the store, and line 2 only for naming code. Lines 6, 9, 10, 11, 14 and 15 finish the base. Lines 5, 7, 8, 12 and 13 are the layer for outside callers.
 
 ## 9. What this draft leaves open
 
 - **Whether Robert accepts it.** He has decided the order of its parts, the points in section 7 and the rule for reads and writes in section 5. He has not accepted the rest.
-- **Library or runtime.** The store can be a library written in Mo, where every step that touches the disk is visible and can be simulated, or part of the runtime, where any value can live on disk. Line 3 above is where that is chosen. Claude leans to the library.
-- **Names by hash or by number.** Hashes let anyone check history and compare versions. Numbers are cheaper and do not fight erasing.
+- **Whether the log runs unbroken through a snapshot and an upgrade.** Today a snapshot deletes the log and an upgrade deletes its tail. With the store in the runtime, the runtime's layout is the stored format, and a log kept whole is what lets that layout change later. This is the next decision.
+- **Views kept current and erasing,** inside the runtime. Neither has been sketched.
+- **Names by hash or by number.** Hashes let anyone check history and compare versions. Numbers are cheaper and do not fight erasing. With hashes, a sweep that runs beside the writer must be told of every node written while it runs (experiment 17).
 - **Which real data goes in first.** [What real data of yours goes in first?](issues/12-what-real-data-goes-in-first.md) was closed unanswered.
 - **Where this sits beside Phases 6 to 8** of Mo. [Does Phase 6 finish before database work starts?](issues/13-does-phase-6-finish-first.md) was closed unanswered.
 - **Whether building starts.** [The map](map.md) that led here said no database code and no change to Mo was part of it. Robert stopped that map on 2026-11-14. Whether the next effort builds any line of the table is his decision.

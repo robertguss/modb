@@ -826,7 +826,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 ## Decision 2. Is the store a library written in Mo or part of the runtime?
 
-**Status:** open between S and R. Robert dropped L on 2026-11-16, after experiment 16. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node. Experiment 17 ran the same day: a sweep run as a Mo call is safe, but it must keep the root recovery starts from, and a sweep in the background with names by hash needs the runtime.
+**Status:** decided on 2026-11-16. The store is part of Mo's runtime (R). Robert dropped L after experiment 16 and chose R over S after experiment 17. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node. Experiment 17 ran the same day: a sweep run as a Mo call is safe, but it must keep the root recovery starts from, and a sweep in the background with names by hash needs the runtime.
 
 **The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
 
@@ -836,6 +836,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 - **The library option is dropped** (2026-11-16, after experiment 16).
 - **Any `Map`, `Set` or `List` in a service's state must be able to live on disk and grow past memory** (2026-11-16, Q7). Not only declared tables, and not any value at all. Tables are built on the same collection.
+- **The store is part of the runtime, R** (2026-11-16). Nodes nothing refers to are freed by a sweep, not by counts kept on disk. The log decision is taken up next.
 - **The stored format is not decided now** (2026-11-16, Q9). Nobody uses the store yet, so nothing is promised about a format that stays the same or that a tool outside Mo can read. One guard: stored data carries a format version number. The question comes back when the log decision below is made, or when the first data that must outlive a change to the runtime exists.
 
 ### The options
@@ -845,8 +846,8 @@ Application code is the same under all three, because tables are part of the lan
 | | Option | Where it stands after the research panel |
 | --- | --- | --- |
 | L | **Dropped by Robert on 2026-11-16.** Library. The whole store is Mo code over bytes at a place in a file and a hash. A service must be allowed to hold a capability | The stores still in wide use are libraries: SQLite, LMDB, Mnesia, Irmin. One capability for every disk step is what simulation testing wants. A pure library was also criticised for putting too much on the programmer |
-| R | Runtime ("the store is the heap"). Large `Map`, `Set` and `List` values live on disk as trees of nodes named by hash, freed by counts | Weakened. The runtime's layout becomes a format kept for ever: PJama struggled with class evolution and was stopped, and Motoko needed a compatibility check at every upgrade. Counts kept on disk are fragile in Btrfs |
-| S | Split. The runtime gives collections whose copies share nodes, and reading and writing a node by name with a hash. The log, roots, holders, views kept current, history and erasure are Mo code on top | Strengthened. Earlier work split it this way more than once: "Bulk Types: Built-In or Add-On?" (1991), E, ANU-OPJ, Unison's storage abilities |
+| R | **Chosen by Robert on 2026-11-16.** Runtime ("the store is the heap"). Large `Map`, `Set` and `List` values live on disk as trees of nodes named by hash, freed by counts | Weakened. The runtime's layout becomes a format kept for ever: PJama struggled with class evolution and was stopped, and Motoko needed a compatibility check at every upgrade. Counts kept on disk are fragile in Btrfs |
+| S | **Not chosen.** Split. The runtime gives collections whose copies share nodes, and reading and writing a node by name with a hash. The log, roots, holders, views kept current, history and erasure are Mo code on top | Strengthened. Earlier work split it this way more than once: "Bulk Types: Built-In or Add-On?" (1991), E, ANU-OPJ, Unison's storage abilities |
 
 ### What earlier work settled without an experiment
 
@@ -1127,18 +1128,20 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 - A node that was written but lost because it was not forced to disk.
 - Anything about the cost of a sweep that stops the writer.
 
-### Where Claude stands, with what would move it
+### How it was decided, 2026-11-16
 
-- **S at 75%, R at 25%.** After Robert put Q9 off on 2026-11-16. Before that, S at 80% and R at 20%, after experiment 17: the sweep is safe as a Mo call, but a sweep in the background with names by hash needs the runtime, and every sweep needs a root only the runtime knows. One piece of the policy moves into the runtime; the rest holds. Before it, S at 85% and R at 15%, when Robert dropped L on 2026-11-16 and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
-- **Q7 is answered and moves nothing:** collections in a service's state, which both S and R give.
-- **Q9 is put off, and that takes one reason for S away.** A format defined apart from the runtime pointed to S. What is left for S is experiment 16, and Robert's own test: policy written in Mo is easier to change than policy inside the runtime, and application code is the same under both.
-- **Toward R:** more of the policy turns out to need what only the runtime knows, as the sweep did.
-- **Toward S:** the roots, the holders and the history stay plain Mo once the sweep is the runtime's.
+- **Robert leaned to R** because a rewrite is cheap with AI, so "S is easier to change later" carries little weight.
+- **Claude agreed with the choice and not with the reason.** Code is cheap to write, not to check, and data outlives code. Claude's reason: once any `Map`, `Set` or `List` in a service's state can live on disk (Q7), a kept version is an old value the state still refers to. Then nothing tested is left on the Mo side of the split. Roots and holders are ordinary values. The log is the service's own, as experiment 16 found. Freeing went to the runtime in experiment 17.
+- **How much history to keep stays Mo code under R,** because it is which values the program keeps.
+- **That argument is not tested.** It follows from experiments 16 and 17 and Q7. Experiment 16 kept holders as a table of root numbers only because its nodes sat in a Mo `Map`.
+- **Claude was wrong on the way.** It said Q7 "moves nothing", and it weighed "easier to change later", which is a build cost Robert never set as a limit.
+- **Where Claude stood at the end:** R at 65%, S at 35%. Before Robert's lean: S at 75%, R at 25%. Earlier: S at 80% and R at 20% after experiment 17; S at 85% and R at 15% when L was dropped; S at 70%, L at 18%, R at 12% after experiment 16; 65%, 20% and 15% after the reading of Mo; 60%, 25% and 15% after the research panel; 50%, 20% and 30% before it.
+- **Still open under R:** views kept current and erasing have not been sketched, and the runtime's layout is the stored format until the log decision says otherwise.
 
 ## Decisions waiting for options and experiments
 
 These came out of the same ideation. None has an experiment designed.
 
-- **Does the log run unbroken through an upgrade?** Idea 2. Today an upgrade deletes the log's tail. Decision 2's Q9 waits on this: if the log is kept whole, the tree can always be rebuilt from it and the format of a stored node is free to change; if it is not, the stored nodes are the only copy and their format matters. Today a snapshot also deletes the log.
+- **Does the log run unbroken through an upgrade?** Next, by Robert's decision of 2026-11-16. Idea 2. Today an upgrade deletes the log's tail. Decision 2's Q9 waits on this: if the log is kept whole, the tree can always be rebuilt from it and the format of a stored node is free to change; if it is not, the stored nodes are the only copy and their format matters. Today a snapshot also deletes the log.
 - **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's. Experiment 17 bears on it too: with names by hash a write can give back a node that nothing reached, so a sweep that runs beside the writer must be told of every node written; with names by number it need not be.
 - **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.

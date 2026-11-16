@@ -96,6 +96,8 @@ All runs use the frozen Mo binary at `build/enforcement-trial/mo`, recorded in `
 
 Robert can stop after any step. Each experiment stands alone.
 
+**Outcome, 2026-11-16.** All steps are done. Robert dropped L after experiment 16, answered Q7 with collections in a service's state, put Q9 off, and chose R after experiment 17. The record is in `experiments.md` under Decision 2.
+
 ## 7. Where Claude stands
 
 | Option | Confidence | Why |
