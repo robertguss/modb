@@ -95,7 +95,8 @@ end
 fn stored(ops: Nodes.Ops(S), store: S, head: Head) : Int
   var count = 0
   for name in 1..head.next
-    count += 1 if Nodes.children(ops, store, name) != None
+    continue if Nodes.children(ops, store, name) == None
+    count += 1
   end
   count
 end
