@@ -1140,7 +1140,7 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 
 ## Decision 3. Is the log of calls kept whole through a snapshot and an upgrade?
 
-**Status:** open. Robert accepted [the plan](docs/plans/2026-11-16-0238-decision-3-the-log-kept-whole-plan.md) on 2026-11-16.
+**Status:** decided on 2026-11-16. Robert chose D: the record can be run through upgrades, with each version's code kept. What frees the stored format (Q6) is still his to answer. Robert accepted [the plan](docs/plans/2026-11-16-0238-decision-3-the-log-kept-whole-plan.md) on 2026-11-16. [A research panel](docs/plans/2026-11-16-log-replay-research-panel.md) ran first, then experiments 19 and 18.
 
 **The idea it belongs to.** "The log is the truth", idea 4 in `design-ideas.md` and idea 2 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html). `design.md` section 4 says the tree can be rebuilt from the log, and section 8 line 9 asks for "a log the program owns".
 
@@ -1191,6 +1191,7 @@ Three models checked 25 claims about earlier systems against pages fetched that 
 ### Decided by Robert
 
 - **Q1, 2026-11-16: the record must be able to be run again with a different result on purpose.** That covers taking one caller's work out, and putting the state right after a bug is fixed. Being read is included. Rebuilding the whole state from the first call with the same result as before is not asked for.
+- **Option D, 2026-11-16, after experiments 19 and 18.** He was asked it in these words: "a record that can be run through upgrades, with each version's code kept". Claude had recommended D without its strongest promise, that a run from the first call gives the same result for ever. His answer was the one letter. So that promise is not recorded as decided either way, and it comes back with Q6, because a rebuild from the record is the one use that needs it.
 
 What follows, as inference:
 
@@ -1372,7 +1373,7 @@ If the frozen `mo` cannot upgrade a service in a folder under `build/`, the thre
 
 ### Result of experiment 18, 2026-11-16
 
-Run with `python3 sketches/log-through-upgrade/story.py build/enforcement-trial/mo`. The numbers are in `sketches/log-through-upgrade/results/story-18.json`. No Mo file changed after the code was committed. The script changed in four places after its first run: it passes a review id, reads the service's lines until the address appears, uses a full path to `mo`, and has its own call method.
+Run with `python3 sketches/log-through-upgrade/story.py build/enforcement-trial/mo`. The numbers are in `sketches/log-through-upgrade/results/story-18.json`. No Mo file changed after the code was committed. The script changed in three places after it was committed: it passes a review id, reads the service's lines until the address appears, and uses a full path to `mo`.
 
 **The three real services and the three rebuilds.** Each rebuild gave the same state and the same reply to every call as its real service.
 
@@ -1434,6 +1435,17 @@ These rest on the reading and on argument. Nothing has been measured.
 - **After the panel, 2026-11-16: C at 40%, B at 35%, D at 15%, A at 10%.** The engines that do what D does drop old code when its runs end. Nothing measured yet.
 - **After Robert's answer to Q1: C at 60%, D at 30%, B at 7%, A at 3%.** The answer asks for a record that can be run, which A and B do not give. Whether a run must reach through an upgrade is what separates C from D, and experiment 18 is where that is tried.
 - **After experiments 18 and 19: D at 55%, C at 35%, B at 7%, A at 3%.** What Robert asked for reaches back through an upgrade, because a bug fix is an upgrade. Experiment 18 did it with little kept, and experiment 19 found no cost in time that rules it out once the state is not encoded whole. Against D: nothing tested a later build of Mo, a tool whose arguments change, or erasing; and the panel found no system that keeps old code for good and is glad of it.
+
+### How it was decided, 2026-11-16
+
+- **Robert chose D** when Claude stood at D 55%, C 35%, B 7%, A 3%.
+- **What carried it:** his answer to Q1 asks for runs that reach back through an upgrade, because a bug fix is an upgrade. Experiment 18 made three such runs match real services with little kept. Experiment 19 found no cost in time that rules it out once the state is not encoded whole.
+- **Not tested, and still against D:** a later build of Mo giving the same result for an old call, a tool whose arguments change between versions, code named by hash, handlers that use the time, and erasing from the record.
+- **Still open under D:**
+  - What frees the stored format (Q6).
+  - Whether a run from the first call must give the same result for ever.
+  - What is done with a run that is meant to differ. Experiment 18 says it is another history, not a repair.
+  - Whether an entry also holds what its call changed.
 
 ## Decisions waiting for options and experiments
 
