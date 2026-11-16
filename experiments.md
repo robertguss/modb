@@ -1212,6 +1212,52 @@ The draft predictions come from the plan. Each experiment gets its own section w
 | 18 | **Running a record across an upgrade.** A small service in three versions: the second changes what a handler does, the third changes the shape of the state. A rebuild runs each call with its own version's code and each upgrade function in its place, and is compared with a service really upgraded by the frozen `mo` | A rebuild that needs only each version's code and the upgrade functions means D is possible. Anything more is something Mo would have to keep | The rebuild gives the same state, at 75%. Three versions of one module must each be renamed to sit in one program, at 85%. The old types must be kept as well as the old code, at 80% | Running every call with the newest code must give a different state; leaving out an upgrade function must fail to compile or give a different state |
 | 19 | **What a kept record costs.** Bytes for each logged call and time to run each again, measured on Mo's own store and worked out for a million calls | Hours to run a million calls again points away from D as the way to change the stored format. Minutes leaves D open | A row for a call with small arguments is under 200 bytes, at 70%. A million calls run again in under five minutes, at 55% | A call that only reads must add no bytes; a call that returns an error must add none |
 
+### Experiment 19 as it will be run, written 2026-11-16 before the run
+
+What does keeping every call cost: how many bytes a call takes in the log, and how long a call takes to run again.
+
+**What Claude has seen before writing this.** Mo's code for writing a log row and for recovery (`src/vm/service.c:280-440`, `src/base/log-record.h`), the store's tables (`src/host/store.c:95-103`), and the numbers in [ticket 11](issues/11-how-fast-and-large-is-a-mo-service.md). No code for this experiment is written and nothing has been run.
+
+**What the reading says to expect.** On every updating call, live or in recovery, Mo encodes the whole state and takes a checksum of it. Ticket 11 measured that at about 0.65 ms of processor time for every 1,000 rows. So the time to run a call again has two parts: a fixed part, and a part that grows with the state. Under the design the store is in the runtime and the state is not encoded whole, so only the fixed part would stay. The experiment measures both and reports them apart.
+
+**What is built, in `sketches/log-cost/`.** It runs on the frozen `mo` at `build/enforcement-trial/mo` and writes under `build/log-cost/`.
+
+- `main.mo`: the service of `sketches/service-timing/` (a map of numbered rows of 64 bytes, with `grow`, `put` and `get`) and one more tool, `refuse`, which returns an error.
+- `measure.py`: the two measurements below.
+
+**Bytes.** Grow the state to its size in one call, then call `put` until the store has taken a snapshot and its log is empty. Then make three calls: `put` with a value of 7 bytes, of 64 bytes and of 1,000 bytes. Then the controls: five calls to `get` and five to `refuse`. Stop the service with a kill and read the length of every row in the store's `log` table, and the length of the snapshot. Done at 1 row, 1,000 rows and 10,000 rows.
+
+**Time.** A snapshot is taken every 100 calls, so the longest tail is 99 rows. For each size (1, 1,000, 10,000 and 50,000 rows) two data folders are made: one killed just after a snapshot, with no rows in the log, and one killed 99 calls later. Each `put` sets a row that exists to a value of 64 bytes, so the state is the same size in both. Each folder is started 15 times. A start is timed until the service has answered one `get`, in processor time read from `/proc` and in time on the clock, and then the service is killed. The row count in the log is read after each start to see that it has not changed. The time to run one call again is the median with 99 rows less the median with none, over 99.
+
+**Worked out from them.** Bytes and seconds for a million calls with small arguments, beside the size of the state: once with the fixed part only, and once as today's Mo would do it with a state of 50,000 rows.
+
+**What counts.** From the plan: hours to run a million calls again points away from a run from the first call as the way to change the stored format; minutes leaves it open. Since Robert's answer to Q1 it also says what taking one caller's work out costs, because every call after the first one removed is run again.
+
+**Predictions, Claude.**
+
+1. The row for `put` with a value of 7 bytes is under 200 bytes: 80%. Best guess 110.
+2. A value of 1,000 bytes makes the row 993 bytes longer, give or take 16: 85%.
+3. The same call gives a row of the same length at 1 row and at 10,000 rows: 90%.
+4. The part of a call's replay that grows is between 0.3 and 0.9 ms for every 1,000 rows of state: 70%.
+5. The fixed part is under 300 microseconds, so a million small calls run again in under five minutes once the state is not encoded whole: 65%. Best guess 50 microseconds.
+6. The method can see the fixed part: at 1 row, the difference between the two medians is larger than the spread of either set of 15 starts: 50%. If it cannot, the result gives an upper bound and says so.
+7. As today's Mo does it, with a state of 50,000 rows, a million calls would take more than five hours: 75%.
+8. A million `put` calls with values of 64 bytes take more bytes in the log than the state they build, even if every call adds a new row: 75%.
+
+**Controls that must fail.**
+
+- **A call that only reads.** Five calls to `get` must add no row to the log.
+- **A call that returns an error.** Five calls to `refuse` must add no row.
+- **The timing must see replay at all.** At 10,000 rows a start with 99 rows in the log must use more processor time than a start with none. If it does not, the method does not see the replay and the time result is void.
+
+**Limits known before the run.**
+
+- **The longest tail is 99 rows,** so a million calls is worked out, not run.
+- **One kind of call.** `put` on a map is about the cheapest handler there is. A handler that does more work takes longer to run again, by the time of that work.
+- **The log row is today's.** It has no function name, no caller and no root. An entry under option B, C or D would be longer by those.
+- **The machine is shared.** Processor time is less disturbed by that than time on the clock, and both are reported.
+- **The frozen `mo` is a debug build** unless shown otherwise; ticket 11 used an optimised one. The result says which, and times from a debug build are an upper bound.
+
 ### Where Claude stands, with what would move it
 
 These rest on the reading and on argument. Nothing has been measured.

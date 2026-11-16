@@ -139,9 +139,9 @@ What would move it:
 - **Toward B:** Robert answers Q1 with "being read is enough".
 - **Toward A:** nothing found so far.
 
-**After Robert's answer to Q1: C 60%, D 30%, B 7%, A 3%.** The answer asks for a record that can be run, which A and B do not give.
-
 **After the panel, 2026-11-16: C 40%, B 35%, D 15%, A 10%.** D went down because the engines that do what D does drop old code when its runs end, and the one system that keeps it for good is moving away. B went up because a record kept to be read is the well-worn way. Still nothing measured.
+
+**After Robert's answer to Q1: C 60%, D 30%, B 7%, A 3%.** The answer asks for a record that can be run, which A and B do not give.
 
 ## 8. What was cut and why
 
