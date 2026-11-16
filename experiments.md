@@ -1178,6 +1178,16 @@ What follows:
 - **Option B is closer than it looked.** What is missing is the function's name, the caller, and keeping the rows.
 - **A row names its code by a hash of the compiled program.** A new compiler would give the same source a new hash, so an entry that is to be run years later needs a name for its code that a new compiler does not change. Inference; nothing was run.
 
+### What the research panel settled, 2026-11-16
+
+Three models checked 25 claims about earlier systems against pages fetched that day; [the record](docs/plans/2026-11-16-log-replay-research-panel.md) has a quote for each. Three claims were outdated in part and two were refuted in part.
+
+- **Nobody runs a kept log through freely changed code.** Engines that replay across a code change keep the old code alive, as two paths behind a marker or by holding each run on the build that started it. D is the second way.
+- **They keep old code only until its runs are finished.** The one system that keeps it for good is Ethereum, and its clients have begun to drop old history.
+- **A log run again for recovery is a tail everywhere,** and an upgrade by a function from old state to new is the common way. Mo does both today.
+- **Records kept whole hold what was decided. Logs of calls are kept only to the next snapshot.** Mo's log holds calls. Inference: an entry could also hold what its call changed, and a record of changes can be rebuilt from with no old code.
+- **A use the plan did not list:** running old calls through corrected code on purpose, so a fixed bug also puts the state right. It is added to Q1.
+
 ### What the experiments must decide
 
 Whether a record can be run across an upgrade and what must be kept for it (Q2), and what keeping every call costs in bytes and in time to run it again (Q3). Robert answers what the record must be able to do (Q1), and afterwards what frees the stored format (Q6). Q4, a later runtime giving the same result, and Q5, erasing from the record, are argued in the plan and not tested.
@@ -1201,6 +1211,7 @@ These rest on the reading and on argument. Nothing has been measured.
 - **Toward D:** experiment 18 needs only the code of each version and the upgrade functions; experiment 19 shows a rebuild takes minutes; Robert wants taking a caller's work out to reach across upgrades.
 - **Toward B:** Robert answers Q1 with "being read is enough".
 - **Toward A:** nothing found so far.
+- **After the panel, 2026-11-16: C at 40%, B at 35%, D at 15%, A at 10%.** The engines that do what D does drop old code when its runs end. Nothing measured yet.
 
 ## Decisions waiting for options and experiments
 

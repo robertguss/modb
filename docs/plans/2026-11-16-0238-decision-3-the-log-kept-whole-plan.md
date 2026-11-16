@@ -71,11 +71,21 @@ From the wiki and the research panel of 2026-11-15.
 - **Surviving a crash is not surviving an upgrade.** The E language's paper on persistence says so in those words (panel, prior work).
 - **Erasing collides with a kept record.** Datomic's excision is slow and lossy, and Datomic Cloud has none ([deleting personal data from history](../../wiki/ideas/deleting-personal-data-from-history.md); panel rows 20 and 22).
 
+### What the research panel of 2026-11-16 added
+
+Step 3 of section 6 was run. [The record](2026-11-16-log-replay-research-panel.md) has 25 claims, each with a quote from a page fetched that day. Three were outdated in part and two were refuted in part; none of the five changes what follows.
+
+- **Nobody runs a kept log through freely changed code.** Engines that replay across a code change keep the old code alive: both paths in the code behind a marker, or each run held on the build that started it (rows 1, 2, 3, 7, 8). Option D is the second way.
+- **They keep old code only until its runs are finished.** D asks for it for good. The one system that does that is Ethereum, and its clients have begun to drop old history so they can stop (rows 2, 23, 24).
+- **A log run again for recovery is a tail everywhere** (rows 4, 9, 19, 20, 21). Temporal now previews starting a fresh history at an upgrade, which is the shape of option C. An upgrade by a function from old state to new, with no replay, is the common way (rows 9, 10, 11). Both are what Mo does today.
+- **Records kept whole hold what was decided. Logs of calls are kept only to the next snapshot** (rows 12, 14, 16 against 15, 20, 21). Mo's log holds calls. Inference: an entry could also hold what its call changed. A record of changes can be read and rebuilt from with no old code. Taking a caller's work out still needs the calls.
+- **There is a use Q1 does not list: running old calls through corrected code on purpose,** so that a fixed bug also puts the state right (Fowler 2005, under row 16). It is the opposite of D, which wants the same result as before. It is the same kind of run as taking a caller's work out: the calls are run again and the result is meant to differ.
+
 ## 4. The questions that decide
 
 | # | Question | Points to A or B if | Points to C or D if | Settled by |
 | --- | --- | --- | --- | --- |
-| Q1 | What must the record be able to do: be read, give back one caller's work, rebuild everything? | Being read is enough | Taking a caller's work out, or rebuilding, is wanted | Robert, one question (section 6, step 4) |
+| Q1 | What must the record be able to do: be read, give back one caller's work, rebuild everything? Since the panel, also: put the state right after a bug is fixed | Being read is enough | Taking a caller's work out, or rebuilding, is wanted | Robert, one question (section 6, step 4) |
 | Q2 | Can a record be run across an upgrade, and what must be kept for it? | It needs more than the code of each version and the upgrade functions | Those are enough, and they can sit together in one program | Experiment 18 |
 | Q3 | What does keeping every call cost, in bytes and in time to run it all again? | Running a real history again takes hours | It takes minutes, and a row is small beside the state | Experiment 19 |
 | Q4 | Does a later runtime give the same result for an old call? | It cannot be promised | It can, or a difference is always caught | Argument. Mo Core is defined in Lean, so the meaning is fixed. A fixed bug still changes a result. Each row's checksum catches that, and the rule for what happens then is part of D. Claude holds "always caught" at 80% |
@@ -99,7 +109,7 @@ All runs use the frozen Mo binary at `build/enforcement-trial/mo`. None writes t
 
 1. **Robert accepts, changes or cuts this plan.**
 2. Write "Decision 3" in `experiments.md` in the shape of Decision 2. Move its line out of "Decisions waiting". Commit.
-3. **Optional research panel. Robert accepts or skips.** Claims about earlier work on running a history again after the code changed: how workflow engines version code that is replayed, how stores that keep events read old ones, how other durable runtimes upgrade a running program, and what stores that keep a log as the truth do at a change of format. Claude recommends accepting, at 60%. Everything Claude knows about these is from memory and unchecked, and the panel on Decision 2 refuted two of 31 such claims, one of them in part. The reason to skip is cost, and that experiment 18 tests the central point directly.
+3. **Optional research panel. Robert accepts or skips.** Robert accepted on 2026-11-16 and it was run; see section 3. Claims about earlier work on running a history again after the code changed: how workflow engines version code that is replayed, how stores that keep events read old ones, how other durable runtimes upgrade a running program, and what stores that keep a log as the truth do at a change of format. Claude recommends accepting, at 60%. Everything Claude knows about these is from memory and unchecked, and the panel on Decision 2 refuted two of 31 such claims, one of them in part. The reason to skip is cost, and that experiment 18 tests the central point directly.
 4. **Robert answers Q1:** what must the record be able to do. This comes before the experiments because "being read is enough" makes experiment 18 unnecessary.
 5. Experiment 19, then 18. Predictions are committed before each. Cheapest first.
 6. **Robert decides between A, B, C and D.** Claude gives a recommendation and a confidence then.
@@ -129,6 +139,8 @@ What would move it:
 - **Toward B:** Robert answers Q1 with "being read is enough".
 - **Toward A:** nothing found so far.
 
+**After the panel, 2026-11-16: C 40%, B 35%, D 15%, A 10%.** D went down because the engines that do what D does drop old code when its runs end, and the one system that keeps it for good is moving away. B went up because a record kept to be read is the well-worn way. Still nothing measured.
+
 ## 8. What was cut and why
 
 | Cut | Why |
@@ -144,4 +156,4 @@ What would move it:
 - Whether the frozen `mo` can upgrade a service in a folder under `build/`. Experiment 18 finds out, and says how its comparison was made.
 - Whether the harness in `sketches/service-timing/` can read the log's bytes before a snapshot. Experiment 19 finds out.
 - `src/tools/recovery.c`, `upgrade-live.c` and `store-history.c` were not read in full by the search agent.
-- Everything in step 3's list of earlier work.
+- What the panel left open, listed under "Not settled" in [its record](2026-11-16-log-replay-research-panel.md).
