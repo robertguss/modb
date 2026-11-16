@@ -1258,6 +1258,59 @@ What does keeping every call cost: how many bytes a call takes in the log, and h
 - **The machine is shared.** Processor time is less disturbed by that than time on the clock, and both are reported.
 - **The frozen `mo` is a debug build** unless shown otherwise; ticket 11 used an optimised one. The result says which, and times from a debug build are an upper bound.
 
+### Experiment 18 as it will be run, written 2026-11-16 before any code
+
+Can a record of calls be run again across an upgrade, and what must be kept for it? Since Robert's answer to Q1 the runs that matter most are the two that are meant to give a different result: one caller's calls taken out, and old calls run through corrected code. The run that gives the same result is still made, because the other two are built on it.
+
+**What Claude has seen before writing this.** Mo's guide on upgrading a stopped service (`mo serve NEW --data DIR --upgrade --migrate Module.function`), which says the old state's types reach the upgrade function through a generated module, `UpgradeOld`. The reading of Mo recorded above. The smoke test of experiment 19's script. No code for this experiment is written and nothing has been run.
+
+**The program, in `sketches/log-through-upgrade/`.** A book of named tallies, in three versions. Each version is a folder with a module `Book`, which holds the state's type and the handlers as plain functions, and a `main.mo` with the service.
+
+| Version | State | What changed |
+| --- | --- | --- |
+| 1 | A struct holding a map from name to count | `add(name, n)` adds to a tally. `move(from, to, n)` moves between two. It has a bug: it does not check that `from` holds enough, so a tally can go below zero |
+| 2 | The same | `move` refuses when `from` holds less than `n`. This changes what a handler does |
+| 3 | The struct gains a count of the moves made | The shape of the state changes. A function turns a version 2 state into a version 3 state, with the count at zero |
+
+**The record.** `story.py` holds a fixed story of about 30 calls from three callers, a third under each version. It includes a move under version 1 that takes a tally below zero, a move under version 2 that is refused, and a call by one caller that depends on an earlier call by another. The script sends the story to a real service on the frozen `mo`: version 1, then an upgrade of the stopped service to version 2, then to version 3. It keeps each call's version, caller, tool, arguments and reply, and reads the final state. The record is the script's; Mo's own log is deleted at each upgrade.
+
+**The rebuild.** A Mo program, `rebuild.mo`, that holds the code of all three versions and the record, and prints a state. The script compares what it prints with a real service's state.
+
+| Run | What is run | What it is compared with |
+| --- | --- | --- |
+| Faithful | Every call under its own version's code, with the upgrade function in its place | The real service that was upgraded twice |
+| One caller taken out | The same, without caller `b`'s calls. The run also lists every other call whose reply changed | A second real service that was never sent `b`'s calls, upgraded the same way |
+| A bug put right | Version 1's calls through version 2's code, then the rest as before | A third real service that began on version 2 and was sent the whole story |
+
+If the frozen `mo` cannot upgrade a service in a folder under `build/`, the three states are worked out by hand, and the result says so.
+
+**What counts.** A faithful rebuild that needs only each version's code and the upgrade function means running through an upgrade is possible. Everything else it needs is listed, and each item is something Mo would have to keep. The two other runs show whether the same things are enough for what Robert asked the record to do.
+
+**Predictions, Claude.**
+
+1. The faithful rebuild gives the same state as the real upgraded service: 75%.
+2. The three versions cannot sit in one program as three modules named `Book`. Each must be given a name of its own: 85%.
+3. The rebuild needs version 2's type as well as version 2's functions: 80%.
+4. The upgrade function cannot be used as it stands. In the service it takes its old type from `UpgradeOld`; in the rebuild that must be changed to the kept version 2 module: 70%.
+5. With `b`'s calls taken out, the rebuild gives the same state as the real service that never got them: 75%.
+6. Version 1's calls through version 2's code give the same state as the real service that began on version 2: 80%.
+7. The frozen `mo` upgrades a stopped service under `build/` with no step that only a person can take: 60%.
+8. What must be kept is this and no more: each version's code under a name of its own, the upgrade function, and for each call its version, tool and arguments. Taking a caller out needs each call's caller as well, and listing the calls it changed needs each call's reply: 60%.
+
+**Controls that must fail.**
+
+- **Newest code for every call.** Running the whole story through version 3's code from an empty version 3 state must give a state different from the real upgraded service.
+- **No upgrade function.** Passing the version 2 state straight to version 3's handlers must fail to compile.
+- **Taking `b` out must matter.** The state without `b`'s calls must differ from the state with them, and at least one call by another caller must change its reply.
+
+**Limits known before the run.**
+
+- **The handlers ignore the time.** A record for handlers that use it would need each call's arrival time. Mo's log row already holds it.
+- **No tool changes its arguments between versions.** If one did, an old call could not be given to newer code without being translated first. Not tested.
+- **The versions are named by hand.** `design.md` names code by a hash of its checked form. Nothing here tests that.
+- **The record is the script's, not Mo's.** This shows what a record must hold, not that Mo can keep one.
+- **A story of about 30 calls, written by Claude,** who also writes the code it is run through. The three real services are the guard.
+
 ### Where Claude stands, with what would move it
 
 These rest on the reading and on argument. Nothing has been measured.
