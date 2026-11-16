@@ -85,3 +85,43 @@ Traces:
 - Rule and ApprovedOnly hold under "world whole, rule after each" by the way it is built.
 - Not modelled: who should approve a combination of calls, a rule marked as checked at the end of a world, checks made while the agent works in its copy, a long world sent back for ever, and needless send-backs.
 - There is no implementation to compare the model with.
+
+## Sweep
+
+`Sweep.tla` models freeing by a sweep from the kept roots, with a crash between any two steps. It is experiment 17 in [experiments.md](../experiments.md), Decision 2. The predictions are in [sweep-predictions.md](sweep-predictions.md), committed in `c08ba36` before the model existed. The model was committed in `131f279` before any run. The jar is the one recorded at the top of this file, copied from an older checkout and checked against that SHA-256.
+
+**Result on 2026-11-16: 23 of 32 settings came out as predicted, and 9 did not.** Two orders of a write, four sweeps, two kinds of name, the snapshot's root kept or not, and each of four properties checked in its own run (128 runs, about two minutes; about 20,000 states for a setting).
+
+With the order of `design.md`, nodes, then the log, then the root:
+
+| Sweep | Numbers, snapshot's root not kept | Numbers, kept | Hashes, not kept | Hashes, kept |
+| --- | --- | --- | --- | --- |
+| `excl`, one step when no write is under way | recovery breaks | correct | recovery breaks | correct |
+| `ignore`, beside a write, ignoring it (meant to fail) | unsafe, recovery breaks | unsafe, recovery breaks | unsafe, recovery breaks | unsafe, recovery breaks |
+| `born`, beside a write, sparing nodes written after it marked | recovery breaks | correct | unsafe, recovery breaks | unsafe, recovery breaks |
+| `pin`, beside a write, marking every node written while it runs | recovery breaks | correct | recovery breaks | correct |
+
+With the root switched before the log is forced, a held root can be one no logged write produced, in all 16 settings. Three more settings also turn unsafe: `born` with numbers, and `pin` with either kind of name, when the snapshot's root is not kept.
+
+What it shows:
+
+1. **The sweep must keep the root that recovery starts from.** Without it recovery breaks under every sweep, the one-step sweep among them. The trace: a snapshot at root 2, a write to root 4, a sweep frees node 2, a crash, and recovery runs the write again from a root that is gone.
+2. **A sweep taken as one step when no write is under way is safe** under both kinds of name.
+3. **Beside a write, with names by number,** it is enough to mark the write under way and to free only nodes that were on disk when the sweep marked.
+4. **Beside a write, with names by hash, that is not enough.** A write can give back a node that nothing reached. The trace: a write puts nodes 1 and 2 and a crash loses it; the sweep marks nothing; the same write runs again and gets the same two names; the sweep frees them. Only marking every node written while the sweep runs is safe.
+5. **The sweep keeps nothing on disk between runs.** A crash loses its marks and nothing else.
+
+**Where the predictions failed.**
+
+- **Six settings.** The rule said that keeping the snapshot's root keeps recovery whole. It does not where the sweep is unsafe: a later snapshot saves a root the sweep then frees. Claude saw this while writing the model, after the predictions were committed.
+- **Three settings.** The rule said the wrong order of a write breaks only Logged. With the snapshot's root not kept it also breaks Safe: the sweep marks from a root the log has not got, frees the root the log does have, and a crash falls back to it.
+
+**Limits.**
+
+- The tree has two levels and at most three writes, with at most two crashes.
+- A node written is on disk at once. Losing a node that was written but not forced is not modelled.
+- Recovery reads only the root a write started from, not the leaves under it.
+- One writer, no worlds landing, and the sweep is never run again by recovery.
+- "Leaves nothing unreachable after a crash" is not checked. The one-step sweep frees every node it did not mark, so it holds by how the sweep is defined.
+- There is no implementation to compare the model with.
+

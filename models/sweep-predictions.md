@@ -80,3 +80,19 @@ The two draft predictions in the plan, as they now stand:
 - Recovery reads only the root a write started from, not the leaves under it.
 - A sweep is not a logged call and is never run again by recovery.
 - Claude wrote the predictions and will write the model.
+
+## How they came out, 2026-11-16
+
+Added after the run. Nothing above this line was changed.
+
+| # | Result |
+| --- | --- |
+| 1 | Held |
+| 2 | **Failed in its second half.** Order `root` broke Logged in all 16. It also broke Safe in three settings the rule said were safe: `born` with numbers, and `pin` with either kind of name, each with Keep `held` |
+| 3 | Held |
+| 4 | Held in every setting with the order of `design.md`. **Failed in one setting** of order `root`, as in 2 |
+| 5 | Held in every setting with the order of `design.md`. **Failed in two settings** of order `root`, as in 2 |
+| 6 | First half held: Keep `held` broke Recovers in all 16. **Second half failed:** Keep `snap` kept Recovers in only 10 of 16. In the six where Safe is broken, Recovers is broken too |
+| 7 | **Failed.** 23 of 32 came out as the rule says |
+
+Claude saw the fault behind 6 while writing the model, after these predictions were committed and before any run: where the sweep frees a node the current root reaches, a later snapshot saves that root, and recovery then starts from it.

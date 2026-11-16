@@ -826,7 +826,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 ## Decision 2. Is the store a library written in Mo or part of the runtime?
 
-**Status:** open between S and R. Robert dropped L on 2026-11-16, after experiment 16. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node.
+**Status:** open between S and R. Robert dropped L on 2026-11-16, after experiment 16. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node. Experiment 17 ran the same day: a sweep run as a Mo call is safe, but it must keep the root recovery starts from, and a sweep in the background with names by hash needs the runtime.
 
 **The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
 
@@ -1088,11 +1088,44 @@ The predictions are in [models/sweep-predictions.md](models/sweep-predictions.md
 - **The plan's two controls stay:** switching the root before the log is forced, and a sweep that ignores a write not yet landed.
 - **Since Robert dropped L,** the result bears on S against R: can the sweep be a call written in Mo, or does it need the runtime to tell it of every node written while it runs.
 
+### Result of experiment 17, 2026-11-16
+
+The model is `models/Sweep.tla`, committed in `131f279` before any run. The table of all the settings and the two traces are in [models/README.md](models/README.md), under Sweep.
+
+**23 of 32 settings came out as predicted. 9 did not.** The three controls failed as they must: the wrong order of a write broke Logged in all 16 of its settings, the sweep that ignores a write broke Safe in all 8 of its, and a node was freed in every setting.
+
+| # | Prediction | Result |
+| --- | --- | --- |
+| 1 | The order of `design.md`, a one-step sweep, numbers and the snapshot's root kept: all hold, 85% | Held |
+| 2 | The wrong order breaks Logged and nothing else, 85% | Failed in its second half: three settings also turn unsafe |
+| 3 | A sweep that ignores a write is unsafe, 95% | Held |
+| 4 | Sparing nodes written after the mark is safe with numbers and unsafe with hashes, 70% | Held under the order of `design.md`; failed in one setting of the wrong order |
+| 5 | Marking every node written while the sweep runs is safe under both, 75% | Held under the order of `design.md`; failed in two settings of the wrong order |
+| 6 | Not keeping the snapshot's root breaks recovery everywhere; keeping it saves recovery everywhere, 85% and 80% | First half held. Second half failed in six settings, all of them unsafe already |
+| 7 | All 32 as the rule says, 45% | Failed |
+
+**What it shows for Decision 2.**
+
+- **A sweep written in Mo and run as a call is safe,** under names by number and by hash. That is the sweep of experiment 16.
+- **It needs one thing the Mo code cannot see today:** the root that recovery starts from. A Mo service's snapshot is the runtime's, and nothing tells the service which root it saved. So under S the runtime must either tell the sweep that root or take a snapshot before the sweep frees anything.
+- **A sweep that runs beside the writer, with names by hash, needs the runtime to tell it of every node written while it runs.** A write can give back a node that nothing reached, and only the code that writes nodes knows it did.
+- **So the result is the third case written beforehand:** both are true, and the split holds only while the sweep may stop the writer. `design.md` says freeing is work for the background and names are hashes. Under those two, the marking and freeing belong in the runtime, and what is left to Mo is which roots are kept.
+
+**What that does to S.** It moves one piece across the line and leaves the rest. In experiment 16 the sweep, the marking and the reach were about 25 of the policy's 90 lines. The roots, the holders and the log stay in Mo. The boundary would then be: read a row at a root, write a row, and "free everything these roots do not reach".
+
+**What went wrong.** Two faults in Claude's rule, both recorded in the predictions file. One was seen while writing the model, after the predictions were committed. The other was found by the run: with the wrong order of a write and the snapshot's root not kept, the sweep marks from a root the log has not got and frees the root it has.
+
+**What it does not show.**
+
+- A tree deeper than two levels, more than three writes, or more than one writer.
+- A node that was written but lost because it was not forced to disk.
+- Anything about the cost of a sweep that stops the writer.
+
 ### Where Claude stands, with what would move it
 
-- **S at 85%, R at 15%.** Robert dropped L on 2026-11-16, and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
-- **Toward R:** Robert answers Q7 "any value" and Q9 "no".
-- **Toward S:** experiment 17 shows the sweep needs only a list of a node's children from the runtime.
+- **S at 80%, R at 20%.** After experiment 17: the sweep is safe as a Mo call, but a sweep in the background with names by hash needs the runtime, and every sweep needs a root only the runtime knows. One piece of the policy moves into the runtime; the rest holds. Before it, S at 85% and R at 15%, when Robert dropped L on 2026-11-16 and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
+- **Toward R:** Robert answers Q7 "any value" and Q9 "no"; more of the policy turns out to need what only the runtime knows, as the sweep did.
+- **Toward S:** Robert answers Q9 "yes"; the roots, the holders and the history stay plain Mo once the sweep is the runtime's.
 
 ## Decisions waiting for options and experiments
 
