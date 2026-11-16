@@ -826,7 +826,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 ## Decision 2. Is the store a library written in Mo or part of the runtime?
 
-**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls.
+**Status:** open. Robert accepted [the plan](docs/plans/2026-11-15-2037-decision-2-library-or-runtime-plan.md) on 2026-11-15, after [a research panel](docs/plans/2026-11-15-storage-research-panel.md) on earlier work, and skipped the council. Experiment 15 ran the same day: Mo has one real service, the task queue, and it keeps a collection that grows with every call and never falls. Experiment 16 ran on 2026-11-16: one policy of 90 lines of Mo ran unchanged over a map and over files, and never looked inside a node.
 
 **The idea it belongs to.** "The store is the heap", idea 6 in [the ideation of 2026-11-14](docs/ideation/2026-11-14-mo-database-ideation.html), against the library that `design.md` section 9 leaned to. The lean came before Robert decided that tables are part of the language.
 
@@ -1007,12 +1007,85 @@ The tree differs from `kept-versions/tree.mo` in two ways: its head moves out in
 - **Lines of Mo are a coarse measure,** and the thresholds above are Claude's.
 - **Claude writes both sides and leans to S.** The counts and the controls are the guard, and the hand judgement in "favours R" is the weakest part.
 
+### Result of experiment 16, 2026-11-16
+
+The Mo files were committed in `f2ffc51` before any run. Mo refused one line of the first draft, a trailing `if` after `+=`; the fix and the two scripts are in `2a57aa5`, and the run below is of that commit. The reports are in [sketches/store-policy/results/](sketches/store-policy/results/).
+
+**What ran.** `mo test` on `backend-b.mo`, which also runs backend A: 7 passed, 0 failed, 0 stopped.
+
+| Check | Backend | Result |
+| --- | --- | --- |
+| The story: held rows stay, and the sweep frees 6 of 16 nodes | A | passed |
+| Replaying the log from an empty map gives the same state | A | passed |
+| Step promise, no held version reaches a freed node, on Mo's generated sequences | A, in a service | passed |
+| Mo's recovery check | A, in a service | passed |
+| The story gives the same answers as over A | B | passed |
+| Replaying the log file over the surviving files gives the same state | B | passed |
+| No held version reaches a freed node, on generated lists of calls | B | passed |
+
+**What was counted.**
+
+| | Lines of code |
+| --- | --- |
+| `nodes.mo`, the collection | 56 |
+| `policy.mo`, the policy | 90 |
+| `backend-a.mo`, with its service | 56 |
+| `backend-b.mo` | 88 |
+
+- **The boundary.** The policy calls three names from `nodes.mo`, `read`, `write` and `children`, and one function through `Ops`, `remove`. It never calls `get` or `put`; only `nodes.mo` does.
+- **Opening a node.** None of the policy's 9 functions matches on a node's cases.
+- **Passing on.** One of the 9, `get`, only passes its arguments to `nodes.mo`.
+- **Taking the store.** All 9 take the store as a parameter, over both backends.
+- **Only B needs.** 51 lines in six functions. 38 turn a node and a call to text and back. 13 are `commit`, which writes the log file before it applies a call, and `recover`.
+- **Both need.** The three node functions and the record that holds them: 12 lines over A, 22 over B, where each must turn a file error into a `stop`.
+
+**The controls failed as they must.**
+
+- **A sweep that ignores the holders:** 3 passed, 4 failed. Mo found the shortest case on its own, over both backends: put, hold, put, sweep. The test that only compares A with B still passed, because both were wrong alike.
+- **Backend B in a service:** `mo check` refused it with E0104, "a service value holds a capability or function".
+
+**Predictions.**
+
+| # | Prediction | Result |
+| --- | --- | --- |
+| 1 | One policy serves both backends, with the store as a type parameter, 60% | Held. Mo takes `Files` as a type argument, and a record of functions that take it |
+| 2 | Over A, the recovery check and the step promise pass, 80% | Held |
+| 3 | Over B, the same answers, and the log replays to the same state, 70% | Held |
+| 4 | The policy calls exactly four things across the boundary and never the bare `get` or `put`, 60% | Held |
+| 5 | The policy opens a node in no function, 70% | Held |
+| 6 | The policy is between 60 and 120 lines, 60% | Held, at 90 |
+| 7 | B needs at least 40 lines that A does not, 70% | Held, at 51 |
+| 8 | Every function that reads or writes a node takes the store, 95% | Held |
+
+**How much that is worth.** Less than eight out of eight sounds. Predictions 4 to 8 are about code Claude then wrote, so they test little. The ones that could have gone wrong are 1, 2 and 3, and the controls.
+
+**What went wrong, and what was decided after the predictions.**
+
+- **`children` gives `None` for a node that is not there.** Claude chose this while writing the code. It lets the promise's check ride on `children`. Had `children` given an empty list, the check would have needed a fifth name, and prediction 4 would have failed.
+- **Under A the policy's log does no work.** Mo's recovery check replays the service's own messages and never calls `Policy.replay`. Only B recovers through the policy's log. So on today's Mo, S needs no log in the policy at all; the service already keeps one. This is inference from one sketch.
+- **38 of B's 51 extra lines come from today's Mo,** which has no way to turn a value to bytes and back. They are not a cost of L itself. What L itself asks here is the 13 lines of `commit` and `recover`, which is also where an error would lose data.
+
+**What it shows.**
+
+- **The split holds in Mo code.** A policy of 90 lines keeps roots, holders and a log, and frees by a sweep, without ever looking inside a node. Every condition written under "favours S" was met.
+- **The policy is not thin.** It is 90 lines, and one function of nine only passes its arguments on. Both conditions under "favours R" failed.
+- **The capability threads through cleanly.** The same two files run over `Files` with no change. So L's policy is no harder to write than S's. What was written beforehand as "favours L" still failed: no policy function opens a node, and B needs more code than A.
+- **What L asks that S does not:** a change to reference section 11.5 so a service may hold a capability, which the option already says; its own log file and its own recovery; and a `stop` for a file error in every node function.
+- **What crosses the line under S is not what the option says.** The option names "reading and writing a node by name". The policy used neither. It used the collection (`read` at a root, `write` giving a new root), a node's `children`, and `remove`.
+
+**What it does not show.**
+
+- Whether a function value that captures the store is refused over B. The policy uses loops, so it was never tried.
+- A sweep done by the runtime from a list of roots, which would replace `children` and `remove` with one operation.
+- Anything about cost. Backend A is a `Map` saved whole.
+- A crash inside a write, names by hash, or more than one writer.
+
 ### Where Claude stands, with what would move it
 
-- **S at 65%, L at 20%, R at 15%.** After the reading of Mo, L lost most of the cover it was thought to get from Lean. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
-- **Toward R:** experiment 16 shows the Mo policy is thin or awkward; Robert answers Q7 "any value" and Q9 "no".
-- **Toward L:** the capability threads cleanly through experiment 16; experiment 15 finds few programs with growing state.
-- **Toward S:** experiment 16 passes with a boundary of two or three operations; experiment 17 shows the sweep needs only a list of a node's children from the runtime.
+- **S at 70%, L at 18%, R at 12%.** After experiment 16: the split held in Mo code, and the policy was not thin. The move is small because Claude wrote both sides. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
+- **Toward R:** Robert answers Q7 "any value" and Q9 "no".
+- **Toward L:** Robert answers Q9 "yes, and the format must be the library's own"; experiment 17 shows the sweep needs help the runtime cannot give.
+- **Toward S:** experiment 17 shows the sweep needs only a list of a node's children from the runtime.
 
 ## Decisions waiting for options and experiments
 

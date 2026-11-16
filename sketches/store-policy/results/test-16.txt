@@ -1,0 +1,9 @@
+passed BackendB.sound_after.promise.1  sketches/store-policy/backend-b.mo:92:3
+passed BackendB.test.1  sketches/store-policy/backend-b.mo:102:1
+passed BackendB.test.2  sketches/store-policy/backend-b.mo:106:1
+passed BackendA.test.1  sketches/store-policy/backend-a.mo:73:1
+passed BackendA.test.2  sketches/store-policy/backend-a.mo:81:1
+passed BackendA.service.promise.1  sketches/store-policy/backend-a.mo:17:3
+passed BackendA.service.recovery  sketches/store-policy/backend-a.mo:12:1
+7 passed, 0 failed, 0 stopped
+exit 0

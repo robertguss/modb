@@ -105,6 +105,7 @@ Robert can stop after any step. Each experiment stands alone.
 | R, runtime | 15% | The plainest form of "built into the language", and every service gains. But it makes the runtime's layout a format kept for ever, and its exact freeing rests on counts on disk, which earlier work found fragile |
 
 - **The earlier lean to the library no longer stands.** It was written in `design.md` section 9 and `design-ideas.md` before Robert decided that tables are part of the language. It also rested partly on asking less of Mo, a reason Robert has set aside.
+- **Later numbers are kept in `experiments.md` under Decision 2.** The ones here are from the day the plan was written.
 - **These numbers rest on argument and earlier work, with nothing measured here.** Before the research panel they were 50% for S, 30% for R and 20% for L.
 
 What would move it:

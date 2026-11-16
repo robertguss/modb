@@ -1,0 +1,13 @@
+a sweep that ignores the holders:
+  failed BackendB.sound_after.promise.1  /home/exedev/Projects/modb/build/store-policy-control/backend-b.mo:92:3
+  passed BackendB.test.1  /home/exedev/Projects/modb/build/store-policy-control/backend-b.mo:102:1
+  failed BackendB.test.2  /home/exedev/Projects/modb/build/store-policy-control/backend-b.mo:106:1
+  failed BackendA.test.1  /home/exedev/Projects/modb/build/store-policy-control/backend-a.mo:73:1
+  passed BackendA.test.2  /home/exedev/Projects/modb/build/store-policy-control/backend-a.mo:81:1
+  failed BackendA.service.promise.1  /home/exedev/Projects/modb/build/store-policy-control/backend-a.mo:17:3
+  passed BackendA.service.recovery  /home/exedev/Projects/modb/build/store-policy-control/backend-a.mo:12:1
+  3 passed, 4 failed, 0 stopped
+backend B in a service:
+  error E0104: a service value holds a capability or function  /home/exedev/Projects/modb/sketches/store-policy/control-b-service.mo:10:3
+controls failed as they must: True
+exit 0

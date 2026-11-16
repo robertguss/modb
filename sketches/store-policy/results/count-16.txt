@@ -1,0 +1,16 @@
+backend-a.mo: 56 lines of code
+backend-b.mo: 88 lines of code
+control-b-service.mo: 14 lines of code
+nodes.mo: 56 lines of code
+policy.mo: 90 lines of code
+story.mo: 45 lines of code
+policy calls from nodes.mo: ['children', 'read', 'write']
+policy calls through Ops: ['remove']
+nodes.mo calls through Ops: ['get', 'put']
+policy functions: 9
+  that open a node: []
+  that only pass their arguments on: ['get']
+  that take the store: 9 of 9
+backend B only: {'node_text': 6, 'node_from': 9, 'call_text': 8, 'call_from': 15, 'commit': 6, 'recover': 7} total 51
+backend B shared with A: {'fetch': 7, 'free': 6, 'keep': 6, 'ops': 3}
+backend A shared with B: {'fetch': 3, 'free': 3, 'keep': 3, 'ops': 3}

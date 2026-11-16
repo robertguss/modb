@@ -216,3 +216,33 @@ The sessions of experiment 14 in [experiments.md](../experiments.md): fresh agen
 
 Experiment 15 in [experiments.md](../experiments.md), Decision 2. `census.py` labels every Mo file under `~/code/mo/examples/`, `services/` and `learnability/` that declares a service: does its state hold a collection, does a handler add to it, does it want history. `controls/` holds three planted services that must come out as planted. `python3 census.py` is the run as committed; `--siblings` also expands types declared in sibling modules. Results in `results/`. The check for growth reads only a handler's own body, so it misses work passed to another module; the result says how much that cost.
 
+
+## store-policy
+
+Experiment 16 in [experiments.md](../experiments.md), Decision 2. The claim: the store's policy can be Mo code written once, over a collection it never looks inside, and run unchanged whether the nodes sit in a value or behind a capability.
+
+| File | What it is |
+| --- | --- |
+| `nodes.mo` | The collection: numbered rows in a tree of nodes named by number. Every write copies the path and gives a new root. It reaches its nodes through `Ops(S)`, a record of three functions |
+| `policy.mo` | The policy: the root being written, holders, a log of calls, a sweep that frees what no holder reaches, and a replay |
+| `backend-a.mo` | The store is a `Map`. A service holds it, with a step promise |
+| `backend-b.mo` | The store is a `Files`. One text file for each node, and the log in a file |
+| `story.mo` | One fixed list of calls, and what they must give, used over both backends |
+| `control-b-service.mo` | A service whose state holds a `Files`. `mo check` must refuse it |
+
+With `MO` the frozen `mo` at `build/enforcement-trial/mo`:
+
+```sh
+$MO test sketches/store-policy/backend-b.mo    # both backends
+python3 sketches/store-policy/count.py         # lines, and what the policy calls
+python3 sketches/store-policy/control.py       # the two controls
+```
+
+Result on 2026-11-16: `7 passed, 0 failed, 0 stopped`. The policy is 90 lines of code and calls four things: `read`, `write` and `children` from `nodes.mo`, and `remove`.
+
+Two controls, each of which must fail and did:
+
+- `control.py` copies the folder to `build/store-policy-control/` and makes the sweep start from the root being written only. `3 passed, 4 failed`: Mo finds put, hold, put, sweep over both backends.
+- `mo check` on `control-b-service.mo` gives E0104.
+
+What it does not show: any cost, a crash inside a write, names by hash, or a function value that captures the store.
