@@ -944,6 +944,69 @@ Run as committed in `51c0f2d`. The report is [sketches/store-census/results/repo
 - How many programs Mo's users will write with state that grows. Mo has no users' services to count.
 - Whether the task queue's limit comes from the whole-state save.
 
+### Experiment 16 as it will be run, written 2026-11-16 before the run
+
+Under S the runtime gives a collection whose copies share nodes, and the store's policy is Mo code on top. Under L the same policy reaches its nodes through a capability. This writes the policy once and runs it over both, to see how much must cross the line between the two, and what the capability version asks that the other does not.
+
+**What Claude has seen before writing this.** Mo's reference sections 5.5, 5.6, 9, 11, 12 and 14, and `sketches/kept-versions/tree.mo` and `by-number.mo`. No code for this experiment is written. Nothing has been run, not even to find out whether Mo accepts a capability as a type argument.
+
+**What is built, in `sketches/store-policy/`.** All of it runs on the frozen `mo` at `build/enforcement-trial/mo`.
+
+| File | What it is | Whose it would be |
+| --- | --- | --- |
+| `nodes.mo` | The collection: numbered rows in a tree of nodes named by number. Every write copies the path to the row and gives a new root, so an old root still reads the old rows. It reaches its nodes only through a record of functions, `Ops(S)`, where `S` is the type of the store | The runtime's under S and R; the library's under L |
+| `policy.mo` | The policy, written once: the root being written, kept versions, holders, a log of calls, a sweep that frees what no held version reaches, and a replay of the log | Mo code under S and L; the runtime's under R |
+| `backend-a.mo` | `S` is `Map(Int, Node)`. A service holds the map and the policy's state, with a step promise | Stands in for S |
+| `backend-b.mo` | `S` is `Files`. One text file for each node, and the log in a file. Tested with `Files.in_memory` | Stands in for L |
+
+The tree differs from `kept-versions/tree.mo` in two ways: its head moves out into the policy, and it never writes a node in place.
+
+**The promises, under `mo test`.**
+
+- No held version reaches a freed node. Under A this is a step promise in the service, so Mo checks it after every generated call, clock advance and crash. Under B it is checked after a fixed story of calls, and on generated lists of calls if Mo can build them.
+- Replaying the calls gives the same state. Under A this is Mo's own recovery check on the service. Under B the test forgets the policy's state, keeps the files, replays the log file over them, and compares.
+- The same story of calls gives the same answers over A and over B.
+
+**What is counted, by `count.py`.**
+
+- Lines of code in each file: lines that are not blank, not a comment and not inside a `test`.
+- The boundary: every name `policy.mo` calls from `nodes.mo`, and every field of `Ops` that either file calls.
+- How many of the policy's functions match on a node's cases, which is the policy opening a node.
+- Lines that only backend B needs and backend A has no counterpart for.
+
+**What counts.**
+
+- **Favours S:** one policy file serves both backends; the policy calls at most five names across the boundary; it opens a node in at most one function; its code is 150 lines or fewer.
+- **Favours R:** the policy's code is under 40 lines, or more than half of its functions do nothing but pass their arguments to `nodes.mo`. Then so little is left in Mo that it may as well sit in the runtime.
+- **Favours L:** more than half of the policy's functions open a node, so the line between policy and collection is not a real one; and B needs no more code than A.
+- **Counts against L:** B cannot sit in a service, and B needs code of its own to keep its log and to recover.
+
+**Predictions, Claude.**
+
+1. `nodes.mo` and `policy.mo` serve both backends unchanged, with the store as a type parameter: 60%. The doubt is whether Mo takes a capability as a type argument, or a record of functions that take one.
+2. Over A, in a service, Mo's recovery check passes and so does the step promise: 80%.
+3. Over B, the story gives the same answers as over A, and replaying the log file over the surviving files gives the same state: 70%.
+4. The policy calls exactly four things across the boundary: read a row at a root, write a row, list a node's children, and remove a node. It never calls the bare `get` or `put`: 60%. The draft prediction, that freeing needs an operation that lists a node's children, stays at 65%.
+5. The policy opens a node in no function of its own; `children` in `nodes.mo` does it: 70%.
+6. The policy's code is between 60 and 120 lines: 60%.
+7. Backend B needs at least 40 lines that A has no counterpart for: turning a node and a call to text and back, the log file, and recovery: 70%.
+8. Every function in `nodes.mo` and `policy.mo` that reads or writes a node takes the store as a parameter, over both backends alike: 95%. This is close to given by reference section 11.1. What differs is that under A the parameter is a value a service can hold, and under B it is a capability a service cannot.
+
+**Controls that must fail.**
+
+- **Freeing without asking the holders.** With the sweep changed to start from the root being written only, the step promise over A must fail, and the story over B must fail. `control.py` makes the change in a copy under `build/` and runs it.
+- **Backend B in a service.** `control-b-service.mo`, a service whose state holds a `Files`, must be refused by `mo check`.
+
+**Limits known before the run.**
+
+- **Backend A is a `Map` in a service's state,** which Mo saves whole. It shows the shape of the boundary and not the cost. Nothing here pages a node to disk.
+- **Nodes are named by number,** because Mo has no hash. The sweep walks the numbers from 1 to the next unused one. With names by hash it would need the runtime to list the names, which would be one more operation.
+- **The fake files tear nothing.** A crash falls between calls, never inside a write. Experiment 17 covers the steps inside a write.
+- **One writer.** No worlds, no views kept current, no erasure.
+- **A read that fails.** `Files.read_text` gives a `Result`; a `Map` gives an `Option`. To write the policy once, B's `get` turns any error but "not found" into a `stop`. So this cannot show a policy that handles a failed read.
+- **Lines of Mo are a coarse measure,** and the thresholds above are Claude's.
+- **Claude writes both sides and leans to S.** The counts and the controls are the guard, and the hand judgement in "favours R" is the weakest part.
+
 ### Where Claude stands, with what would move it
 
 - **S at 65%, L at 20%, R at 15%.** After the reading of Mo, L lost most of the cover it was thought to get from Lean. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
