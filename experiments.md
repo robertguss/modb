@@ -836,6 +836,7 @@ What it does not show: time. The run counted instructions and did not time the b
 
 - **The library option is dropped** (2026-11-16, after experiment 16).
 - **Any `Map`, `Set` or `List` in a service's state must be able to live on disk and grow past memory** (2026-11-16, Q7). Not only declared tables, and not any value at all. Tables are built on the same collection.
+- **The stored format is not decided now** (2026-11-16, Q9). Nobody uses the store yet, so nothing is promised about a format that stays the same or that a tool outside Mo can read. One guard: stored data carries a format version number. The question comes back when the log decision below is made, or when the first data that must outlive a change to the runtime exists.
 
 ### The options
 
@@ -1128,15 +1129,16 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 
 ### Where Claude stands, with what would move it
 
-- **S at 80%, R at 20%.** After experiment 17: the sweep is safe as a Mo call, but a sweep in the background with names by hash needs the runtime, and every sweep needs a root only the runtime knows. One piece of the policy moves into the runtime; the rest holds. Before it, S at 85% and R at 15%, when Robert dropped L on 2026-11-16 and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
+- **S at 75%, R at 25%.** After Robert put Q9 off on 2026-11-16. Before that, S at 80% and R at 20%, after experiment 17: the sweep is safe as a Mo call, but a sweep in the background with names by hash needs the runtime, and every sweep needs a root only the runtime knows. One piece of the policy moves into the runtime; the rest holds. Before it, S at 85% and R at 15%, when Robert dropped L on 2026-11-16 and its share went to the two in proportion. Before that, S at 70%, L at 18%, R at 12%, after experiment 16. After the reading of Mo: 65%, 20% and 15%. After the research panel: 60%, 25% and 15%. Before it: 50%, 20% and 30%.
 - **Q7 is answered and moves nothing:** collections in a service's state, which both S and R give.
-- **Toward R:** Robert answers Q9 "no"; more of the policy turns out to need what only the runtime knows, as the sweep did.
-- **Toward S:** Robert answers Q9 "yes"; the roots, the holders and the history stay plain Mo once the sweep is the runtime's.
+- **Q9 is put off, and that takes one reason for S away.** A format defined apart from the runtime pointed to S. What is left for S is experiment 16, and Robert's own test: policy written in Mo is easier to change than policy inside the runtime, and application code is the same under both.
+- **Toward R:** more of the policy turns out to need what only the runtime knows, as the sweep did.
+- **Toward S:** the roots, the holders and the history stay plain Mo once the sweep is the runtime's.
 
 ## Decisions waiting for options and experiments
 
 These came out of the same ideation. None has an experiment designed.
 
-- **Does the log run unbroken through an upgrade?** Idea 2. Today an upgrade deletes the log's tail.
+- **Does the log run unbroken through an upgrade?** Idea 2. Today an upgrade deletes the log's tail. Decision 2's Q9 waits on this: if the log is kept whole, the tree can always be rebuilt from it and the format of a stored node is free to change; if it is not, the stored nodes are the only copy and their format matters. Today a snapshot also deletes the log.
 - **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's. Experiment 17 bears on it too: with names by hash a write can give back a node that nothing reached, so a sweep that runs beside the writer must be told of every node written; with names by number it need not be.
 - **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.
