@@ -11,7 +11,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "service-timing"))
-MO = sys.argv[1]
+MO = str(pathlib.Path(sys.argv[1]).resolve())
 sys.argv[1:] = [MO]
 import measure as base
 
@@ -60,11 +60,14 @@ class Service(base.Service):
         self.proc = subprocess.Popen(command, env={**os.environ, "BOOK_TOKEN": TOKEN},
                                      stdout=subprocess.PIPE, stderr=open(self.errors, "a"),
                                      text=True)
-        line = self.proc.stdout.readline()
-        found = re.search(r":(\d+)/mcp", line)
-        if not found:
-            self.proc.wait(timeout=60)
-            raise RuntimeError(line + self.errors.read_text()[-2000:])
+        said, found = [], None
+        while not found:
+            line = self.proc.stdout.readline()
+            if not line:
+                self.proc.wait(timeout=60)
+                raise RuntimeError("".join(said) + self.errors.read_text()[-2000:])
+            said.append(line)
+            found = re.search(r":(\d+)/mcp", line)
         self.port = int(found.group(1))
         self.next_id = 0
         self.post({"jsonrpc": "2.0", "id": 0, "method": "initialize",
@@ -99,7 +102,15 @@ def real(name, calls, versions):
         if place and version == 3:
             extra += ["--migrate", "Book.from_v2"]
         command = " ".join(["mo serve", f"v{version}/main.mo", "--data DIR"] + extra)
-        service = Service(data, HERE / f"v{version}" / "main.mo", extra)
+        try:
+            service = Service(data, HERE / f"v{version}" / "main.mo", extra)
+        except RuntimeError as refused:
+            held = re.findall(r"restart with --review ([0-9a-f]{64})", str(refused))
+            if not held:
+                raise
+            steps.append(command + "  (refused with E1435: the upgrade waits for review)")
+            command += " --review ID"
+            service = Service(data, HERE / f"v{version}" / "main.mo", extra + ["--review", held[-1]])
         steps.append(command)
         for index, at, _caller, tool, arguments in calls:
             if at == version or (place == 0 and at < version):

@@ -259,3 +259,15 @@ python3 sketches/log-cost/live.py $MO 10000                   # processor time o
 ```
 
 `cost.py` kills the service to leave a known number of rows in the log, and reads the store's file from a copy. A start is timed until the service has answered one `get`.
+
+## log-through-upgrade
+
+The claim, for experiment 18 in [experiments.md](../experiments.md): a record of calls made under three versions of a program can be run again in Mo, with each call under its own version's code, and give the state a real service reached through two upgrades. It also runs the record with one caller's calls taken out, and with version 1's calls through version 2's corrected code.
+
+`v1/`, `v2/` and `v3/` are the three versions of a book of tallies: a `Book` module and the service around it. `rebuild.mo` runs the record. `story.py` holds the story of 30 calls, sends it to three real services, copies the versions into `build/log-through-upgrade/rebuild/` as `Book1`, `Book2` and `Book3`, runs the rebuild and compares.
+
+```sh
+python3 sketches/log-through-upgrade/story.py $MO
+```
+
+The controls: every call through version 3's code must give a different state; the rebuild without the upgrade function must not compile; taking a caller out must change the state. `v3/book.mo` cannot be checked alone, because it uses `UpgradeOld`, which Mo makes from the folder being upgraded.

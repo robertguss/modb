@@ -1370,6 +1370,57 @@ If the frozen `mo` cannot upgrade a service in a folder under `build/`, the thre
 - **The record is the script's, not Mo's.** This shows what a record must hold, not that Mo can keep one.
 - **A story of about 30 calls, written by Claude,** who also writes the code it is run through. The three real services are the guard.
 
+### Result of experiment 18, 2026-11-16
+
+Run with `python3 sketches/log-through-upgrade/story.py build/enforcement-trial/mo`. The numbers are in `sketches/log-through-upgrade/results/story-18.json`. No Mo file changed after the code was committed. The script changed in four places after its first run: it passes a review id, reads the service's lines until the address appears, uses a full path to `mo`, and has its own call method.
+
+**The three real services and the three rebuilds.** Each rebuild gave the same state and the same reply to every call as its real service.
+
+| Run | Real service | Rebuild in Mo | Same |
+| --- | --- | --- | --- |
+| Faithful | `x` 0, `y` 25, `z` 19, 6 moves | the same | yes, state and all 30 replies |
+| Caller `b` taken out | `x` 4, `y` 8, `z` 19, 5 moves | the same | yes, state and all 20 replies |
+| A bug put right | `x` 0, `y` 11, `z` 33, 6 moves | the same | yes, state and all 30 replies |
+
+**What taking `b` out did to the others.** `b` made 10 of the 30 calls. Of the 20 calls by `a` and `c`, 15 got a different reply. Two that had been done were now refused, and one that had been refused was now done.
+
+**What putting the bug right did.** 15 of the 30 calls got a different reply. The move that had taken a tally below zero was refused. One later call that had been refused was done, and one that had been done was refused.
+
+**What had to be kept.**
+
+- Each version's code, under a name of its own. The only change to each file is its `module` line.
+- The upgrade function, with two changes: `use UpgradeOld` and `UpgradeOld.State` now name the kept version 2 module.
+- **One thing the prediction did not list:** a line that turns a version 1 state into a version 2 state. Their shapes are the same, and Mo's own upgrade needs nothing for that, because the saved bytes match. In one program they are two types.
+- For each call: its place in the order, its version, its tool and its arguments. For taking a caller out, its caller. For listing what changed, its reply.
+
+**The predictions.**
+
+| # | Prediction | Result |
+| --- | --- | --- |
+| 1 | The faithful rebuild gives the same state, 75% | Held |
+| 2 | Three modules named `Book` cannot sit in one program, 85% | Held. `module Book` in a folder is refused (E0034). `V1.Book` and `V2.Book` used by one module clash (E0038) |
+| 3 | The rebuild needs version 2's type as well as its functions, 80% | Held |
+| 4 | The upgrade function must be changed to name the kept module, 70% | Held |
+| 5 | With `b` out, the same state as the real service that never got `b`'s calls, 75% | Held |
+| 6 | Version 1's calls through version 2's code match the service that began on version 2, 80% | Held |
+| 7 | The frozen `mo` upgrades a stopped service with no step only a person can take, 60% | Held, with a second start. Every upgrade was first refused with E1435, "the upgrade waits for review", and went through when the script named the review id |
+| 8 | What must be kept is the list given and no more, 60% | **Failed by one item:** the line between two versions of the same shape |
+
+**The controls.**
+
+- **Newest code for every call:** `x` 0, `y` 11, `z` 33, 13 moves. It differs from the real service, and from the bug put right, because version 3 counts moves from the first call.
+- **No upgrade function:** refused with E0077, "expected State, found State".
+- **Taking `b` out matters:** the state differs, and 15 other calls changed their reply.
+
+**What it means for Decision 3.**
+
+- **A record can be run through an upgrade, and what must be kept is small.** In this case: the code of each version, the upgrade functions, and a record that holds each call's version, tool, arguments, caller and reply.
+- **Both things Robert asked for reached back through an upgrade.** A bug fix is itself an upgrade. Putting the state right means running calls made before that upgrade through the code after it. Under option C those calls are a record only. So C gives the bug-fix run at most once, at the upgrade that carries the fix, and gives taking a caller out only back to the last upgrade.
+- **A run that is meant to differ is not a repair. It is another history.** Taking 10 calls out changed what the other callers were told in 15 of their 20 calls. A caller that was refused may have done something else because of it, and the record cannot know that. Inference: the result of such a run is a proposal, with a list of the calls that changed, for someone to accept.
+- **Running everything through the newest code is a third thing.** It is neither the old history nor the old history with one fix.
+
+**Not shown.** A tool whose arguments change between versions. Code named by hash. A later build of Mo giving the same result for an old call. Handlers that use the time. More than three versions.
+
 ### Where Claude stands, with what would move it
 
 These rest on the reading and on argument. Nothing has been measured.
@@ -1382,6 +1433,7 @@ These rest on the reading and on argument. Nothing has been measured.
 - **Toward A:** nothing found so far.
 - **After the panel, 2026-11-16: C at 40%, B at 35%, D at 15%, A at 10%.** The engines that do what D does drop old code when its runs end. Nothing measured yet.
 - **After Robert's answer to Q1: C at 60%, D at 30%, B at 7%, A at 3%.** The answer asks for a record that can be run, which A and B do not give. Whether a run must reach through an upgrade is what separates C from D, and experiment 18 is where that is tried.
+- **After experiments 18 and 19: D at 55%, C at 35%, B at 7%, A at 3%.** What Robert asked for reaches back through an upgrade, because a bug fix is an upgrade. Experiment 18 did it with little kept, and experiment 19 found no cost in time that rules it out once the state is not encoded whole. Against D: nothing tested a later build of Mo, a tool whose arguments change, or erasing; and the panel found no system that keeps old code for good and is glad of it.
 
 ## Decisions waiting for options and experiments
 
