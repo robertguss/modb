@@ -22,6 +22,10 @@ WORLDS_LANDINGS = [("call", "off"), ("call", "inplace"),
 WORLDS_INVARIANTS = ["RuleHolds", "Serial", "ApprovedOnly", "NotAllDone"]
 WORLDS_TRIES = os.environ.get("WORLDS_TRIES", "3")
 
+SWEEP_INVARIANTS = ["Safe", "Logged", "Recovers", "NothingFreed"]
+SWEEP_WRITES = os.environ.get("SWEEP_WRITES", "3")
+SWEEP_CRASHES = os.environ.get("SWEEP_CRASHES", "2")
+
 
 def violated(spec, name, constants, invariants):
     found = set()
@@ -118,7 +122,35 @@ def worlds():
     return wrong
 
 
-MODELS = {"replay": replay, "worlds": worlds}
+def sweep_predicted(order, sweep, names, keep):
+    broken = {"NothingFreed"}
+    if sweep == "ignore" or (sweep == "born" and names == "hash"):
+        broken.add("Safe")
+    if order == "root":
+        broken.add("Logged")
+    if keep == "held":
+        broken.add("Recovers")
+    return broken
+
+
+def sweep():
+    wrong = 0
+    for order, kind, names, keep in itertools.product(
+            ("log", "root"), ("excl", "ignore", "born", "pin"), ("number", "hash"), ("held", "snap")):
+        want = sweep_predicted(order, kind, names, keep)
+        got = violated("Sweep", f"{order}-{kind}-{names}-{keep}",
+                       f'Order = "{order}" Sweep = "{kind}" Names = "{names}" Keep = "{keep}" '
+                       f"MaxWrites = {SWEEP_WRITES} MaxCrashes = {SWEEP_CRASHES}", SWEEP_INVARIANTS)
+        wrong += want != got
+        bad = sorted(got - {"NothingFreed"})
+        idle = "" if "NothingFreed" in got else "  frees nothing"
+        print(f"{order:5} {kind:7} {names:7} {keep:5} "
+              f"{'fails ' + '+'.join(bad) if bad else 'holds':30}{idle} {verdict(want, got)}")
+    print(f"Sweep: {wrong} of 32 not as predicted")
+    return wrong
+
+
+MODELS = {"replay": replay, "worlds": worlds, "sweep": sweep}
 
 
 def main():
