@@ -1132,5 +1132,5 @@ The model is `models/Sweep.tla`, committed in `131f279` before any run. The tabl
 These came out of the same ideation. None has an experiment designed.
 
 - **Does the log run unbroken through an upgrade?** Idea 2. Today an upgrade deletes the log's tail.
-- **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's.
+- **Are nodes named by hash or by number?** `design.md` section 9. Decision 2 bears on it: erasing a person by destroying their key means their values no longer share nodes with anyone else's. Experiment 17 bears on it too: with names by hash a write can give back a node that nothing reached, so a sweep that runs beside the writer must be told of every node written; with names by number it need not be.
 - **May a write function open a held value?** Idea 3. If it may, replay after an erasure gives a different state.
