@@ -158,7 +158,7 @@ fn decode_meta(raw: Bytes) : Result(MetaPage, ModbError)
   if raw.size != page_size
     return Error(Corrupt(reason: "meta page size #{raw.size} != #{page_size}"))
   end
-  if raw.slice(0, 8) != meta_magic()
+  if raw.compare_slice_at(0, 8, meta_magic()) != Some(Equal)
     return Error(Corrupt(reason: "bad meta magic"))
   end
   ver = try read_u32(raw, 8, "format_version")
@@ -169,9 +169,13 @@ fn decode_meta(raw: Bytes) : Result(MetaPage, ModbError)
   catalog_root = try read_i64(raw, 24, "catalog_root")
   freelist_root = try read_i64(raw, 32, "freelist_root")
   page_count = try read_i64(raw, 40, "page_count")
-  stored_sum = raw.slice(48, 80)
   computed_sum = Crypto.sha256(raw.slice(0, 48))
-  return Error(Corrupt(reason: "meta checksum mismatch")) if stored_sum != computed_sum
+  return Error(Corrupt(reason: "meta checksum mismatch")) if raw.compare_slice_at(
+    48,
+    32,
+    computed_sum
+  ) !=
+    Some(Equal)
   return Error(Corrupt(reason: "invalid meta txid #{txid}")) if txid < 1
   return Error(Corrupt(reason: "invalid meta page_count #{page_count}")) if page_count < 2
   if catalog_root < 0 or catalog_root >= page_count or catalog_root == 1
@@ -221,9 +225,8 @@ fn verify_header(raw: Bytes, expected_page_id: Int) : Result(PageHeader, ModbErr
   if pid != expected_page_id
     return Error(Corrupt(reason: "page id mismatch: expected #{expected_page_id}, got #{pid}"))
   end
-  stored_sum = raw.slice(16, 48)
   computed_sum = Crypto.sha256(Bytes.join([raw.slice(0, 16), raw.slice(48, page_size)]))
-  if stored_sum != computed_sum
+  if raw.compare_slice_at(16, 32, computed_sum) != Some(Equal)
     return Error(Corrupt(reason: "checksum mismatch on page #{expected_page_id}"))
   end
   Ok(PageHeader(kind: kind, entry_count: entry_count, page_id: pid))
@@ -357,12 +360,13 @@ fn branch_lookup_child_with_header(
     return Error(Corrupt(reason: "branch slot out of bounds")) if off < min_cell or
       off + 10 > page_size
     klen = try read_u16(raw, off, "branch key_len")
-    return Error(Corrupt(reason: "branch key out of bounds")) if off + 10 + klen > page_size
-    sep = raw.slice(off + 10, off + 10 + klen)
-    if target < sep
-      hi = mid
-    else
-      lo = mid + 1
+    case raw.compare_slice_at(off + 10, klen, target)
+      None: return Error(Corrupt(reason: "branch key out of bounds"))
+      Some(ord):
+        case ord
+          Greater: hi = mid
+          Less | Equal: lo = mid + 1
+        end
     end
   end
   if lo == 0
@@ -508,17 +512,25 @@ fn leaf_lookup_entry_with_header(raw: Bytes, hdr: PageHeader, expected_page_id: 
     else
       return Error(Corrupt(reason: "unknown leaf value kind #{vkind}"))
     end
-    if kstart + klen > page_size
-      return Error(Corrupt(reason: "leaf key overflows page"))
-    end
-    key = raw.slice(kstart, kstart + klen)
-    if target == key
-      entry = try decode_leaf_cell(raw, off, min_cell)
-      return Ok(Some(entry.value))
-    else if target < key
-      hi = mid
-    else
-      lo = mid + 1
+    case raw.compare_slice_at(kstart, klen, target)
+      None: return Error(Corrupt(reason: "leaf key overflows page"))
+      Some(ord):
+        case ord
+          Less: lo = mid + 1
+          Greater: hi = mid
+          Equal:
+            if vkind == 0
+              vlen = try read_u16(raw, off + 4, "leaf val_len")
+              if kstart + klen + vlen > page_size
+                return Error(Corrupt(reason: "inline leaf cell overflows page"))
+              end
+              return Ok(Some(Inline(data: raw.slice(kstart + klen, kstart + klen + vlen))))
+            else
+              fp = try read_i64(raw, off + 4, "overflow first_page")
+              tl = try read_i64(raw, off + 12, "overflow total_len")
+              return Ok(Some(Overflow(first_page: fp, total_len: tl)))
+            end
+        end
     end
   end
   Ok(None)

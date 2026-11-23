@@ -819,7 +819,7 @@ fn snapshot_scan(
   hi = end_key.map(tbl.key_codec.encode)
   if empty_bounds?(lo, hi)
     ## Still validate that `snap` is an active snapshot on `store`.
-    _probe = try Modb.snapshot_scan(store, snap, tbl.bucket, None, None, 1)
+    _ = try Modb.snapshot_scan(store, snap, tbl.bucket, None, None, 1)
     return Ok([])
   end
   raw_rows = try Modb.snapshot_scan(store, snap, tbl.bucket, lo, hi, limit)
@@ -903,7 +903,7 @@ fn snapshot_range_by(
     lo = start_key.map(idx.key_codec.encode)
     hi = end_key.map(idx.key_codec.encode)
     if empty_bounds?(lo, hi)
-      _probe = try Modb.snapshot_scan(store, snap, idx.bucket, None, None, 1)
+      _ = try Modb.snapshot_scan(store, snap, idx.bucket, None, None, 1)
       return Ok([])
     end
     idx_rows = try Modb.snapshot_scan(store, snap, idx.bucket, lo, hi, limit)
@@ -918,7 +918,7 @@ fn snapshot_range_by(
     lo = start_key.map(fn(s) frame_index_prefix(idx.key_codec.encode(s), 0) end)
     hi = end_key.map(fn(e) frame_index_prefix(idx.key_codec.encode(e), 0) end)
     if empty_bounds?(lo, hi)
-      _probe = try Modb.snapshot_scan(store, snap, idx.bucket, None, None, 1)
+      _ = try Modb.snapshot_scan(store, snap, idx.bucket, None, None, 1)
       return Ok([])
     end
     idx_rows = try Modb.snapshot_scan(store, snap, idx.bucket, lo, hi, limit)

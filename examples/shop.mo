@@ -114,17 +114,14 @@ fn place_order(db: Store, order_id: Int, buyer_id: Int, sku: Text, quantity: Int
         Member: (subtotal * 0.90).round(2)
       end
 
-      updated_prod = Product(
-        title: prod.title,
-        category: prod.category,
-        price: prod.price,
-        stock: prod.stock - quantity
-      )
+      var updated_prod = prod
+      updated_prod.stock -= quantity
       order = Order(buyer_id: buyer_id, sku: sku, quantity: quantity, total: total, status: Placed)
 
-      t1 = try Table.put(tx, products, sku, updated_prod)
-      t2 = try Table.put(t1, orders, order_id, order)
-      Ok((t2, order))
+      var cur = tx
+      cur = try Table.put(cur, products, sku, updated_prod)
+      cur = try Table.put(cur, orders, order_id, order)
+      Ok((cur, order))
     end
   )
 end
@@ -138,13 +135,8 @@ fn mark_shipped(db: Store, order_id: Int) : Result(Store, ShopError)
         case try Table.tx_get(tx, orders, order_id)
           None: Ok(tx)
           Some(ord):
-            shipped = Order(
-              buyer_id: ord.buyer_id,
-              sku: ord.sku,
-              quantity: ord.quantity,
-              total: ord.total,
-              status: Shipped
-            )
+            var shipped = ord
+            shipped.status = Shipped
             Table.put(tx, orders, order_id, shipped)
         end
       end

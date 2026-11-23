@@ -56,21 +56,6 @@ fn byte_vec(ints: List(Int)) : Bytes
   Bytes.from_list(out)
 end
 
-fn apply_batch_ops(tx: Modb.WriteTx, tbl: Table.Table(Int, RefRec), ops: List((Int, Int, RefRec))) : Result(
-  Modb.WriteTx,
-  TableError
-)
-  var cur = tx
-  for (kind, pk, rec) in ops
-    if kind == 0
-      cur = try Table.delete(cur, tbl, pk)
-    else
-      cur = try Table.put(cur, tbl, pk, rec)
-    end
-  end
-  Ok(cur)
-end
-
 test "Signed Int key ordering across INT64_MIN..INT64_MAX and round-trip decoding"
   boundaries = [
     Table.int64_min,
@@ -588,7 +573,20 @@ test "Differential correctness: 600 random indexed puts/overwrites/deletes/confl
         end
       end
 
-      outcome = Table.write_tx(db, fn(tx) apply_batch_ops(tx, tbl, ops) end)
+      outcome = Table.write_tx(
+        db,
+        fn(tx)
+          var cur = tx
+          for (kind, pk, rec) in ops
+            if kind == 0
+              cur = try Table.delete(cur, tbl, pk)
+            else
+              cur = try Table.put(cur, tbl, pk, rec)
+            end
+          end
+          Ok(cur)
+        end
+      )
 
       if expect_conflict
         assert outcome is Error(Table.UniqueConflict(index: "ref_by_email", value: _))

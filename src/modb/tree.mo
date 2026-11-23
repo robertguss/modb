@@ -157,7 +157,7 @@ fn read_node_page(store: BlockStore, staged: Map(Int, Bytes), page_id: Int) : Re
         Some(cached): Ok((cached, true))
         None:
           raw = try read_page(store, page_id)
-          _hdr = try verify_header(raw, page_id)
+          _ = try verify_header(raw, page_id)
           Ok((raw, true))
       end
   end

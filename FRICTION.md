@@ -6,15 +6,15 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 
 ## Friction & Papercuts Hit
 
-### 1. `Bytes.empty?` missing (stdlib inconsistency)
+### 1. ~~`Bytes.empty?` missing (stdlib inconsistency)~~ — Fixed in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417)
 - **Where:** `src/modb.mo` (`prefix_scan`)
-- **What happened:** `Text`, `List`, `Map`, and `Set` all expose `.empty?`, but `Bytes` only has `.size` (must write `bytes.size == 0`).
-- **Severity:** Minor stdlib consistency papercut.
+- **What happened:** `Text`, `List`, `Map`, and `Set` all exposed `.empty?`, while `Bytes` only had `.size`.
+- **Resolution:** Added `Bytes.empty?` (`fn(Bytes) : Bool`) in PR #417; adopted in `src/modb.mo` (`prefix.empty?`).
 
-### 2. Confusing diagnostic when using `or` on `Result(T, E)`
+### 2. ~~Confusing diagnostic when using `or` on `Result(T, E)`~~ — Fixed in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417)
 - **Where:** Tests across `pager.mo`, `codec.mo`, `tree.mo`, `modb.mo`
-- **What happened:** Writing `res or stop "failed"` on a `Result` emits `error E0074: a condition isn't a yes-or-no answer — expected Bool, found Result(...)` because `or` falls back to boolean OR whenever the LHS is not `Option(T)`. Either supporting `Result` fallback in `or` or emitting a targeted diagnostic (`or` unwraps `Option`, not `Result`; use `try`, `case`, or `assert ... is Ok(v)`) would save time.
-- **Severity:** Moderate DX / diagnostic clarity.
+- **What happened:** Writing `res or stop "failed"` on a `Result` emitted `error E0074: a condition isn't a yes-or-no answer — expected Bool, found Result(...)`.
+- **Resolution:** PR #417 kept `or` semantics and `E0074` unchanged while emitting a targeted message (`"or unwraps Option or combines Bool, not Result"`) with help suggesting `try`, `case`, or `assert ... is Ok(v)`.
 
 ### 3. `return` is not allowed inside `or` or single-line `if: ... else:`
 - **Where:** `src/modb/codec.mo` (`leaf_lookup_entry`), `src/modb.mo` (`buckets`), `bench/kill-writer.mo` (`main`)
@@ -26,11 +26,11 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** `var entries: List(LeafEntry) = []` fails to parse (`E0007: expected =, found :`). Local type inference did infer every single empty `[]`, `{}`, and `None` cleanly once used later, so this never blocked us—just surprised muscle memory.
 - **Severity:** Minor ergonomics note.
 
-### 5. `Files.File` / binary page encoding allocates per-field `Bytes` chunks
-- **Where:** `src/modb/codec.mo` (`encode_leaf`, `encode_branch`, `leaf_lookup_entry`)
-- **What happened:** Building a 4 KiB page constructs a `List(Bytes)` of small 2–8 byte pieces (`Bytes.from_u16_be`, `Bytes.from_i64_be`, slices) and flattens them with `Bytes.join`. On reads, comparing a key inside a 4 KiB page allocates a fresh `raw.slice(start, end)` copy per binary-search probe because `Bytes` has no slice comparison (`bytes.compare_slice_at(offset, len, other)`) or mutable `BytesBuilder`.
-- **Impact:** Measurable—part of the 11×–21× gap vs C SQLite. Not a blocker for 100k rows (~10k gets/s, ~8k writes/s), and easy to optimize later with 2–3 `Bytes` primitives if binary workloads become a priority.
-- **Severity:** Performance opportunity (non-blocking).
+### 5. `Files.File` / binary page encoding allocates per-field `Bytes` chunks *(read-side addressed in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417))*
+- **Where:** `src/modb/codec.mo` (`encode_leaf`, `encode_branch`, `branch_lookup_child_with_header`, `leaf_lookup_entry_with_header`)
+- **What happened:** Building a 4 KiB page constructs a `List(Bytes)` of small 2–8 byte pieces (`Bytes.from_u16_be`, `Bytes.from_i64_be`, slices) and flattens them with `Bytes.join`. On reads, comparing a key inside a 4 KiB page previously allocated a fresh `raw.slice(start, end)` per binary-search probe.
+- **PR #417 update:** Adopted `Bytes.compare_slice_at` across `decode_meta`, `verify_header`, `branch_lookup_child_with_header`, and `leaf_lookup_entry_with_header`, eliminating all per-probe `Bytes.slice` allocations and avoiding re-slicing keys on leaf hits. Controlled A/B benchmarks (see [BENCHMARKS.md](BENCHMARKS.md)) showed a modest **~8–15% warm-`get` gain** on 8-byte keys (and revealed that nested `case` matching `Some(Equal)/Some(Greater)/Some(Less)` costs ~12–16% vs splitting `Some(ord)` and placing `Less`/`Greater` first). The bigger lesson: Perceus makes short-lived `Bytes.slice` very cheap, while **bytecode dispatch + ~60 per-`get` Mo helper calls (`read_u16`/`read_i64`)** dominate the remaining ~11–20× gap to C SQLite. Write-side `BytesBuilder` packing remains open if needed later.
+- **Severity:** Performance insight (non-blocking).
 
 ### 6. No `Result.unwrap` / `or` ergonomic bridge in `main` for mixed error types
 - **Where:** `bench/bench-modb.mo`, `bench/kill-writer.mo`
@@ -42,20 +42,20 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** Initially created `test_modb.mo` (`module TestModb`); `mo check` immediately gave an exact fix (`test-modb.mo`). Good, consistent convention—worth keeping in mind when scaffolding new projects.
 - **Severity:** Non-issue (diagnostic was crystal clear).
 
-### 8. Anonymous functions forbid *local* `var` bindings inside their own body (`E0090`)
+### 8. ~~Anonymous functions forbid *local* `var` bindings inside their own body (`E0090`)~~ — Fixed in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417)
 - **Where:** `tests/test-table.mo`, `examples/shop.mo` (inside `Table.write_tx(db, fn(tx) ... end)` and `Table.transact(...)` callbacks)
-- **What happened:** Reference 5.6 forbids anonymous functions from assigning captured outer `var`s, which protects value semantics. However, `error E0090: an anonymous function can't assign a var` also rejects `var` bindings declared *locally inside* the anonymous function itself (e.g. `var cur = tx; for k in keys ... cur = try Table.put(...)` or `var updated = prod; updated.stock -= qty`). We worked around this cleanly by constructing record values directly, extracting named helpers, and adding `Table.put_many` / `Table.delete_many` batch helpers. Allowing purely local `var` bindings inside anonymous functions (while still rejecting assignment to outer `var`s) would make callback-scoped transactions much more natural.
-- **Severity:** Moderate ergonomics friction for callback-based APIs.
+- **What happened:** `E0090` rejected `var` declarations and mutations even when declared *locally inside* an anonymous function, forcing manual record reconstruction and extracted helper functions (`apply_batch_ops`).
+- **Resolution:** PR #417 allows local `var` bindings, loops, and field updates inside anonymous functions while keeping `E0090` (`"an anonymous function can't assign an outer var"`) for outer `var` writes and preserving `E0092` capture safety. Adopted in `examples/shop.mo` (`place_order`, `mark_shipped`) and `tests/test-table.mo` (inlined the `apply_batch_ops` loop directly into `Table.write_tx`).
 
 ### 9. `E1150` when a top-level constant captures a function reading another module constant
 - **Where:** `src/modb/table.mo` (`encode_int_key` / `decode_int_key`) triggered from `examples/shop.mo` (`customers = Table.int_key[Customer]("customers")`)
 - **What happened:** `encode_int_key` originally wrote `n.wrapping_add(int64_min)` referencing the module constant `int64_min = -9223372036854775808`. Calling `Table.int_key` inside functions or `test` blocks compiled and ran fine, but declaring `customers = Table.int_key[Customer]("customers")` as a module-level schema constant in `examples/shop.mo` hit `error E1150: this constant's deferred function needs globals not yet initialized` because `KeyCodec` stores `encode_int_key` as a function value inside a constant. Inlining literal `-9223372036854775808` directly inside `encode_int_key` and `decode_int_key` eliminated the global read and let top-level declarative table/index constants work out of the box.
 - **Severity:** Moderate compiler limitation (`E1150`) with a simple library-side workaround.
 
-### 10. Bare `_ = expr` discard fails with misleading `E0010` (`assignment changes a var`)
-- **Where:** `src/modb/table.mo` (`snapshot_scan`, `snapshot_range_by`)
-- **What happened:** Writing `_ = try Modb.snapshot_scan(...)` to discard an `Ok` value after validating a snapshot fails with `error E0010: assignment changes a var or its fields`. `_` is valid in tuple destructuring (`(_, v) = ...`) and `for _ in ...`, whereas single-target `=` requires a named binding (`_probe = ...`) when not mutating a `var`. Either treating bare `_ = expr` as a discard binding or tailoring `E0010` to suggest `_unused = expr` would prevent confusion.
-- **Severity:** Minor syntax/diagnostic papercut.
+### 10. ~~Bare `_ = expr` discard fails with misleading `E0010` (`assignment changes a var`)~~ — Fixed in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417)
+- **Where:** `src/modb/table.mo` (`snapshot_scan`, `snapshot_range_by`), `src/modb/tree.mo` (`read_node_page`)
+- **What happened:** Writing `_ = try Modb.snapshot_scan(...)` failed with `E0010`, requiring dummy names like `_probe` and `_hdr`.
+- **Resolution:** PR #417 enabled bare `_ = expr` discard bindings (evaluating once and preserving `E0412` on unhandled `Result`). Adopted across `src/modb/table.mo` and `src/modb/tree.mo`.
 
 ### 11. Single-letter type parameters, alphabetical `[...]` brackets, and heterogeneous index erasure
 - **Where:** `src/modb/table.mo` (`Index(K, V, I)`, `text_index[Int, User]`, `IndexSpec(K, V)`)

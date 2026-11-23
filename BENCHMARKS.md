@@ -67,12 +67,31 @@ The initial naive CoW implementation re-encoded, re-hashed (SHA-256), and update
 
 ---
 
-## 4. What These Numbers Tell Us (Including for a Future Rust Runtime)
+## 4. Impact of PR #417 (`Bytes.compare_slice_at` + DX Improvements)
 
-1. **Bytecode interpretation + Perceus already clears the bar for real systems code:** ~10k point lookups/sec, ~8k writes/sec, 100k rows in 69.8 MiB RSS, and ~4 ms durable commits—with zero compiler changes and zero memory blowup.
-2. **Where the 11×–21× gap to C SQLite lives:**
-   - Tight bytecode loops in page serialization/deserialization (`encode_leaf`, `decode_leaf`, binary search slicing `Bytes`).
+Measured on **2026-11-23** against `mo` release build (`gcc -O2`, commit `067fc6ae` — merged in [robertguss/mo#417](https://github.com/robertguss/mo/pull/417)) after adopting `Bytes.compare_slice_at`, `Bytes.empty?`, bare `_ = expr`, and local `var` in anonymous functions across MoDB (all 5 suites / 29 tests passing).
+
+Controlled back-to-back A/B runs (`BEFORE = raw.slice + ==/<` vs `AFTER = Bytes.compare_slice_at`, same `mo` binary, `/dev/shm` tmpfs to isolate CPU/VM cost from disk `fsync` jitter):
+
+| Controlled A/B Benchmark (same `mo` binary, `/dev/shm`) | Before (`raw.slice`) | After (`compare_slice_at`) | Delta |
+| --- | ---: | ---: | --- |
+| 10k DB warm `get` (1,000×, median of 3 alternating trials) | 96 ms | 82 ms | **~15% faster** |
+| 10k DB cold `get` (1,000×, median of 3 alternating trials) | 145 ms | 133 ms | **~8% faster** |
+| 20k DB true warm-cache `get` (10,000×, 8B keys, median of 3) | 1,297 ms | 1,187 ms | **~8.5% faster** |
+| 100k DB load + overwrite + freelist stability (`/dev/shm`) | 13,627 ms / 10,998 ms | 13,134 ms / 11,515 ms | Flat (within host jitter); `3,933` pages (`45` free), `70.0 MiB` RSS, `verify: OK` |
+
+**Two diagnostic findings from microbenchmarking `compare_slice_at` (200,000 probes/round):**
+1. **Nested `case` pattern matching overhead:** Matching `Some(Equal)` / `Some(Greater)` / `Some(Less)` / `None` directly compiled to sequential tag checks (~`258–274 ms` on misses), whereas splitting `Some(ord)` and placing common binary-search arms (`Less`/`Greater`) before `Equal` cut ~12–16% (`217–250 ms`).
+2. **Allocation wasn't the main bottleneck on 8-byte keys:** Mo's Perceus allocator reuses short-lived `raw.slice` buffers cheaply (~20–30 ns), while `Option(Ordering)` still boxes a choice cell (`mo_value_case`) and each `get` executes ~60 Mo helper calls (`read_u16`/`read_i64` + `try`) plus bytecode loop dispatch (~800–1,000 ns/probe).
+
+---
+
+## 5. What These Numbers Tell Us (Including for a Future Rust Runtime)
+
+1. **Bytecode interpretation + Perceus already clears the bar for real systems code:** ~10k point lookups/sec, ~8k writes/sec, 100k rows in ~70 MiB RSS, and ~4 ms durable commits—with zero compiler changes and zero memory blowup.
+2. **Where the 11×–21× gap to C SQLite actually lives:**
+   - **Bytecode dispatch & Mo function-call overhead** (confirmed by PR #417's A/B: eliminating `raw.slice` copies only saves ~8–15% because tight loop instruction count and helper calls dominate).
    - Full SHA-256 over every 4 KiB page (vs. SQLite's unchecksummed default / CRC32C).
    - 2× `fsync` per commit (CoW shadow paging) vs. SQLite WAL's 1× append `fsync`.
    - 50/50 split on sequential appends (leaves ~50% page fill = 16 MiB vs. SQLite's 7.2 MiB; right-edge 90/10 splitting would halve disk footprint and page writes).
-3. **Implication for a future Rust runtime:** A clean safe-Rust bytecode VM (plus `rustls`) would give memory safety at roughly the same ~10–20×-of-C performance profile; closing the remaining gap to ~2–4× of C would require a JIT/native backend (e.g., Cranelift) rather than just porting the interpreter.
+3. **Implication for a future Rust runtime:** A clean safe-Rust bytecode VM (plus `rustls`) would give memory safety at roughly the same ~10–20×-of-C performance profile; closing the remaining gap to ~2–4× of C requires reducing bytecode dispatch/call overhead (inlining + a JIT/native backend such as Cranelift) rather than micro-tuning individual stdlib primitives.

@@ -289,7 +289,7 @@ fn prefix_scan(store: Store, bucket: Text, prefix: Bytes, limit: Int) : Result(
   List((Bytes, Bytes)),
   ModbError
 )
-  if prefix.size == 0
+  if prefix.empty?
     scan(store, bucket, None, None, limit)
   else
     scan(store, bucket, Some(prefix), prefix_upper_bound(prefix), limit)
