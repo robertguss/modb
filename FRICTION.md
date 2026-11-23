@@ -1,6 +1,6 @@
 # Mo Language Friction Log (MoDB Milestone 1)
 
-Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primitive, or ergonomics sharp edge hit while building MoDB Layer 1 in pure Mo (~1,600 lines of storage-engine code + tests/benchmarks). Kept honest and specific so it informs both Mo improvements and the deferred Rust runtime decision.
+Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primitive, or ergonomics sharp edge hit while building MoDB Layer 1 and Layer 2 (`Modb` + `Modb.Table`) in pure Mo. Kept honest and specific so it informs both Mo improvements and the deferred Rust runtime decision.
 
 ---
 
@@ -42,12 +42,43 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** Initially created `test_modb.mo` (`module TestModb`); `mo check` immediately gave an exact fix (`test-modb.mo`). Good, consistent convention—worth keeping in mind when scaffolding new projects.
 - **Severity:** Non-issue (diagnostic was crystal clear).
 
+### 8. Anonymous functions forbid *local* `var` bindings inside their own body (`E0090`)
+- **Where:** `tests/test-table.mo`, `examples/shop.mo` (inside `Table.write_tx(db, fn(tx) ... end)` and `Table.transact(...)` callbacks)
+- **What happened:** Reference 5.6 forbids anonymous functions from assigning captured outer `var`s, which protects value semantics. However, `error E0090: an anonymous function can't assign a var` also rejects `var` bindings declared *locally inside* the anonymous function itself (e.g. `var cur = tx; for k in keys ... cur = try Table.put(...)` or `var updated = prod; updated.stock -= qty`). We worked around this cleanly by constructing record values directly, extracting named helpers, and adding `Table.put_many` / `Table.delete_many` batch helpers. Allowing purely local `var` bindings inside anonymous functions (while still rejecting assignment to outer `var`s) would make callback-scoped transactions much more natural.
+- **Severity:** Moderate ergonomics friction for callback-based APIs.
+
+### 9. `E1150` when a top-level constant captures a function reading another module constant
+- **Where:** `src/modb/table.mo` (`encode_int_key` / `decode_int_key`) triggered from `examples/shop.mo` (`customers = Table.int_key[Customer]("customers")`)
+- **What happened:** `encode_int_key` originally wrote `n.wrapping_add(int64_min)` referencing the module constant `int64_min = -9223372036854775808`. Calling `Table.int_key` inside functions or `test` blocks compiled and ran fine, but declaring `customers = Table.int_key[Customer]("customers")` as a module-level schema constant in `examples/shop.mo` hit `error E1150: this constant's deferred function needs globals not yet initialized` because `KeyCodec` stores `encode_int_key` as a function value inside a constant. Inlining literal `-9223372036854775808` directly inside `encode_int_key` and `decode_int_key` eliminated the global read and let top-level declarative table/index constants work out of the box.
+- **Severity:** Moderate compiler limitation (`E1150`) with a simple library-side workaround.
+
+### 10. Bare `_ = expr` discard fails with misleading `E0010` (`assignment changes a var`)
+- **Where:** `src/modb/table.mo` (`snapshot_scan`, `snapshot_range_by`)
+- **What happened:** Writing `_ = try Modb.snapshot_scan(...)` to discard an `Ok` value after validating a snapshot fails with `error E0010: assignment changes a var or its fields`. `_` is valid in tuple destructuring (`(_, v) = ...`) and `for _ in ...`, whereas single-target `=` requires a named binding (`_probe = ...`) when not mutating a `var`. Either treating bare `_ = expr` as a discard binding or tailoring `E0010` to suggest `_unused = expr` would prevent confusion.
+- **Severity:** Minor syntax/diagnostic papercut.
+
+### 11. Single-letter type parameters, alphabetical `[...]` brackets, and heterogeneous index erasure
+- **Where:** `src/modb/table.mo` (`Index(K, V, I)`, `text_index[Int, User]`, `IndexSpec(K, V)`)
+- **What happened:**
+  1. Only single capital letters (`K`, `V`, `I`) are type parameters in Mo (`IK` parses as a concrete type name), and explicit bracketed type arguments `[...]` are supplied in alphabetical order of the function's type parameters (`text_index[Int, User]` maps cleanly to `[K, V]`, whereas a function introducing `I`, `K`, `V` orders them `[I, K, V]`).
+  2. Because Mo has no existential types or user-defined traits, a homogeneous `List` cannot hold `Index(Int, Account, Text)` alongside `Index(Int, Account, Int)` directly. Erasing `I` into a closure-backed `IndexSpec(K, V)` via `table.with_index(idx)` solved this cleanly in pure Mo while keeping `I` statically typed on `lookup`, `lookup_unique`, and `range_by`.
+- **Severity:** Minor design constraint (cleanly solved with closure erasure).
+
+### 12. `Bytes` lacks `Json`, and capability-backed `Store` removes `Equal` on `Result(Store, E)`
+- **Where:** `tests/test-table.mo` (`BlobItem`, `assert Table.write_tx(...) is Error(...)`)
+- **What happened:**
+  1. Domain structs with a `Bytes` field (tags, digests, keys) cannot use automatic `Json` derivation (`E0080: type Bytes doesn't have Json`) and need a short custom `to_json` / `from_json` wrapper using `to_hex`/`from_hex` or `to_base64url`/`from_base64url`.
+  2. Because `Modb.Store` wraps `Files.File` (a capability), `Result(Store, TableError)` does not implement `Equal`, so tests must match errors with `is Error(...)` rather than `== Error(...)`.
+- **Severity:** Minor stdlib / testing ergonomics notes.
+
 ---
 
 ## What Worked Surprisingly Well
 
-- **Zero compiler bugs or VM crashes across the entire build.** Not a single ICE, segfault, wrong codegen, or memory corruption across ~1,600 lines of non-trivial CoW B+Tree + binary codec + crash-recovery code, 1,200 differential ops, 500 simulated crashes, 100 real `SIGKILL` kills, and 200,000 row inserts/overwrites.
+- **Zero compiler bugs or VM crashes across both Layer 1 and Layer 2.** Not a single ICE, segfault, wrong codegen, or memory corruption across ~2,700 lines of CoW B+Tree + binary codec + generic typed table/index code, 1,800+ differential ops, 500 simulated crashes, 100 real `SIGKILL` kills, and 200,000 row inserts/overwrites.
 - **Perceus in-place reuse actually held under heavy nested-struct mutation!** Unlike the Nov 14 v0.2 sketch (which had to pack a tree into a bare `Map` to avoid $O(N)$ struct-field copies), `Allocator` (`dirty_leaves`, `dirty_branches`, `staged`, `reusable`, `pending_free`) and `BlockStore` (`cache`) lived inside ordinary `struct`s and ran 100,000 rows + 100,000 overwrites in **69.8 MiB peak RSS** with linear scaling.
 - **PR #416 (`Files.File` + `Bytes` packing) worked flawlessly on the very first try.** Not a single bug in `read_at`, `write_at`, `size`, `sync`, `Files.in_memory`, or big-endian `u16`/`u32`/`i64` codecs—including surviving 100 real OS `SIGKILL` crashes mid-write/mid-fsync with zero lost acknowledged commits.
 - **Capability discipline forced a cleaner crash-simulator design.** Because closures cannot capture capabilities in Mo, we modeled `enum Disk { Real(file: Files.File), Sim(...) }` as an explicit value instead of hidden closure callbacks—producing a cleaner, zero-overhead deterministic torn-write simulator that runs identically under `mo test`.
+- **Automatic `Json` + `Decimal` + closure-captured codecs made Layer 2 feel remarkably native.** Ordinary Mo `struct` and `enum` types (including exact `Decimal` money and `Option` fields) worked in `examples/shop.mo` with zero annotations and without even importing `use Json` in caller modules. Capturing `Json.encode` and `Json.decode[V]` inside `Table(K, V)` at construction time kept all 25+ query/mutation functions free of viral `where V: Json` bounds, and single-variant `try` auto-wrapping (`ModbError -> TableError -> ShopError`) lifted errors across layers with almost zero boilerplate.
+- **Value-typed `WriteTx` gave free statement-level savepoints.** Because `WriteTx` is an immutable Perceus value, returning `Error(UniqueConflict(...))` mid-transaction discards uncommitted index writes automatically without rollback logs.
 - **Type inference & exhaustive choice checking caught real bugs at compile time** (`E0068` forcing explicit case arms, `E0093` catching unused imports, `E0044` keeping imports minimal).
