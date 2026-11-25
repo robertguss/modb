@@ -1,6 +1,6 @@
 # MoDB Milestone 3: Multi-Agent Coordination (`Worlds`, `Grants`, `Claims`, Persistent Pins & CoW Diff)
 
-**Status:** Draft specification for Robert's review (2026-11-25). Builds directly on Milestones 1 & 2 (`Modb`, `Modb.Table`, `Modb.Ledger`, `ReadFiles` + advisory `flock`, 8-worker `ShopApi`), running on pure-Rust `mo` (`robertguss/mo#436`, `7d5186d1`). Requires **zero changes to `~/code/mo`**.
+**Status:** Complete & verified (2026-11-25). Builds directly on Milestones 1 & 2 (`Modb`, `Modb.Table`, `Modb.Ledger`, `ReadFiles` + advisory `flock`, 8-worker `ShopApi`), running on pure-Rust `mo` (`robertguss/mo#436`, `7d5186d1`). Required **zero changes to `~/code/mo`**.
 
 ---
 

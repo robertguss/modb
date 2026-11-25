@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live 8-worker concurrent HTTP + SIGKILL durability stress test for examples/shop-api.mo under `mo serve --workers 8`."""
+"""Live 8-worker concurrent HTTP + Multi-Agent Worlds/Grants/Claims + SIGKILL stress test for examples/shop-api.mo."""
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import json
@@ -89,7 +89,7 @@ def main() -> int:
 
     admin_hdr = {"Authorization": "Bearer live-admin", "X-Reason": "admin-setup"}
     clerk_hdr = {"Authorization": "Bearer live-clerk", "X-Reason": "live-signup"}
-    agent_hdr = {"Authorization": "Bearer live-agent", "X-Reason": "agent-concurrent-order"}
+    agent_hdr = {"Authorization": "Bearer live-agent", "X-Reason": "agent-work"}
 
     with tempfile.TemporaryDirectory(prefix="modb-shop-api-") as tmp:
         port1 = pick_free_port()
@@ -147,19 +147,18 @@ def main() -> int:
             )
             assert st == 200 and prod["stock"] == 40, (st, prod)
 
-            # Live OpenAPI 3.1 endpoint
+            # Live OpenAPI 3.1 endpoint includes both base routes and Milestone 3 coordination routes
             st, spec = http_json(base1, "GET", "/openapi.json")
-            assert st == 200 and "/orders" in spec.get("paths", {}) and "/admin/init" in spec.get("paths", {}), (
+            paths = spec.get("paths", {})
+            assert st == 200 and "/orders" in paths and "/worlds" in paths and "/grants" in paths and "/claims" in paths, (
                 st,
-                spec,
+                list(paths.keys()),
             )
 
             st, ver_pre = http_json(base1, "GET", "/admin/verify")
             assert st == 200 and ver_pre["ok"] is True and ver_pre["audit_entries"] == 4, (st, ver_pre)
 
             # 4. WAVE 1: 8-thread concurrent HTTP stress test against `mo serve --workers 8`
-            #    4 writer threads submit 60 total 1-unit orders against stock=40 (expect exactly 40x 200 + 20x 409)
-            #    4 reader threads continuously hammer GET /products, /customers/1/orders, /audit, /admin/verify
             stop_readers = threading.Event()
             writer_statuses: list[int] = []
             writer_order_ids: list[int] = []
@@ -229,7 +228,6 @@ def main() -> int:
                 writer_statuses,
             )
 
-            # Verify exact stock conservation (40 -> 0), exact order count, and intact hash chain
             st, prod_after = http_json(base1, "GET", "/products/stress-beans")
             assert st == 200 and prod_after["stock"] == 0, (st, prod_after)
 
@@ -286,7 +284,6 @@ def main() -> int:
                                 if len(wave2_acked_orders) >= 8:
                                     kill_ready.set()
                     except Exception:
-                        # Expected once SIGKILL tears down the server socket mid-request
                         return
 
             def wave2_reader():
@@ -297,10 +294,9 @@ def main() -> int:
                         return
 
             pool2 = ThreadPoolExecutor(max_workers=8)
-            futs2 = [pool2.submit(wave2_writer, w) for w in range(4)] + [
+            _futs2 = [pool2.submit(wave2_writer, w) for w in range(4)] + [
                 pool2.submit(wave2_reader) for _ in range(4)
             ]
-            # Wait until several concurrent writes have been acknowledged, then hard-SIGKILL mid-wave
             kill_ready.wait(timeout=10.0)
             proc1.send_signal(signal.SIGKILL)
             proc1.wait()
@@ -311,10 +307,12 @@ def main() -> int:
                 proc1.send_signal(signal.SIGKILL)
                 proc1.wait()
 
-        # 6. Restart fresh 8-worker server on the same data directory and verify crash durability
+        # 6. Restart fresh 8-worker server, verify Wave 2 recovery, and run WAVE 3 (Multi-Agent Worlds/Grants/Claims + SIGKILL)!
         port2 = pick_free_port()
         base2 = f"http://127.0.0.1:{port2}"
         proc2 = start_server(mo_bin, shop_api_mo, tmp, port2, workers=8)
+        world_landed = 0
+        world_stale = 0
         try:
             health2 = wait_ready(base2, proc2)
             assert health2["status"] == "ok" and health2["schema_version"] == 2, health2
@@ -325,44 +323,328 @@ def main() -> int:
             st, all_orders = http_json(base2, "GET", "/customers/1/orders")
             assert st == 200, (st, all_orders)
             persisted_ids = {o["id"] for o in all_orders}
-
-            # Every Wave 1 order (40) AND every acknowledged Wave 2 order MUST survive SIGKILL
             missing_acked = wave2_acked_orders - persisted_ids
             assert not missing_acked, f"lost acknowledged orders across SIGKILL: {missing_acked}"
 
-            wave2_persisted = [o for o in all_orders if o["id"] >= 2000]
-            assert len(wave2_persisted) >= len(wave2_acked_orders), (
-                len(wave2_persisted),
-                len(wave2_acked_orders),
-            )
+            wave2_persisted = [o for o in all_orders if 2000 <= o["id"] < 3000]
+            assert len(wave2_persisted) >= len(wave2_acked_orders)
 
-            # Exact stock conservation after SIGKILL: remaining stock + wave2 persisted orders == 50
             st, prod_rec = http_json(base2, "GET", "/products/stress-beans")
-            assert st == 200, (st, prod_rec)
-            assert prod_rec["stock"] + len(wave2_persisted) == 50, (
+            assert st == 200 and prod_rec["stock"] + len(wave2_persisted) == 50, (
                 prod_rec["stock"],
                 len(wave2_persisted),
             )
+            assert ver2["audit_entries"] == pre_wave2_audit_entries + len(wave2_persisted)
 
-            # Exact audit-log parity after SIGKILL
-            expected_audit = pre_wave2_audit_entries + len(wave2_persisted)
-            assert ver2["audit_entries"] == expected_audit, (ver2["audit_entries"], expected_audit)
+            # WAVE 3: Live 8-worker multi-agent Worlds, attenuated Grants, Claims & pinned-World SIGKILL survival
+            st, _g_lead = http_json(
+                base2,
+                "POST",
+                "/grants",
+                {
+                    "id": "g-lead",
+                    "principal": "agent:lead",
+                    "allowed_actions": ["place_order", "save_product"],
+                    "max_calls": 50,
+                    "ttl_seconds": 3600,
+                },
+                admin_hdr,
+            )
+            assert st == 200, (st, _g_lead)
+
+            # Narrowed helper grant succeeds; widening attempt returns 403
+            st, _g_bad = http_json(
+                base2,
+                "POST",
+                "/grants/g-lead/delegate",
+                {
+                    "id": "g-wide",
+                    "principal": "helper:bad",
+                    "allowed_actions": ["place_order", "ship_order"],
+                    "max_calls": 5,
+                    "ttl_seconds": 1800,
+                },
+                agent_hdr,
+            )
+            assert st == 403, (st, _g_bad)
+
+            st, _g_help = http_json(
+                base2,
+                "POST",
+                "/grants/g-lead/delegate",
+                {
+                    "id": "g-helper",
+                    "principal": "helper:sub",
+                    "allowed_actions": ["place_order"],
+                    "max_calls": 10,
+                    "ttl_seconds": 1800,
+                },
+                agent_hdr,
+            )
+            assert st == 200, (st, _g_help)
+
+            # Stale-price World rejected (409) when Admin reprices house-blend before landing
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/worlds",
+                {"id": "w-stale", "grant_id": "g-lead", "ttl_seconds": 600},
+                agent_hdr,
+            )
+            assert st == 200
+            st, q_p = http_json(
+                base2,
+                "POST",
+                "/worlds/w-stale/query",
+                {"query": "get_product", "args": "house-blend"},
+                agent_hdr,
+            )
+            assert st == 200 and Decimal(q_p["price"]) == Decimal("16.00"), (st, q_p)
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/worlds/w-stale/call",
+                {
+                    "action": "place_order",
+                    "args": {"id": 4001, "buyer_id": 1, "sku": "house-blend", "quantity": 1},
+                },
+                agent_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/products",
+                {
+                    "sku": "house-blend",
+                    "title": "House Espresso Blend (250g)",
+                    "category": "beans",
+                    "price": "20.00",
+                    "stock": 25,
+                },
+                admin_hdr,
+            )
+            assert st == 200
+            st, stale_body = http_json(base2, "POST", "/worlds/w-stale/land", None, agent_hdr)
+            assert st == 409, (st, stale_body)
+
+            # Parent revocation mid-flight blocks helper's open World from landing (403)
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/worlds",
+                {"id": "w-rev", "grant_id": "g-helper", "ttl_seconds": 600},
+                agent_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/worlds/w-rev/call",
+                {
+                    "action": "place_order",
+                    "args": {"id": 4002, "buyer_id": 1, "sku": "house-blend", "quantity": 1},
+                },
+                agent_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(base2, "POST", "/grants/g-lead/revoke", None, admin_hdr)
+            assert st == 200
+            st, rev_body = http_json(base2, "POST", "/worlds/w-rev/land", None, agent_hdr)
+            assert st == 403, (st, rev_body)
+
+            # Seed world-beans (stock=15), open persistent observer World `w-persist` pinning stock=15,
+            # then race 4 agent World threads + 4 reader threads under `--workers 8`!
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/grants",
+                {
+                    "id": "g-race",
+                    "principal": "agent:racer",
+                    "allowed_actions": ["place_order"],
+                    "max_calls": 100,
+                    "ttl_seconds": 3600,
+                },
+                admin_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/products",
+                {
+                    "sku": "world-beans",
+                    "title": "World Blend (250g)",
+                    "category": "beans",
+                    "price": "12.00",
+                    "stock": 15,
+                },
+                admin_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base2,
+                "POST",
+                "/worlds",
+                {"id": "w-persist", "grant_id": "g-race", "ttl_seconds": 3600},
+                agent_hdr,
+            )
+            assert st == 200
+
+            w3_errors: list[str] = []
+            w3_lock = threading.Lock()
+            w3_stop_readers = threading.Event()
+            w3_counts = {"landed": 0, "stale": 0, "reads": 0}
+
+            def world_racer(idx: int):
+                for j in range(5):
+                    oid = 5000 + idx * 100 + j
+                    for attempt in range(8):
+                        wid = f"wr-{idx}-{j}-{attempt}"
+                        st_o, b_o = http_json(
+                            base2,
+                            "POST",
+                            "/worlds",
+                            {"id": wid, "grant_id": "g-race", "ttl_seconds": 600},
+                            agent_hdr,
+                        )
+                        if st_o != 200:
+                            with w3_lock:
+                                w3_errors.append(f"open {wid}: {st_o} {b_o}")
+                            return
+                        st_q, b_q = http_json(
+                            base2,
+                            "POST",
+                            f"/worlds/{wid}/query",
+                            {"query": "get_product", "args": "world-beans"},
+                            agent_hdr,
+                        )
+                        if st_q != 200:
+                            with w3_lock:
+                                w3_errors.append(f"query {wid}: {st_q} {b_q}")
+                            return
+                        if b_q["stock"] < 1:
+                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr)
+                            return
+                        st_c, b_c = http_json(
+                            base2,
+                            "POST",
+                            f"/worlds/{wid}/call",
+                            {
+                                "action": "place_order",
+                                "args": {"id": oid, "buyer_id": 1, "sku": "world-beans", "quantity": 1},
+                            },
+                            agent_hdr,
+                        )
+                        if st_c != 200:
+                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr)
+                            return
+                        st_l, b_l = http_json(base2, "POST", f"/worlds/{wid}/land", None, agent_hdr)
+                        if st_l == 200:
+                            with w3_lock:
+                                w3_counts["landed"] += 1
+                            break
+                        elif st_l == 409:
+                            with w3_lock:
+                                w3_counts["stale"] += 1
+                            continue
+                        else:
+                            with w3_lock:
+                                w3_errors.append(f"land {wid}: {st_l} {b_l}")
+                            return
+
+            def world_reader(idx: int):
+                routes = [
+                    "/worlds/metrics",
+                    "/worlds/w-persist/diff",
+                    "/claims",
+                    "/products/world-beans",
+                    "/worlds/metrics",
+                    "/products?category=beans",
+                    "/claims",
+                    "/admin/verify",
+                ]
+                step = 0
+                while not w3_stop_readers.is_set():
+                    path = routes[(idx + step) % len(routes)]
+                    step += 1
+                    st_r, b_r = http_json(base2, "GET", path, timeout=30.0)
+                    with w3_lock:
+                        if st_r == 200:
+                            w3_counts["reads"] += 1
+                        else:
+                            w3_errors.append(f"GET {path}: {st_r} {b_r}")
+
+            with ThreadPoolExecutor(max_workers=8) as pool3:
+                rfuts = [pool3.submit(world_reader, r) for r in range(4)]
+                wfuts = [pool3.submit(world_racer, w) for w in range(4)]
+                for f in wfuts:
+                    f.result()
+                w3_stop_readers.set()
+                for f in rfuts:
+                    f.result()
+
+            assert not w3_errors, f"wave3 world errors: {w3_errors[:5]}"
+            world_landed = w3_counts["landed"]
+            world_stale = w3_counts["stale"]
+            assert world_landed > 0 and world_landed <= 15, w3_counts
+            st, wb_after = http_json(base2, "GET", "/products/world-beans")
+            assert st == 200 and wb_after["stock"] + world_landed == 15, (wb_after, world_landed)
+
+            # Hard SIGKILL while `w-persist` is STILL OPEN pinning world-beans at stock=15!
+            proc2.send_signal(signal.SIGKILL)
+            proc2.wait()
+        finally:
+            if proc2.poll() is None:
+                proc2.send_signal(signal.SIGKILL)
+                proc2.wait()
+
+        # 7. Restart 3rd server and prove open World `w-persist` survived SIGKILL with frozen stock=15!
+        port3 = pick_free_port()
+        base3 = f"http://127.0.0.1:{port3}"
+        proc3 = start_server(mo_bin, shop_api_mo, tmp, port3, workers=8)
+        try:
+            wait_ready(base3, proc3)
+            st, ver3 = http_json(base3, "GET", "/admin/verify")
+            assert st == 200 and ver3["ok"] is True, (st, ver3)
+
+            # Open World `w-persist` STILL reads frozen stock=15 even after concurrent orders + SIGKILL!
+            st, frozen = http_json(
+                base3,
+                "POST",
+                "/worlds/w-persist/query",
+                {"query": "get_product", "args": "world-beans"},
+                agent_hdr,
+            )
+            assert st == 200 and frozen["stock"] == 15, (st, frozen)
+
+            # Drop `w-persist` cleanly -> unpins base root -> final verify passes
+            st, dropped = http_json(base3, "DELETE", "/worlds/w-persist", None, agent_hdr)
+            assert st == 200 and dropped == {"ok": True}, (st, dropped)
+
+            st, ver_final = http_json(base3, "GET", "/admin/verify")
+            assert st == 200 and ver_final["ok"] is True, (st, ver_final)
+
+            st, met_final = http_json(base3, "GET", "/worlds/metrics")
+            assert st == 200 and met_final["total_landed"] == world_landed, (st, met_final)
 
             print(
-                f"PASS: live 8-worker concurrent HTTP + SIGKILL recovery verified "
+                f"PASS: live 8-worker HTTP + Multi-Agent Worlds/Grants/Claims + 2x SIGKILL verified "
                 f"(wave1=40ok/20conflict/{reader_counts['ok']}reads, "
                 f"wave2_acked={len(wave2_acked_orders)}/persisted={len(wave2_persisted)}, "
-                f"txid={ver2['txid']}, audit_entries={ver2['audit_entries']}, "
-                f"hash={ver2['last_audit_hash'][:16]}...)"
+                f"wave3_worlds={world_landed}landed/{world_stale}stale_retries/pinned_SIGKILL_ok, "
+                f"txid={ver_final['txid']}, audit_entries={ver_final['audit_entries']}, "
+                f"hash={ver_final['last_audit_hash'][:16]}...)"
             )
             return 0
         finally:
-            proc2.terminate()
+            proc3.terminate()
             try:
-                proc2.wait(timeout=5)
+                proc3.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc2.kill()
-                proc2.wait()
+                proc3.kill()
+                proc3.wait()
 
 
 if __name__ == "__main__":

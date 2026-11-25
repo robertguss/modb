@@ -1,9 +1,10 @@
-## Milestone 2B: Multi-worker concurrent typed HTTP/REST API server (`mo serve --workers 8`)
-## backed by pure-Mo MoDB (Layer 1 CoW B+Tree + Layer 2 typed tables & secondary indexes +
-## Layer 3 accountable tamper-evident audit ledger, commit-time invariants, and migrations).
+## Milestone 3: Multi-agent concurrent typed HTTP/REST API server (`mo serve --workers 8`)
+## backed by pure-Mo MoDB (Layer 1 CoW B+Tree + persistent root pins + O(diff) tree diff +
+## Layer 2 typed tables & secondary indexes + Layer 3 accountable tamper-evident audit ledger,
+## commit-time invariants, migrations + Layer 4 attenuated Grants, Claims, and speculative Worlds).
 ##
 ## Every `GET` route holds ONLY `ReadFiles` + advisory shared `flock`;
-## every `POST` route holds `Files` + advisory exclusive `flock`.
+## every `POST`/`DELETE` route holds `Files` + advisory exclusive `flock`.
 ##
 ## Run locally:
 ##   mo serve --workers 8 --data ./shop-data examples/shop-api.mo
@@ -12,8 +13,11 @@
 module ShopApi
 use Api
 use Json
+use Modb.Claims
+use Modb.Grants
 use Modb.Ledger
 use Modb.Table
+use Modb.World
 
 enum Role
   Admin
@@ -122,6 +126,45 @@ struct VerifySummary
   invariants_checked: Int
 end
 
+struct GrantInput
+  id: Text
+  principal: Text
+  allowed_actions: List(Text)
+  max_calls: Int
+  ttl_seconds: Int
+end
+
+struct ClaimInput
+  resource: Text
+  grant_id: Text
+  world_id: Option(Text)
+  ttl_seconds: Int
+end
+
+struct HeartbeatInput
+  ttl_seconds: Int
+end
+
+struct WorldOpenInput
+  id: Text
+  grant_id: Text
+  ttl_seconds: Int
+end
+
+struct WorldQueryInput
+  query: Text
+  args: Json
+end
+
+struct WorldCallInput
+  action: Text
+  args: Json
+end
+
+struct OkStatus
+  ok: Bool
+end
+
 enum ShopApiError
   Unauthenticated
   Forbidden(required: Text)
@@ -133,6 +176,13 @@ enum ShopApiError
   ProductMissing(sku: Text)
   OrderMissing(id: Int)
   InsufficientStock(sku: Text, requested: Int, available: Int)
+  GrantMissing(id: Text)
+  GrantDenied(detail: Text)
+  GrantConflict(detail: Text)
+  ClaimMissing(resource: Text)
+  ClaimConflict(detail: Text)
+  WorldMissing(id: Text)
+  WorldConflict(detail: Text)
   StorageFailed(message: Text)
 end
 
@@ -160,6 +210,30 @@ api
     post "/:id/ship" post_ship_order
   end
 
+  scope "/grants"
+    post "" post_grant
+    get "/:id" get_grant
+    post "/:id/delegate" post_delegate_grant
+    post "/:id/revoke" post_revoke_grant
+  end
+
+  scope "/claims"
+    post "" post_claim
+    get "" list_claims
+    post "/:resource/heartbeat" post_claim_heartbeat
+    delete "/:resource" delete_claim
+  end
+
+  scope "/worlds"
+    post "" post_world
+    get "/metrics" get_world_metrics
+    post "/:id/query" post_world_query
+    post "/:id/call" post_world_call
+    get "/:id/diff" get_world_diff
+    post "/:id/land" post_world_land
+    delete "/:id" delete_world
+  end
+
   get "/audit" get_audit
   post "/admin/init" post_admin_init
   get "/admin/verify" get_admin_verify
@@ -174,6 +248,13 @@ api
   status ProductMissing(_) = 404
   status OrderMissing(_) = 404
   status InsufficientStock(_) = 409
+  status GrantMissing(_) = 404
+  status GrantDenied(_) = 403
+  status GrantConflict(_) = 409
+  status ClaimMissing(_) = 404
+  status ClaimConflict(_) = 409
+  status WorldMissing(_) = 404
+  status WorldConflict(_) = 409
   status StorageFailed(_) = 500
 end
 
@@ -288,6 +369,185 @@ end
 
 fn map_table_error(err: Table.TableError) : ShopApiError
   map_ledger_error(Ledger.TableFailure(err))
+end
+
+fn map_grant_error(err: Grants.GrantError) : ShopApiError
+  case err
+    Grants.LedgerFailure(le): map_ledger_error(le)
+    Grants.GrantNotFound(id: id): GrantMissing(id: id)
+    Grants.GrantAlreadyExists(id: _): GrantConflict(detail: err.to_text)
+    Grants.InvalidGrant(reason: r): InvalidInput(reason: r)
+    Grants.WideningDenied(field: _, detail: _) | Grants.Revoked(id: _, revoked_ancestor: _) | Grants
+      .Expired(id: _, expired_ancestor: _) | Grants.ActionDenied(id: _, action: _) | Grants
+      .BudgetExhausted(id: _, ancestor_id: _, max_calls: _): GrantDenied(detail: err.to_text)
+  end
+end
+
+fn map_claim_error(err: Claims.ClaimError) : ShopApiError
+  case err
+    Claims.LedgerFailure(le): map_ledger_error(le)
+    Claims.InvalidClaim(reason: r): InvalidInput(reason: r)
+    Claims.AlreadyClaimed(resource: _, holder: _, expires_at: _): ClaimConflict(detail: err.to_text)
+    Claims.ClaimNotFound(resource: res): ClaimMissing(resource: res)
+    Claims.NotHolder(resource: _, expected: _, actual: _): Forbidden(required: err.to_text)
+  end
+end
+
+fn map_world_error(err: World.WorldError) : ShopApiError
+  case err
+    World.LedgerFailure(le): map_ledger_error(le)
+    World.GrantFailure(ge): map_grant_error(ge)
+    World.WorldNotFound(id: id): WorldMissing(id: id)
+    World.UnknownQuery(name: _) | World.UnknownAction(name: _) | World.QueryFailed(
+      query: _,
+      detail: _
+    ): InvalidInput(reason: err.to_text)
+    World.InvariantRejected(name: n, detail: d): InvariantRejected(name: n, detail: d)
+    World.WorldAlreadyExists(id: _) | World.WorldNotOpen(id: _, status: _) | World.WorldExpired(
+      id: _
+    ) | World.ActionRejected(action: _, detail: _) | World.StaleRead(
+      query: _,
+      args: _,
+      expected: _,
+      actual: _
+    ): WorldConflict(detail: err.to_text)
+  end
+end
+
+## Approved query & write action catalog exposed to speculative multi-agent Worlds.
+fn shop_catalog() : World.Catalog
+  custs = customers_table()
+  prods = products_table()
+  ords = orders_table()
+  p_cat_idx = products_by_category()
+  World.catalog().with_query(
+    "get_product",
+    fn(tx, args)
+      sku = try Json.decode[Text](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      p_opt = try Table.tx_get(tx, prods, sku).map_error(fn(e) e.to_text end)
+      prod = try p_opt.or_fail("product '#{sku}' not found")
+      Ok(
+        ProductRow(
+          sku: sku,
+          title: prod.title,
+          category: prod.category,
+          price: prod.price,
+          stock: prod.stock
+        ).to_json
+      )
+    end
+  ).with_query(
+    "get_customer",
+    fn(tx, args)
+      id = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      c_opt = try Table.tx_get(tx, custs, id).map_error(fn(e) e.to_text end)
+      cust = try c_opt.or_fail("customer ##{id} not found")
+      Ok(CustomerRow(id: id, email: cust.email, name: cust.name, tier: cust.tier).to_json)
+    end
+  ).with_query(
+    "list_products",
+    fn(tx, args)
+      cat_opt = try Json.decode[Option(Text)](Json.encode(args).bytes).map_error(
+        fn(e) e.to_text end
+      )
+      rows = case cat_opt
+        Some(cat): try Table.tx_lookup(tx, prods, p_cat_idx, cat).map_error(fn(e) e.to_text end)
+        None: try Table.tx_scan(tx, prods, None, None, 0).map_error(fn(e) e.to_text end)
+      end
+      Ok(
+        rows.map(fn(p)
+          ProductRow(
+            sku: p.0,
+            title: p.1.title,
+            category: p.1.category,
+            price: p.1.price,
+            stock: p.1.stock
+          )
+        end).to_json
+      )
+    end
+  ).with_action(
+    "place_order",
+    fn(tx, args)
+      body = try Json.decode[OrderInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      return Error("order id must be > 0") if body.id <= 0
+      return Error("quantity must be > 0") if body.quantity <= 0
+      buyer_opt = try Table.tx_get(tx, custs, body.buyer_id).map_error(fn(e) e.to_text end)
+      buyer = try buyer_opt.or_fail("customer ##{body.buyer_id} not found")
+      prod_opt = try Table.tx_get(tx, prods, body.sku).map_error(fn(e) e.to_text end)
+      prod = try prod_opt.or_fail("product '#{body.sku}' not found")
+      if prod.stock < body.quantity
+        return Error(
+          "insufficient stock for '#{body.sku}': requested #{body.quantity}, available #{prod.stock}"
+        )
+      end
+      subtotal = prod.price * body.quantity.to_decimal
+      total = case buyer.tier
+        Standard: subtotal.round(2)
+        Member: (subtotal * 0.90).round(2)
+      end
+      var updated_prod = prod
+      updated_prod.stock -= body.quantity
+      ord = Order(
+        buyer_id: body.buyer_id,
+        sku: body.sku,
+        quantity: body.quantity,
+        total: total,
+        status: Placed
+      )
+      t1 = try Table.put(tx, prods, body.sku, updated_prod).map_error(fn(e) e.to_text end)
+      t2 = try Table.put(t1, ords, body.id, ord).map_error(fn(e) e.to_text end)
+      row = OrderRow(
+        id: body.id,
+        buyer_id: ord.buyer_id,
+        sku: ord.sku,
+        quantity: ord.quantity,
+        total: ord.total,
+        status: ord.status
+      )
+      Ok((t2, row.to_json))
+    end
+  ).with_action(
+    "save_product",
+    fn(tx, args)
+      body = try Json.decode[ProductInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      return Error("sku cannot be empty") if body.sku.trim.empty?
+      prod = Product(
+        title: body.title,
+        category: body.category,
+        price: body.price,
+        stock: body.stock
+      )
+      t1 = try Table.put(tx, prods, body.sku, prod).map_error(fn(e) e.to_text end)
+      row = ProductRow(
+        sku: body.sku,
+        title: body.title,
+        category: body.category,
+        price: body.price,
+        stock: body.stock
+      )
+      Ok((t1, row.to_json))
+    end
+  ).with_action(
+    "ship_order",
+    fn(tx, args)
+      id = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      ord_opt = try Table.tx_get(tx, ords, id).map_error(fn(e) e.to_text end)
+      ord = try ord_opt.or_fail("order ##{id} not found")
+      var next = ord
+      next.status = Shipped
+      t1 = try Table.put(tx, ords, id, next).map_error(fn(e) e.to_text end)
+      row = OrderRow(
+        id: id,
+        buyer_id: next.buyer_id,
+        sku: next.sku,
+        quantity: next.quantity,
+        total: next.total,
+        status: next.status
+      )
+      Ok((t1, row.to_json))
+    end
+  )
 end
 
 ## Authenticates callers via Bearer token and captures accountable `X-Reason` header.
@@ -623,6 +883,217 @@ fn post_ship_order(caller: Caller, files: Files, clock: Clock, id: Int) : Result
   )
 end
 
+## Issues a root grant (Admin only).
+fn post_grant(caller: Caller, files: Files, clock: Clock, body: GrantInput) : Result(
+  Grants.Grant,
+  ShopApiError
+)
+  try require_admin(caller)
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  meta = try write_meta(caller, "issue_grant", clock)
+  spec = Grants.GrantSpec(
+    id: body.id,
+    principal: body.principal,
+    allowed_actions: body.allowed_actions,
+    max_calls: body.max_calls,
+    expires_at: clock.now + 1.second * body.ttl_seconds
+  )
+  Grants.issue_root_locked(files, db_path(), shop_schema(), meta, spec).map_error(map_grant_error)
+end
+
+## Reads a grant by ID (`ReadFiles` + shared `flock`).
+fn get_grant(rf: ReadFiles, id: Text) : Result(Grants.Grant, ShopApiError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      g_opt = try Grants.get(Ledger.store(db), id).map_error(map_grant_error)
+      g_opt.or_fail(GrantMissing(id: id))
+    end
+  )
+end
+
+## Delegates a strictly narrowed helper grant from `id`.
+fn post_delegate_grant(caller: Caller, files: Files, clock: Clock, id: Text, body: GrantInput) : Result(
+  Grants.Grant,
+  ShopApiError
+)
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  meta = try write_meta(caller, "delegate_grant", clock)
+  spec = Grants.GrantSpec(
+    id: body.id,
+    principal: body.principal,
+    allowed_actions: body.allowed_actions,
+    max_calls: body.max_calls,
+    expires_at: clock.now + 1.second * body.ttl_seconds
+  )
+  Grants.delegate_locked(files, db_path(), shop_schema(), meta, id, spec).map_error(map_grant_error)
+end
+
+## Revokes grant `id` (Admin only; cascades immediately to all descendant grants).
+fn post_revoke_grant(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Grants.Grant,
+  ShopApiError
+)
+  try require_admin(caller)
+  meta = try write_meta(caller, "revoke_grant", clock)
+  Grants.revoke_locked(files, db_path(), shop_schema(), meta, id).map_error(map_grant_error)
+end
+
+## Acquires a resource claim/lease for slow-agent coordination.
+fn post_claim(caller: Caller, files: Files, clock: Clock, body: ClaimInput) : Result(
+  Claims.Claim,
+  ShopApiError
+)
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  meta = try write_meta(caller, "acquire_claim", clock)
+  exp = clock.now + 1.second * body.ttl_seconds
+  Claims.acquire_locked(
+    files,
+    db_path(),
+    shop_schema(),
+    meta,
+    body.resource,
+    body.grant_id,
+    body.world_id,
+    exp
+  ).map_error(map_claim_error)
+end
+
+## Lists all currently active claims (`ReadFiles` + shared `flock`).
+fn list_claims(rf: ReadFiles, clock: Clock) : Result(List(Claims.Claim), ShopApiError)
+  now = clock.now
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db) Claims.list_active(Ledger.store(db), now).map_error(map_claim_error) end
+  )
+end
+
+## Extends an active claim lease owned by the caller.
+fn post_claim_heartbeat(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  resource: Text,
+  body: HeartbeatInput
+) : Result(Claims.Claim, ShopApiError)
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  meta = try write_meta(caller, "heartbeat_claim", clock)
+  exp = clock.now + 1.second * body.ttl_seconds
+  Claims.heartbeat_locked(files, db_path(), shop_schema(), meta, resource, exp).map_error(
+    map_claim_error
+  )
+end
+
+## Releases a claim owned by the caller.
+fn delete_claim(caller: Caller, files: Files, clock: Clock, resource: Text) : Result(
+  OkStatus,
+  ShopApiError
+)
+  meta = try write_meta(caller, "release_claim", clock)
+  _ = try Claims.release_locked(files, db_path(), shop_schema(), meta, resource).map_error(
+    map_claim_error
+  )
+  Ok(OkStatus(ok: true))
+end
+
+## Opens an O(1) persistent speculative World anchored to the current committed root.
+fn post_world(caller: Caller, files: Files, clock: Clock, body: WorldOpenInput) : Result(
+  World.WorldRecord,
+  ShopApiError
+)
+  _ = caller
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  now = clock.now
+  exp = now + 1.second * body.ttl_seconds
+  World.open_world_locked(files, db_path(), shop_schema(), body.id, body.grant_id, now, exp)
+    .map_error(map_world_error)
+end
+
+## Reads landing & needless send-back telemetry (`ReadFiles` + shared `flock`).
+fn get_world_metrics(rf: ReadFiles) : Result(World.LandingMetrics, ShopApiError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db) World.metrics(Ledger.store(db)).map_error(map_world_error) end
+  )
+end
+
+## Runs a registered read query inside World `id` and records its answer hash for landing validation.
+fn post_world_query(caller: Caller, files: Files, clock: Clock, id: Text, body: WorldQueryInput) : Result(
+  Json,
+  ShopApiError
+)
+  _ = caller
+  World.world_query_locked(
+    files,
+    db_path(),
+    shop_schema(),
+    shop_catalog(),
+    id,
+    body.query,
+    body.args,
+    clock.now
+  ).map_error(map_world_error)
+end
+
+## Stages an approved write action inside World `id` (checks invariants immediately, main line untouched).
+fn post_world_call(caller: Caller, files: Files, clock: Clock, id: Text, body: WorldCallInput) : Result(
+  Json,
+  ShopApiError
+)
+  reason = (caller.reason or "").trim
+  return Error(MissingReason) if reason.empty?
+  World.world_call_locked(
+    files,
+    db_path(),
+    shop_schema(),
+    shop_catalog(),
+    id,
+    body.action,
+    body.args,
+    reason,
+    clock.now
+  ).map_error(map_world_error)
+end
+
+## Computes the structural CoW diff for World `id` (`ReadFiles` + shared `flock`).
+fn get_world_diff(rf: ReadFiles, id: Text) : Result(List(World.BucketDiffSummary), ShopApiError)
+  World.world_diff_locked(rf, db_path(), shop_schema(), shop_catalog(), id).map_error(
+    map_world_error
+  )
+end
+
+## Lands World `id` whole-or-nothing with in-place read validation & per-call invariant enforcement.
+fn post_world_land(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  World.LandResult,
+  ShopApiError
+)
+  reason = (caller.reason or "").trim
+  return Error(MissingReason) if reason.empty?
+  World.land_world_locked(files, db_path(), shop_schema(), shop_catalog(), id, reason, clock.now)
+    .map_error(map_world_error)
+end
+
+## Abandons an open World in O(1), unpinning its base root for freelist reclamation.
+fn delete_world(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  OkStatus,
+  ShopApiError
+)
+  _ = caller
+  _ = try World.drop_world_locked(files, db_path(), shop_schema(), id, clock.now).map_error(
+    map_world_error
+  )
+  Ok(OkStatus(ok: true))
+end
+
 ## Queries the accountable audit log (`ReadFiles` + shared `flock`).
 fn get_audit(
   rf: ReadFiles,
@@ -917,4 +1388,285 @@ test "ShopApi end-to-end via ApiTest.send: ReadFiles/Files split, locks, auth, X
 
   docs = ApiTest.send(ShopApi, Api.get("/docs"), files, ro, clock, env)
   assert docs.status == 200 and docs.text.contains?("/openapi.json")
+end
+
+test "ShopApi Milestone 3 via ApiTest.send: Grants delegation/revocation, Claims, and speculative Worlds"
+  files = Files.in_memory({})
+  t0 = Time.parse("2026-11-25T10:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "SHOP_ADMIN_TOKEN": "tok-admin",
+    "SHOP_CLERK_TOKEN": "tok-clerk",
+    "SHOP_AGENT_TOKEN": "tok-agent"
+  })
+
+  ## Bootstrap DB + customer #1
+  assert ApiTest.send(ShopApi, Api.post("/admin/init").with_bearer("tok-admin"), files, clock, env)
+    .status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/customers").with_bearer("tok-clerk").with_header("X-Reason", "seed").with_json(
+      CustomerInput(id: 1, email: "ada@worlds.org", name: "Ada", tier: Member)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## 1. Admin issues root agent grant + delegates narrower helper grant; widening rejected (403)
+  g_root = ApiTest.send(
+    ShopApi,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "grant-lead").with_json(
+      GrantInput(
+        id: "g-lead",
+        principal: "agent:lead",
+        allowed_actions: ["place_order", "save_product"],
+        max_calls: 10,
+        ttl_seconds: 3600
+      )
+    ),
+    files,
+    clock,
+    env
+  )
+  assert g_root.status == 200
+
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/grants/g-lead/delegate").with_bearer("tok-agent").with_header("X-Reason", "widen")
+      .with_json(
+        GrantInput(
+          id: "g-bad",
+          principal: "helper:bad",
+          allowed_actions: ["place_order", "ship_order"],
+          max_calls: 5,
+          ttl_seconds: 1800
+        )
+      ),
+    files,
+    clock,
+    env
+  ).status ==
+    403
+
+  g_help = ApiTest.send(
+    ShopApi,
+    Api.post("/grants/g-lead/delegate").with_bearer("tok-agent").with_header("X-Reason", "narrow")
+      .with_json(
+        GrantInput(
+          id: "g-helper",
+          principal: "helper:sub",
+          allowed_actions: ["place_order"],
+          max_calls: 5,
+          ttl_seconds: 1800
+        )
+      ),
+    files,
+    clock,
+    env
+  )
+  assert g_help.status == 200
+  assert ApiTest.send(ShopApi, Api.get("/grants/g-helper"), files, clock, env).status == 200
+
+  ## 2. Claims acquire, heartbeat, list (`ReadFiles`), and release
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/claims").with_bearer("tok-agent").with_header("X-Reason", "pricing-pass").with_json(
+      ClaimInput(resource: "sku:house-blend", grant_id: "g-lead", world_id: None, ttl_seconds: 300)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(ShopApi, Api.get("/claims"), files, clock, env).status == 200
+  assert ApiTest.send(
+    ShopApi,
+    Api.delete("/claims/sku:house-blend").with_bearer("tok-agent").with_header("X-Reason", "done"),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## 3. Stale-price World rejected with 409 when Admin reprices product before landing!
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds").with_bearer("tok-agent").with_json(
+      WorldOpenInput(id: "w-stale", grant_id: "g-lead", ttl_seconds: 600)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-stale/query").with_bearer("tok-agent").with_json(
+      WorldQueryInput(query: "get_product", args: "house-blend".to_json)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-stale/call").with_bearer("tok-agent").with_header("X-Reason", "order-at-16")
+      .with_json(
+        WorldCallInput(
+          action: "place_order",
+          args: OrderInput(id: 3001, buyer_id: 1, sku: "house-blend", quantity: 1).to_json
+        )
+      ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(ShopApi, Api.get("/worlds/w-stale/diff"), files, clock, env).status == 200
+
+  ## Admin reprices house-blend $16 -> $20 on main line before w-stale lands
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/products").with_bearer("tok-admin").with_header("X-Reason", "reprice").with_json(
+      ProductInput(
+        sku: "house-blend",
+        title: "House Espresso Blend (250g)",
+        category: "beans",
+        price: 20.00,
+        stock: 25
+      )
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## Landing w-stale MUST return 409 StaleRead and leave stock at 25!
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-stale/land").with_bearer("tok-agent").with_header("X-Reason", "land"),
+    files,
+    clock,
+    env
+  ).status ==
+    409
+
+  ## 4. Helper opens world -> Admin revokes parent g-lead -> helper landing blocked with 403!
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds").with_bearer("tok-agent").with_json(
+      WorldOpenInput(id: "w-rev", grant_id: "g-helper", ttl_seconds: 600)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-rev/call").with_bearer("tok-agent").with_header("X-Reason", "helper-order")
+      .with_json(
+        WorldCallInput(
+          action: "place_order",
+          args: OrderInput(id: 3002, buyer_id: 1, sku: "house-blend", quantity: 1).to_json
+        )
+      ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/grants/g-lead/revoke").with_bearer("tok-admin").with_header("X-Reason", "stop"),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-rev/land").with_bearer("tok-agent").with_header("X-Reason", "try-land"),
+    files,
+    clock,
+    env
+  ).status ==
+    403
+
+  ## 5. Fresh grant opens world, reads repriced $20, places order, lands cleanly (200) -> stock 24!
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "grant-ok").with_json(
+      GrantInput(
+        id: "g-ok",
+        principal: "agent:ok",
+        allowed_actions: ["place_order"],
+        max_calls: 5,
+        ttl_seconds: 3600
+      )
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds").with_bearer("tok-agent").with_json(
+      WorldOpenInput(id: "w-ok", grant_id: "g-ok", ttl_seconds: 600)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-ok/query").with_bearer("tok-agent").with_json(
+      WorldQueryInput(query: "get_product", args: "house-blend".to_json)
+    ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-ok/call").with_bearer("tok-agent").with_header("X-Reason", "order-at-20")
+      .with_json(
+        WorldCallInput(
+          action: "place_order",
+          args: OrderInput(id: 3003, buyer_id: 1, sku: "house-blend", quantity: 1).to_json
+        )
+      ),
+    files,
+    clock,
+    env
+  ).status ==
+    200
+  land_ok = ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-ok/land").with_bearer("tok-agent").with_header("X-Reason", "commit"),
+    files,
+    clock,
+    env
+  )
+  assert land_ok.status == 200
+  assert Json.decode_strict[World.LandResult](land_ok.text) is Ok(lr)
+  assert lr.calls_replayed == 1 and lr.reads_verified == 1
+
+  met_resp = ApiTest.send(ShopApi, Api.get("/worlds/metrics"), files, clock, env)
+  assert met_resp.status == 200
+  assert Json.decode_strict[World.LandingMetrics](met_resp.text) is Ok(met)
+  assert met.total_landed == 1 and met.stale_read_rejections == 1 and met.grant_rejections == 1
+
+  ver = ApiTest.send(ShopApi, Api.get("/admin/verify"), files, clock, env)
+  assert ver.status == 200
+  assert Json.decode_strict[VerifySummary](ver.text) is Ok(vsum)
+  assert vsum.ok
 end
