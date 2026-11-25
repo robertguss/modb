@@ -127,7 +127,16 @@ fn page_html() : Text
       }
       .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
       .stat .val { font-size: 20px; font-weight: 700; margin-top: 4px; font-family: var(--mono); }
-      .stat .sub { font-size: 12px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+      .stat .sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+        font-family: var(--mono);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .actions-cell { display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; }
       .tabs {
         display: flex;
         flex-wrap: wrap;
@@ -367,7 +376,7 @@ fn page_html() : Text
           <div class="form-row">
             <input id="r-id" value="proposal-1" placeholder="proposal_id" />
             <input id="r-desc" value="Excise rogue grant subtree" placeholder="description" />
-            <input id="r-ex-grant" placeholder="exclude_grant (subtree)" />
+            <input id="r-ex-grant" placeholder="exclude_grant (e.g. g-team-b)" />
             <input id="r-ex-principal" placeholder="exclude_principal" />
             <input id="r-ex-world" placeholder="exclude_world" />
             <input id="r-overhead" type="number" placeholder="overhead_pct_override (e.g. 0)" />
@@ -380,7 +389,7 @@ fn page_html() : Text
             <div id="proposals-list" class="muted">No replay proposals yet.</div>
           </div>
           <div class="card">
-            <h2>Persisted Call Log (<span id="calls-count">0</span>)</h2>
+            <h2>Persisted Call Log <span id="calls-count" class="pill">0</span></h2>
             <div id="calls-list" class="muted" style="max-height:460px;overflow:auto">No calls recorded yet.</div>
           </div>
         </div>
@@ -392,7 +401,7 @@ fn page_html() : Text
           <div class="form-row">
             <input id="a-principal" placeholder="Filter by principal (optional)" />
             <input id="a-action" placeholder="Filter by action (optional)" />
-            <button onclick="refreshAll()">Apply Filter</button>
+            <button onclick="refreshAll(true)">Apply Filter</button>
           </div>
           <div id="audit-list" class="muted">No audit entries yet.</div>
         </div>
@@ -408,6 +417,7 @@ fn page_html() : Text
         selectedDiffWorld: null,
         lastVerify: null,
         initialized: false,
+        lastRenderKey: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -480,6 +490,7 @@ fn page_html() : Text
           const r = await api('POST', '/admin/demo', null, true);
           toast('Demo seeded: ' + r.summary, 'ok');
           state.selectedProject = 'infra';
+          if (!$('r-ex-grant').value.trim()) $('r-ex-grant').value = 'g-team-b';
           await refreshAll(true);
         } catch (e) { toast('Seed demo failed: ' + e.message, 'err'); }
       };
@@ -488,7 +499,8 @@ fn page_html() : Text
         try {
           const v = await api('GET', '/admin/verify');
           state.lastVerify = v;
-          $('st-hash').textContent = 'SHA256 ' + v.last_audit_hash.slice(0, 14) + '... (' + v.page_count + 'p)';
+          $('st-hash').textContent = v.last_audit_hash.slice(0, 10) + '... · ' + v.page_count + 'p';
+          $('st-hash').title = 'Verified SHA-256: ' + v.last_audit_hash;
           toast('Verified OK: txid=' + v.txid + ', ' + v.audit_entries + ' audit entries, ' + v.invariants_checked + ' invariants', 'ok');
         } catch (e) { toast('Verify failed: ' + e.message, 'err'); }
       };
@@ -515,7 +527,7 @@ fn page_html() : Text
           await api('POST', '/projects', { id, name, budget_cents }, true);
           state.selectedProject = id;
           toast('Project ' + id + ' saved', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -529,7 +541,7 @@ fn page_html() : Text
             base_cost_cents: Number($('t-cost').value),
           }, true);
           toast('Task created', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -544,10 +556,10 @@ fn page_html() : Text
             artifact_sha256: 'ui000000' + tid,
           }, true);
           toast('Task #' + tid + ' completed', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) {
           toast('Refused (recorded for Replay!): ' + e.message, 'err');
-          await refreshAll();
+          await refreshAll(true);
         }
       }
 
@@ -564,7 +576,7 @@ fn page_html() : Text
           const path = parent ? ('/grants/' + encodeURIComponent(parent) + '/delegate') : '/grants';
           await api('POST', path, body, true);
           toast('Grant ' + body.id + ' saved', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -572,7 +584,7 @@ fn page_html() : Text
         try {
           await api('POST', '/grants/' + encodeURIComponent(id) + '/revoke', null, true);
           toast('Revoked grant ' + id + ' (cascades to descendants)', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -585,7 +597,7 @@ fn page_html() : Text
             ttl_seconds: Number($('c-ttl').value),
           }, true);
           toast('Claim acquired', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -593,7 +605,7 @@ fn page_html() : Text
         try {
           await api('DELETE', '/claims/' + encodeURIComponent(res), null, true);
           toast('Released claim ' + res, 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -603,7 +615,7 @@ fn page_html() : Text
           const grant_id = $('w-grant').value.trim();
           await api('POST', '/worlds', { id, grant_id, ttl_seconds: 600 }, true);
           toast('Opened World ' + id, 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -617,7 +629,7 @@ fn page_html() : Text
           $('diff-world-label').textContent = id + ' query';
           $('world-diff-out').textContent = JSON.stringify(out, null, 2);
           toast('World query recorded on ' + id, 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -639,7 +651,7 @@ fn page_html() : Text
           }, true);
           toast('Staged complete_task(#' + tid + ') in ' + id, 'ok');
           await inspectDiff(id);
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -656,15 +668,15 @@ fn page_html() : Text
         try {
           const r = await api('POST', '/worlds/' + encodeURIComponent(id) + '/land', null, true);
           toast('Landed world ' + id + ' (txid=' + r.commit_txid + ')', 'ok');
-          await refreshAll();
-        } catch (e) { toast('Land failed: ' + e.message, 'err'); await refreshAll(); }
+          await refreshAll(true);
+        } catch (e) { toast('Land failed: ' + e.message, 'err'); await refreshAll(true); }
       }
 
       async function abortWorld(id) {
         try {
           await api('DELETE', '/worlds/' + encodeURIComponent(id), null, true);
           toast('Aborted world ' + id, 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -684,7 +696,9 @@ fn page_html() : Text
           const prop = await api('POST', '/admin/replay/simulate', body, true);
           const s = prop.summary;
           toast('Simulated ' + prop.id + ': excluded=' + s.excluded + ', reply_changed=' + s.reply_changed + ', now_accepted=' + s.now_accepted, 'ok');
-          await refreshAll();
+          const m = body.proposal_id.match(/^(.*?)([0-9]+)$/);
+          if (m) $('r-id').value = m[1] + String(Number(m[2]) + 1);
+          await refreshAll(true);
         } catch (e) { toast('Replay simulate failed: ' + e.message, 'err'); }
       }
 
@@ -692,7 +706,7 @@ fn page_html() : Text
         try {
           await api('POST', '/admin/replay/proposals/' + encodeURIComponent(id) + '/accept', null, true);
           toast('Proposal ' + id + ' accepted atomically!', 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast('Accept failed: ' + e.message, 'err'); }
       }
 
@@ -700,7 +714,7 @@ fn page_html() : Text
         try {
           await api('DELETE', '/admin/replay/proposals/' + encodeURIComponent(id), null, true);
           toast('Discarded proposal ' + id, 'ok');
-          await refreshAll();
+          await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
       }
 
@@ -716,7 +730,7 @@ fn page_html() : Text
           const pct = p.budget_cents > 0 ? Math.min(100, Math.round((p.spent_cents * 100) / p.budget_cents)) : 0;
           const barCls = pct >= 90 ? 'high' : (pct >= 70 ? 'warn' : '');
           const sel = p.id === state.selectedProject;
-          return '<div class="card" style="margin-bottom:10px;cursor:pointer;border-color:' + (sel ? 'var(--accent)' : 'var(--border)') + '" onclick="selectProject(' + JSON.stringify(p.id) + ')">'
+          return '<div class="card" style="margin-bottom:10px;cursor:pointer;border-color:' + (sel ? 'var(--accent)' : 'var(--border)') + '" data-action="select-project" data-id="' + esc(p.id) + '">'
             + '<div style="display:flex;justify-content:space-between;align-items:center">'
             + '<strong>' + esc(p.name) + ' <span class="mono muted">(' + esc(p.id) + ')</span></strong>'
             + '<span class="pill ' + (pct >= 90 ? 'err' : 'info') + '">' + pct + '% spent</span>'
@@ -729,9 +743,7 @@ fn page_html() : Text
 
       async function selectProject(pid) {
         state.selectedProject = pid;
-        await refreshTasks();
-        document.querySelectorAll('#projects-list .card').forEach((el) => el.style.borderColor = 'var(--border)');
-        await refreshAll();
+        await refreshAll(true);
       }
 
       async function refreshTasks() {
@@ -747,7 +759,7 @@ fn page_html() : Text
             const st = typeof t.status === 'string' ? t.status : JSON.stringify(t.status);
             const pillCls = st === 'done' ? 'ok' : (st === 'open' ? 'info' : 'warn');
             const btn = st === 'open'
-              ? '<button class="small success" onclick="completeTaskDirect(' + t.id + ')">Complete</button>'
+              ? '<button class="small success" data-action="complete-task" data-id="' + esc(t.id) + '">Complete</button>'
               : '<span class="mono muted">done</span>';
             return '<tr><td class="mono">#' + t.id + '</td><td>' + esc(t.title) + '</td>'
               + '<td><span class="pill ' + pillCls + '">' + esc(st) + '</span></td>'
@@ -771,7 +783,7 @@ fn page_html() : Text
         function renderNode(g, depth) {
           const rev = Boolean(g.revoked);
           const badge = rev ? '<span class="pill err">revoked</span>' : '<span class="pill ok">active</span>';
-          const btn = rev ? '' : '<button class="small danger" onclick="revokeGrant(' + JSON.stringify(g.id) + ')">Revoke</button>';
+          const btn = rev ? '' : '<button class="small danger" data-action="revoke-grant" data-id="' + esc(g.id) + '">Revoke</button>';
           const kids = (byParent.get(g.id) || []).map((c) => renderNode(c, depth + 1)).join('');
           return '<div class="' + (depth > 0 ? 'tree-indent' : '') + '" style="margin-bottom:8px">'
             + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 9px;background:var(--panel-2);border:1px solid var(--border);border-radius:7px">'
@@ -801,7 +813,7 @@ fn page_html() : Text
             + '<td class="mono">' + esc(c.holder) + '</td>'
             + '<td class="mono">' + esc(c.grant_id) + '</td>'
             + '<td class="mono muted">' + esc(c.expires_at) + '</td>'
-            + '<td><button class="small danger" onclick="releaseClaim(' + JSON.stringify(c.resource) + ')">Release</button></td></tr>').join('')
+            + '<td><button class="small danger" data-action="release-claim" data-id="' + esc(c.resource) + '">Release</button></td></tr>').join('')
           + '</tbody></table>';
       }
 
@@ -824,9 +836,11 @@ fn page_html() : Text
             const qCount = steps.filter((s) => s && typeof s === 'object' && 'read_step' in s).length;
             const cCount = steps.filter((s) => s && typeof s === 'object' && 'call_step' in s).length;
             const acts = st === 'open'
-              ? '<button class="small" onclick="inspectDiff(' + JSON.stringify(w.id) + ')">Diff</button> '
-                + '<button class="small success" onclick="landWorld(' + JSON.stringify(w.id) + ')">Land</button> '
-                + '<button class="small danger" onclick="abortWorld(' + JSON.stringify(w.id) + ')">Abort</button>'
+              ? '<div class="actions-cell">'
+                + '<button class="small" data-action="world-diff" data-id="' + esc(w.id) + '">Diff</button>'
+                + '<button class="small success" data-action="world-land" data-id="' + esc(w.id) + '">Land</button>'
+                + '<button class="small danger" data-action="world-abort" data-id="' + esc(w.id) + '">Abort</button>'
+                + '</div>'
               : '<span class="mono muted">closed</span>';
             return '<tr><td class="mono">' + esc(w.id) + '</td>'
               + '<td><span class="pill ' + cls + '">' + esc(stText) + '</span></td>'
@@ -856,8 +870,10 @@ fn page_html() : Text
           const stLabel = (p.status && p.status.accepted) ? ('accepted tx #' + p.status.accepted.commit_txid) : st;
           const stCls = st === 'pending' ? 'warn' : (st === 'accepted' ? 'ok' : '');
           const btns = st === 'pending'
-            ? '<button class="small success" onclick="acceptProposal(' + JSON.stringify(p.id) + ')">Accept Atomically</button> '
-              + '<button class="small danger" onclick="discardProposal(' + JSON.stringify(p.id) + ')">Discard</button>'
+            ? '<div class="actions-cell">'
+              + '<button class="small success" data-action="proposal-accept" data-id="' + esc(p.id) + '">Accept Atomically</button>'
+              + '<button class="small danger" data-action="proposal-discard" data-id="' + esc(p.id) + '">Discard</button>'
+              + '</div>'
             : '';
           const interesting = (p.outcomes || []).filter((o) => outcomeInfo(o).tag !== 'unchanged');
           const rows = interesting.slice(0, 12).map((o) => {
@@ -914,6 +930,22 @@ fn page_html() : Text
           + '</tbody></table>';
       }
 
+      document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const act = el.dataset.action;
+        const id = el.dataset.id;
+        if (act === 'select-project') selectProject(id);
+        else if (act === 'complete-task') completeTaskDirect(Number(id));
+        else if (act === 'revoke-grant') revokeGrant(id);
+        else if (act === 'release-claim') releaseClaim(id);
+        else if (act === 'world-diff') inspectDiff(id);
+        else if (act === 'world-land') landWorld(id);
+        else if (act === 'world-abort') abortWorld(id);
+        else if (act === 'proposal-accept') acceptProposal(id);
+        else if (act === 'proposal-discard') discardProposal(id);
+      });
+
       async function refreshAll(explicit = false) {
         try {
           const h = await api('GET', '/health');
@@ -925,10 +957,17 @@ fn page_html() : Text
           $('st-schema').textContent = 'schema v' + h.schema_version;
           $('st-audit').textContent = String(h.audit_count);
           $('st-calls').textContent = String(h.call_count);
-          if (!state.initialized) return;
+          if (!state.initialized) {
+            state.lastRenderKey = null;
+            return;
+          }
 
           const ap = $('a-principal').value.trim();
           const aa = $('a-action').value.trim();
+          const renderKey = [h.status, h.txid, h.audit_count, h.call_count, state.selectedProject || '', ap, aa].join('|');
+          if (!explicit && renderKey === state.lastRenderKey) return;
+          state.lastRenderKey = renderKey;
+
           let auditPath = '/audit?limit=80';
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
@@ -956,7 +995,7 @@ fn page_html() : Text
         }
       }
 
-      refreshAll();
+      refreshAll(true);
       setInterval(() => {
         if ($('auto-refresh').checked) refreshAll(false);
       }, 2000);
