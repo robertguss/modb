@@ -6,6 +6,7 @@ KeyCodec(..),
 IndexSpec,
 Index(..),
 Table(..),
+RowDiff(..),
 to_text,
 int64_min,
 int64_max,
@@ -63,10 +64,15 @@ snapshot_scan,
 snapshot_all,
 snapshot_lookup,
 snapshot_lookup_unique,
-snapshot_range_by
+snapshot_range_by,
+get_at_root,
+scan_at_root,
+all_at_root,
+diff_roots
 use Json{JsonDecodeError}
 use Modb{Snapshot, Store, WriteTx}
 use Modb.Errors{ModbError}
+use Modb.Tree{KeyDiff}
 
 ## Minimum signed 64-bit integer (`-2^63`), flipped to `0x0000000000000000` in key bytes.
 int64_min = -9223372036854775808
@@ -125,6 +131,13 @@ struct Table(K, V)
   encode_value: fn(V) : Bytes
   decode_value: fn(Bytes) : Result(V, JsonDecodeError)
   indexes: List(IndexSpec(K, V))
+end
+
+## Typed row-level difference between two catalog roots for a `Table(K, V)`.
+enum RowDiff(K, V)
+  RowAdded(key: K, value: V)
+  RowRemoved(key: K, value: V)
+  RowModified(key: K, old_value: V, new_value: V)
 end
 
 ## Encodes a signed 64-bit `Int` into 8 big-endian bytes with the sign bit flipped,
@@ -829,6 +842,65 @@ end
 ## Returns all `(K, V)` rows in `tbl` as of `snap`.
 fn snapshot_all(store: Store, snap: Snapshot, tbl: Table(K, V)) : Result(List((K, V)), TableError)
   snapshot_scan(store, snap, tbl, None, None, 0)
+end
+
+## Point lookup by primary key against an explicit committed/pinned `cat_root`.
+fn get_at_root(store: Store, cat_root: Int, tbl: Table(K, V), key: K) : Result(
+  Option(V),
+  TableError
+)
+  case try Modb.get_at_root(store, cat_root, tbl.bucket, tbl.key_codec.encode(key))
+    None: Ok(None)
+    Some(raw): Ok(Some(try tbl.decode_value(raw)))
+  end
+end
+
+## Ordered primary-key range scan `[start_key, end_key)` against an explicit committed/pinned `cat_root`.
+fn scan_at_root(
+  store: Store,
+  cat_root: Int,
+  tbl: Table(K, V),
+  start_key: Option(K),
+  end_key: Option(K),
+  limit: Int
+) : Result(List((K, V)), TableError)
+  lo = start_key.map(tbl.key_codec.encode)
+  hi = end_key.map(tbl.key_codec.encode)
+  return Ok([]) if empty_bounds?(lo, hi)
+  raw_rows = try Modb.scan_at_root(store, cat_root, tbl.bucket, lo, hi, limit)
+  decode_rows(tbl, raw_rows)
+end
+
+## Returns all `(K, V)` rows in `tbl` at an explicit committed/pinned `cat_root`.
+fn all_at_root(store: Store, cat_root: Int, tbl: Table(K, V)) : Result(List((K, V)), TableError)
+  scan_at_root(store, cat_root, tbl, None, None, 0)
+end
+
+## Structural O(diff) typed row diff for `tbl` between two committed/pinned catalog roots.
+fn diff_roots(store: Store, tbl: Table(K, V), root_a: Int, root_b: Int) : Result(
+  List(RowDiff(K, V)),
+  TableError
+)
+  raw_diffs = try Modb.diff_bucket_roots(store, root_a, root_b, tbl.bucket)
+  var out = []
+  for d in raw_diffs
+    case d
+      Added(key: kb, value: vb):
+        k = try tbl.key_codec.decode(kb)
+        v = try tbl.decode_value(vb)
+        out = out.append(RowAdded(key: k, value: v))
+      Removed(key: kb, value: va):
+        k = try tbl.key_codec.decode(kb)
+        v = try tbl.decode_value(va)
+        out = out.append(RowRemoved(key: k, value: v))
+      Modified(key: kb, old_value: va, new_value: vb):
+        k = try tbl.key_codec.decode(kb)
+        ov = try tbl.decode_value(va)
+        nv = try tbl.decode_value(vb)
+        out = out.append(RowModified(key: k, old_value: ov, new_value: nv))
+    end
+  end
+  Ok(out)
 end
 
 ## Exact secondary-index lookup against a pinned `Modb.Snapshot`.

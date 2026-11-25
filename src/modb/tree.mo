@@ -2,6 +2,8 @@
 ## overflow chains, binary search, and sibling rebalancing.
 module Modb.Tree
 expose Allocator(..),
+KeyDiff(..),
+DiffStats(..),
 empty_allocator,
 alloc_page,
 free_page,
@@ -14,7 +16,9 @@ scan_tx,
 put,
 delete,
 free_tree,
-collect_tree_pages
+collect_tree_pages,
+diff_trees,
+diff_trees_with_stats
 use Modb.Codec{
   BranchEntry,
   BranchNode,
@@ -59,6 +63,26 @@ struct Allocator
   staged: Map(Int, Bytes)
   dirty_leaves: Map(Int, LeafNode)
   dirty_branches: Map(Int, BranchNode)
+end
+
+## Single key-level difference between two B+Tree versions (`root_a -> root_b`).
+enum KeyDiff
+  Added(key: Bytes, value: Bytes)
+  Removed(key: Bytes, value: Bytes)
+  Modified(key: Bytes, old_value: Bytes, new_value: Bytes)
+end
+
+## Telemetry reported by `diff_trees_with_stats` proving untouched CoW subtrees are skipped.
+struct DiffStats
+  pages_read: Int
+  subtrees_skipped: Int
+end
+
+## Internal branch child key-range descriptor used for O(diff) subtree alignment.
+struct ChildSpan
+  page_id: Int
+  low: Option(Bytes)
+  high: Option(Bytes)
 end
 
 ## Internal result of recursive CoW insert.
@@ -1115,6 +1139,283 @@ fn verify_walk(
   else
     Error(Corrupt(reason: "unexpected page kind #{hdr.kind} in verify"))
   end
+end
+
+fn branch_child_spans(branch: BranchNode, parent_low: Option(Bytes), parent_high: Option(Bytes)) : List(
+  ChildSpan
+)
+  var spans = []
+  n = branch.entries.size
+  first_hi = if n > 0: Some((branch.entries.first or stop "branch first").key) else: parent_high
+  spans = spans.append(ChildSpan(page_id: branch.first_child, low: parent_low, high: first_hi))
+  for i in 0..n
+    e = branch.entries.get(i) or stop "branch span idx"
+    hi = if i + 1 < n
+      Some((branch.entries.get(i + 1) or stop "branch next sep").key)
+    else
+      parent_high
+    end
+    spans = spans.append(ChildSpan(page_id: e.child, low: Some(e.key), high: hi))
+  end
+  spans
+end
+
+fn high_bound_less?(a: Option(Bytes), b: Option(Bytes)) : Bool
+  case (a, b)
+    (Some(x), Some(y)): x < y
+    (Some(_), None): true
+    (None, Some(_)) | (None, None): false
+  end
+end
+
+fn diff_sorted_rows(rows_a: List((Bytes, Bytes)), rows_b: List((Bytes, Bytes)), acc: List(KeyDiff)) : List(
+  KeyDiff
+)
+  var out = acc
+  var i = 0
+  var j = 0
+  while i < rows_a.size and j < rows_b.size
+    (ka, va) = rows_a.get(i) or stop "diff rows_a idx"
+    (kb, vb) = rows_b.get(j) or stop "diff rows_b idx"
+    if ka == kb
+      if va != vb
+        out = out.append(Modified(key: ka, old_value: va, new_value: vb))
+      end
+      i += 1
+      j += 1
+    else if ka < kb
+      out = out.append(Removed(key: ka, value: va))
+      i += 1
+    else
+      out = out.append(Added(key: kb, value: vb))
+      j += 1
+    end
+  end
+  while i < rows_a.size
+    (ka, va) = rows_a.get(i) or stop "diff rows_a tail"
+    out = out.append(Removed(key: ka, value: va))
+    i += 1
+  end
+  while j < rows_b.size
+    (kb, vb) = rows_b.get(j) or stop "diff rows_b tail"
+    out = out.append(Added(key: kb, value: vb))
+    j += 1
+  end
+  out
+end
+
+fn diff_leaf_entries(
+  store: BlockStore,
+  staged_a: Map(Int, Bytes),
+  staged_b: Map(Int, Bytes),
+  entries_a: List(LeafEntry),
+  entries_b: List(LeafEntry),
+  acc: List(KeyDiff)
+) : Result(List(KeyDiff), ModbError)
+  var out = acc
+  var i = 0
+  var j = 0
+  while i < entries_a.size and j < entries_b.size
+    ea = entries_a.get(i) or stop "diff leaf a"
+    eb = entries_b.get(j) or stop "diff leaf b"
+    if ea.key == eb.key
+      same_ref = case (ea.value, eb.value)
+        (Inline(data: da), Inline(data: db)): da == db
+        (Overflow(first_page: fa, total_len: la), Overflow(first_page: fb, total_len: lb)): fa == fb and
+          la == lb
+        _: false
+      end
+      if not same_ref
+        va = try materialize_value(store, staged_a, ea.value)
+        vb = try materialize_value(store, staged_b, eb.value)
+        if va != vb
+          out = out.append(Modified(key: ea.key, old_value: va, new_value: vb))
+        end
+      end
+      i += 1
+      j += 1
+    else if ea.key < eb.key
+      va = try materialize_value(store, staged_a, ea.value)
+      out = out.append(Removed(key: ea.key, value: va))
+      i += 1
+    else
+      vb = try materialize_value(store, staged_b, eb.value)
+      out = out.append(Added(key: eb.key, value: vb))
+      j += 1
+    end
+  end
+  while i < entries_a.size
+    ea = entries_a.get(i) or stop "diff leaf a tail"
+    va = try materialize_value(store, staged_a, ea.value)
+    out = out.append(Removed(key: ea.key, value: va))
+    i += 1
+  end
+  while j < entries_b.size
+    eb = entries_b.get(j) or stop "diff leaf b tail"
+    vb = try materialize_value(store, staged_b, eb.value)
+    out = out.append(Added(key: eb.key, value: vb))
+    j += 1
+  end
+  Ok(out)
+end
+
+fn diff_nodes(
+  store: BlockStore,
+  staged_a: Map(Int, Bytes),
+  staged_b: Map(Int, Bytes),
+  root_a: Int,
+  root_b: Int,
+  low: Option(Bytes),
+  high: Option(Bytes),
+  acc: List(KeyDiff),
+  stats: DiffStats,
+  depth: Int
+) : Result((List(KeyDiff), DiffStats), ModbError)
+  return Error(Corrupt(reason: "b-tree depth limit exceeded in diff")) if depth > 64
+  if root_a == root_b and not staged_a.has?(root_a) and not staged_b.has?(root_b)
+    var st = stats
+    st.subtrees_skipped += 1
+    return Ok((acc, st))
+  end
+  if root_a == 0
+    rows_b = try scan(store, staged_b, root_b, low, high, 0)
+    var out = acc
+    for (k, v) in rows_b
+      out = out.append(Added(key: k, value: v))
+    end
+    var st = stats
+    st.pages_read += 1
+    return Ok((out, st))
+  end
+  if root_b == 0
+    rows_a = try scan(store, staged_a, root_a, low, high, 0)
+    var out = acc
+    for (k, v) in rows_a
+      out = out.append(Removed(key: k, value: v))
+    end
+    var st = stats
+    st.pages_read += 1
+    return Ok((out, st))
+  end
+
+  (raw_a, _va) = try read_node_page(store, staged_a, root_a)
+  (raw_b, _vb) = try read_node_page(store, staged_b, root_b)
+  var cur_stats = stats
+  cur_stats.pages_read += 2
+  hdr_a = try read_header_fast(raw_a, root_a)
+  hdr_b = try read_header_fast(raw_b, root_b)
+
+  if hdr_a.kind == kind_leaf and hdr_b.kind == kind_leaf
+    la = try decode_leaf_unchecked(raw_a, root_a)
+    lb = try decode_leaf_unchecked(raw_b, root_b)
+    out = try diff_leaf_entries(store, staged_a, staged_b, la.entries, lb.entries, acc)
+    return Ok((out, cur_stats))
+  end
+
+  if hdr_a.kind == kind_branch and hdr_b.kind == kind_branch
+    ba = try decode_branch_unchecked(raw_a, root_a)
+    bb = try decode_branch_unchecked(raw_b, root_b)
+    spans_a = branch_child_spans(ba, low, high)
+    spans_b = branch_child_spans(bb, low, high)
+    var out = acc
+    var i = 0
+    var j = 0
+    while i < spans_a.size and j < spans_b.size
+      sa = spans_a.get(i) or stop "diff span a"
+      sb = spans_b.get(j) or stop "diff span b"
+      if sa.low == sb.low and sa.high == sb.high
+        (next_out, next_stats) = try diff_nodes(
+          store,
+          staged_a,
+          staged_b,
+          sa.page_id,
+          sb.page_id,
+          sa.low,
+          sa.high,
+          out,
+          cur_stats,
+          depth + 1
+        )
+        out = next_out
+        cur_stats = next_stats
+        i += 1
+        j += 1
+      else
+        ## Ranges diverged (e.g. split/merge shifted a separator): advance to the next common boundary.
+        range_lo = sa.low
+        var end_i = i
+        var end_j = j
+        var hi_a = sa.high
+        var hi_b = sb.high
+        while hi_a != hi_b
+          if high_bound_less?(hi_a, hi_b)
+            end_i += 1
+            if end_i >= spans_a.size
+              hi_a = high
+              break
+            end
+            hi_a = (spans_a.get(end_i) or stop "sync span a").high
+          else
+            end_j += 1
+            if end_j >= spans_b.size
+              hi_b = high
+              break
+            end
+            hi_b = (spans_b.get(end_j) or stop "sync span b").high
+          end
+        end
+        sync_hi = hi_a
+        rows_a = try scan(store, staged_a, root_a, range_lo, sync_hi, 0)
+        rows_b = try scan(store, staged_b, root_b, range_lo, sync_hi, 0)
+        cur_stats.pages_read += end_i - i + 1 + (end_j - j + 1)
+        out = diff_sorted_rows(rows_a, rows_b, out)
+        i = end_i + 1
+        j = end_j + 1
+      end
+    end
+    return Ok((out, cur_stats))
+  end
+
+  ## Mixed heights (Leaf vs Branch): compare pruned ranges directly.
+  rows_a = try scan(store, staged_a, root_a, low, high, 0)
+  rows_b = try scan(store, staged_b, root_b, low, high, 0)
+  cur_stats.pages_read += 2
+  Ok((diff_sorted_rows(rows_a, rows_b, acc), cur_stats))
+end
+
+## Computes exact sorted key diffs from `root_a` to `root_b`, skipping unchanged CoW subtrees in O(1),
+## and returns `(diffs, stats)`.
+fn diff_trees_with_stats(
+  store: BlockStore,
+  staged_a: Map(Int, Bytes),
+  staged_b: Map(Int, Bytes),
+  root_a: Int,
+  root_b: Int
+) : Result((List(KeyDiff), DiffStats), ModbError)
+  diff_nodes(
+    store,
+    staged_a,
+    staged_b,
+    root_a,
+    root_b,
+    None,
+    None,
+    [],
+    DiffStats(pages_read: 0, subtrees_skipped: 0),
+    0
+  )
+end
+
+## Computes exact sorted key diffs from `root_a` to `root_b`, skipping unchanged CoW subtrees in O(1).
+fn diff_trees(
+  store: BlockStore,
+  staged_a: Map(Int, Bytes),
+  staged_b: Map(Int, Bytes),
+  root_a: Int,
+  root_b: Int
+) : Result(List(KeyDiff), ModbError)
+  (diffs, _stats) = try diff_trees_with_stats(store, staged_a, staged_b, root_a, root_b)
+  Ok(diffs)
 end
 
 test "CoW B+Tree handles multi-level splits, scans, overwrites, overflow values and full deletes"

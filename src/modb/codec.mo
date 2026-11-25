@@ -5,12 +5,14 @@ kind_branch,
 kind_leaf,
 kind_overflow,
 kind_freelist,
+kind_deferred_freelist,
 header_size,
 body_size,
 max_key_size,
 max_inline_value,
 max_overflow_chunk,
 max_freelist_entries,
+max_deferred_freelist_entries,
 MetaPage(..),
 PageHeader(..),
 BranchEntry(..),
@@ -20,6 +22,9 @@ LeafEntry(..),
 LeafNode(..),
 OverflowPage(..),
 FreelistPage(..),
+DeferredPageEntry(..),
+DeferredFreelistPage(..),
+FreelistChunk(..),
 encode_meta,
 decode_meta,
 verify_header,
@@ -39,7 +44,9 @@ leaf_lookup_entry_unchecked,
 encode_overflow,
 decode_overflow,
 encode_freelist,
-decode_freelist
+decode_freelist,
+encode_deferred_freelist,
+decode_freelist_chunk
 use Crypto
 use Modb.Errors{ModbError}
 use Modb.Pager{page_size}
@@ -49,6 +56,7 @@ kind_branch = 1
 kind_leaf = 2
 kind_overflow = 3
 kind_freelist = 4
+kind_deferred_freelist = 5
 
 header_size = 48
 body_size = 4048
@@ -56,6 +64,7 @@ max_key_size = 512
 max_inline_value = 1024
 max_overflow_chunk = 4036
 max_freelist_entries = 505
+max_deferred_freelist_entries = 252
 
 ## Superblock stored alternately in Page 0 (even txid) and Page 1 (odd txid).
 struct MetaPage
@@ -107,10 +116,28 @@ struct OverflowPage
   data: Bytes
 end
 
-## Single page of the persisted freelist chain.
+## Single page of the persisted freelist chain (immediately reusable page IDs).
 struct FreelistPage
   next_page: Int
   pages: List(Int)
+end
+
+## One deferred-free entry recording the commit `txid` that freed `page_id`.
+struct DeferredPageEntry
+  txid: Int
+  page_id: Int
+end
+
+## Single page of the persisted deferred-free chain (pages protected by active root pins).
+struct DeferredFreelistPage
+  next_page: Int
+  entries: List(DeferredPageEntry)
+end
+
+## Decoded chunk from the persisted freelist chain (`kind_freelist` or `kind_deferred_freelist`).
+enum FreelistChunk
+  ReadyChunk(next_page: Int, pages: List(Int))
+  DeferredChunk(next_page: Int, entries: List(DeferredPageEntry))
 end
 
 fn meta_magic() : Bytes
@@ -602,6 +629,54 @@ fn decode_freelist(raw: Bytes, expected_page_id: Int) : Result(FreelistPage, Mod
     pages = pages.append(pid)
   end
   Ok(FreelistPage(next_page: next_page, pages: pages))
+end
+
+## Encodes one page of the persisted deferred-free chain (`(txid, page_id)` pairs).
+fn encode_deferred_freelist(page_id: Int, page: DeferredFreelistPage) : Result(Bytes, ModbError)
+  if page.entries.size > max_deferred_freelist_entries
+    return Error(
+      InvalidArgument(
+        reason: "deferred freelist page has #{page.entries.size} entries (max #{max_deferred_freelist_entries})"
+      )
+    )
+  end
+  var parts = [Bytes.from_i64_be(page.next_page)]
+  for e in page.entries
+    parts = parts.append(Bytes.from_i64_be(e.txid)).append(Bytes.from_i64_be(e.page_id))
+  end
+  seal_page(kind_deferred_freelist, page.entries.size, page_id, Bytes.join(parts))
+end
+
+## Decodes either a ready (`kind_freelist`) or deferred (`kind_deferred_freelist`) freelist page.
+fn decode_freelist_chunk(raw: Bytes, expected_page_id: Int) : Result(FreelistChunk, ModbError)
+  hdr = try verify_header(raw, expected_page_id)
+  if hdr.kind == kind_freelist
+    if hdr.entry_count > max_freelist_entries
+      return Error(Corrupt(reason: "freelist entry_count #{hdr.entry_count} exceeds max"))
+    end
+    next_page = try read_i64(raw, header_size, "freelist next_page")
+    var pages = []
+    for i in 0..hdr.entry_count
+      pid = try read_i64(raw, header_size + 8 + i * 8, "freelist entry")
+      pages = pages.append(pid)
+    end
+    Ok(ReadyChunk(next_page: next_page, pages: pages))
+  else if hdr.kind == kind_deferred_freelist
+    if hdr.entry_count > max_deferred_freelist_entries
+      return Error(Corrupt(reason: "deferred freelist entry_count #{hdr.entry_count} exceeds max"))
+    end
+    next_page = try read_i64(raw, header_size, "deferred freelist next_page")
+    var entries = []
+    for i in 0..hdr.entry_count
+      base = header_size + 8 + i * 16
+      t = try read_i64(raw, base, "deferred txid")
+      pid = try read_i64(raw, base + 8, "deferred page_id")
+      entries = entries.append(DeferredPageEntry(txid: t, page_id: pid))
+    end
+    Ok(DeferredChunk(next_page: next_page, entries: entries))
+  else
+    Error(Corrupt(reason: "expected freelist page #{expected_page_id}, got kind #{hdr.kind}"))
+  end
 end
 
 test "meta page round-trips and detects single-byte corruption"

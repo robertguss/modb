@@ -3,7 +3,10 @@ module Modb
 expose Store(..),
 WriteTx(..),
 Snapshot(..),
+PinnedRoot(..),
 VerifyReport(..),
+BucketDiff(..),
+pins_bucket,
 open,
 open_read_only,
 open_file,
@@ -12,13 +15,23 @@ open_disk,
 with_shared_lock,
 with_exclusive_lock,
 txid,
+catalog_root,
 page_count,
 free_page_count,
 buckets,
 get,
 scan,
 prefix_scan,
+get_at_root,
+scan_at_root,
+list_pins,
+get_pin,
+pin_root,
+unpin_root,
+tx_pin_base_root,
+tx_unpin_root,
 begin_write,
+begin_write_from_root,
 tx_get,
 tx_scan,
 tx_put,
@@ -31,15 +44,24 @@ snapshot,
 snapshot_get,
 snapshot_scan,
 release_snapshot,
+diff_bucket_roots,
+diff_roots,
+diff_roots_with_stats,
+diff_tx_from_root,
 verify,
 commit_and_crash
 use Modb.Codec{
+  DeferredFreelistPage,
+  DeferredPageEntry,
+  FreelistChunk,
   FreelistPage,
   MetaPage,
-  decode_freelist,
+  decode_freelist_chunk,
   decode_meta,
+  encode_deferred_freelist,
   encode_freelist,
   encode_meta,
+  max_deferred_freelist_entries,
   max_freelist_entries
 }
 use Modb.Errors{ModbError, wrap_io}
@@ -56,21 +78,40 @@ use Modb.Pager{
 }
 use Modb.Tree{
   Allocator,
+  DiffStats,
+  KeyDiff,
   alloc_page,
   collect_tree_pages,
+  diff_trees,
+  diff_trees_with_stats,
   empty_allocator,
   flush_dirty,
-  free_page,
   free_tree
 }
 
-## Pages freed at commit `txid`, held back until no open snapshot predates `txid`.
+## Reserved internal bucket holding crash-safe persisted root pins (`pin_id -> (txid, catalog_root)`).
+pins_bucket = "_modb_pins"
+
+## Pages freed at commit `txid`, held back until no open snapshot or persistent pin predates `txid`.
 struct DeferredFree
   txid: Int
   pages: List(Int)
 end
 
-## Open database handle holding committed meta state, freelist bookkeeping, and snapshot pins.
+## Crash-safe persisted root pin protecting `catalog_root` (committed at `txid`) across restarts.
+struct PinnedRoot
+  id: Text
+  txid: Int
+  catalog_root: Int
+end
+
+## Per-bucket structural diff between two catalog roots.
+struct BucketDiff
+  bucket: Text
+  changes: List(KeyDiff)
+end
+
+## Open database handle holding committed meta state, freelist bookkeeping, snapshot pins, and persisted pins.
 struct Store
   pager: BlockStore
   meta: MetaPage
@@ -78,6 +119,8 @@ struct Store
   ready_free: List(Int)
   deferred_frees: List(DeferredFree)
   snapshots: Map(Int, Snapshot)
+  pinned_roots: Map(Text, PinnedRoot)
+  pins_loaded: Bool
   next_snapshot_id: Int
 end
 
@@ -88,6 +131,9 @@ struct WriteTx
   catalog_root: Int
   dirty_buckets: Map(Text, Int)
   dirty: Bool
+  speculative: Bool
+  added_pins: Map(Text, PinnedRoot)
+  removed_pins: Set(Text)
 end
 
 ## Immutable O(1) read snapshot pinning a committed `catalog_root` until released.
@@ -206,9 +252,93 @@ fn init_empty(store: BlockStore) : Result(Store, ModbError)
       ready_free: [],
       deferred_frees: [],
       snapshots: {},
+      pinned_roots: {},
+      pins_loaded: true,
       next_snapshot_id: 1
     )
   )
+end
+
+fn encode_pinned_root(pin: PinnedRoot) : Bytes
+  Bytes.join([Bytes.from_i64_be(pin.txid), Bytes.from_i64_be(pin.catalog_root)])
+end
+
+fn decode_pinned_root(id: Text, raw: Bytes, max_pages: Int, max_txid: Int) : Result(
+  PinnedRoot,
+  ModbError
+)
+  if raw.size != 16
+    return Error(Corrupt(reason: "invalid pinned root '#{id}' size #{raw.size} != 16"))
+  end
+  ptx = try raw.i64_be_at(0).or_fail(Corrupt(reason: "truncated pin txid for '#{id}'"))
+  proot = try raw.i64_be_at(8).or_fail(Corrupt(reason: "truncated pin catalog_root for '#{id}'"))
+  if ptx < 1 or ptx > max_txid
+    return Error(Corrupt(reason: "pinned root '#{id}' txid #{ptx} out of range 1..#{max_txid}"))
+  end
+  if proot < 0 or proot >= max_pages or proot == 1
+    return Error(Corrupt(reason: "pinned root '#{id}' catalog_root #{proot} out of bounds"))
+  end
+  Ok(PinnedRoot(id: id, txid: ptx, catalog_root: proot))
+end
+
+fn load_pinned_roots(store: BlockStore, cat_root: Int, max_pages: Int, max_txid: Int) : Result(
+  Map(Text, PinnedRoot),
+  ModbError
+)
+  pins_root = try lookup_bucket_root(store, {}, cat_root, pins_bucket)
+  return Ok({}) if pins_root == 0
+  rows = try Tree.scan(store, {}, pins_root, None, None, 0)
+  var pins = {}
+  for (kb, vb) in rows
+    id = case kb.decode_utf8
+      Some(s): s
+      None: return Error(Corrupt(reason: "non-utf8 pin id in #{pins_bucket}"))
+    end
+    pin = try decode_pinned_root(id, vb, max_pages, max_txid)
+    pins = pins.set(id, pin)
+  end
+  Ok(pins)
+end
+
+fn group_deferred_entries(entries: List(DeferredPageEntry)) : List(DeferredFree)
+  return [] if entries.empty?
+  var by_txid = {}
+  var order = []
+  for e in entries
+    case by_txid.get(e.txid)
+      Some(ps): by_txid = by_txid.set(e.txid, ps.append(e.page_id))
+      None:
+        by_txid = by_txid.set(e.txid, [e.page_id])
+        order = order.append(e.txid)
+    end
+  end
+  var out = []
+  for t in order
+    ps = by_txid.get(t) or []
+    out = out.append(DeferredFree(txid: t, pages: ps))
+  end
+  out
+end
+
+fn flatten_deferred(deferred: List(DeferredFree)) : List(DeferredPageEntry)
+  var out = []
+  for df in deferred
+    for pid in df.pages
+      out = out.append(DeferredPageEntry(txid: df.txid, page_id: pid))
+    end
+  end
+  out
+end
+
+fn min_pin_txid(snapshots: Map(Int, Snapshot), pinned_roots: Map(Text, PinnedRoot), fallback: Int) : Int
+  var lowest = fallback
+  for snap in snapshots.values
+    lowest = lowest.min(snap.txid)
+  end
+  for pin in pinned_roots.values
+    lowest = lowest.min(pin.txid)
+  end
+  lowest
 end
 
 fn recover_existing(store: BlockStore) : Result(Store, ModbError)
@@ -228,49 +358,108 @@ fn recover_existing(store: BlockStore) : Result(Store, ModbError)
       Corrupt(reason: "both meta-pages invalid: slot0=(#{e0.to_text}), slot1=(#{e1.to_text})")
     )
   end
-  (chain_pids, free_entries) = try load_freelist(store, chosen.freelist_root, chosen.page_count)
+  (chain_pids, ready_entries, raw_deferred) = try load_freelist(
+    store,
+    chosen.freelist_root,
+    chosen.page_count
+  )
+  ## Load persisted pins eagerly only when deferred-free chunks exist (needed to partition
+  ## ready vs deferred pages on open); otherwise load lazily on pin/commit access so normal
+  ## opens stay O(1) and corrupt data pages remain inspectable via `get`/`verify`.
+  if raw_deferred.empty?
+    return Ok(
+      Store(
+        pager: store,
+        meta: chosen,
+        freelist_pages: chain_pids,
+        ready_free: ready_entries,
+        deferred_frees: [],
+        snapshots: {},
+        pinned_roots: {},
+        pins_loaded: false,
+        next_snapshot_id: 1
+      )
+    )
+  end
+  pins = try load_pinned_roots(store, chosen.catalog_root, chosen.page_count, chosen.txid)
+  ## Any deferred entries held only by an ephemeral in-memory snapshot from a dead process
+  ## graduate immediately into `ready_free`; persisted pins keep their pages safely deferred.
+  min_pin = min_pin_txid({}, pins, chosen.txid)
+  var ready = ready_entries
+  var kept_deferred = []
+  for df in raw_deferred
+    if df.txid <= min_pin
+      ready = ready.concat(df.pages)
+    else
+      kept_deferred = kept_deferred.append(df)
+    end
+  end
   Ok(
     Store(
       pager: store,
       meta: chosen,
       freelist_pages: chain_pids,
-      ready_free: free_entries,
-      deferred_frees: [],
+      ready_free: ready,
+      deferred_frees: kept_deferred,
       snapshots: {},
+      pinned_roots: pins,
+      pins_loaded: true,
       next_snapshot_id: 1
     )
   )
 end
 
+fn ensure_pinned_roots(store: Store) : Result(Map(Text, PinnedRoot), ModbError)
+  return Ok(store.pinned_roots) if store.pins_loaded
+  load_pinned_roots(store.pager, store.meta.catalog_root, store.meta.page_count, store.meta.txid)
+end
+
 fn load_freelist(store: BlockStore, freelist_root: Int, max_pages: Int) : Result(
-  (List(Int), List(Int)),
+  (List(Int), List(Int), List(DeferredFree)),
   ModbError
 )
-  return Ok(([], [])) if freelist_root == 0
+  return Ok(([], [], [])) if freelist_root == 0
   var chain = []
-  var entries = []
+  var ready_entries = []
+  var deferred_entries = []
   var cur = freelist_root
   var steps = 0
   while cur != 0
     steps += 1
     return Error(Corrupt(reason: "freelist cycle detected")) if steps > max_pages
     raw = try read_page(store, cur)
-    fl = try decode_freelist(raw, cur)
+    chunk = try decode_freelist_chunk(raw, cur)
     chain = chain.append(cur)
-    for pid in fl.pages
-      if pid < 2 or pid >= max_pages
-        return Error(Corrupt(reason: "freelist page id #{pid} out of bounds"))
-      end
-      entries = entries.append(pid)
+    case chunk
+      ReadyChunk(next_page: np, pages: ps):
+        for pid in ps
+          if pid < 2 or pid >= max_pages
+            return Error(Corrupt(reason: "freelist page id #{pid} out of bounds"))
+          end
+          ready_entries = ready_entries.append(pid)
+        end
+        cur = np
+      DeferredChunk(next_page: np, entries: es):
+        for e in es
+          if e.page_id < 2 or e.page_id >= max_pages
+            return Error(Corrupt(reason: "deferred freelist page id #{e.page_id} out of bounds"))
+          end
+          deferred_entries = deferred_entries.append(e)
+        end
+        cur = np
     end
-    cur = fl.next_page
   end
-  Ok((chain, entries))
+  Ok((chain, ready_entries, group_deferred_entries(deferred_entries)))
 end
 
 ## Current committed transaction ID.
 fn txid(store: Store) : Int
   store.meta.txid
+end
+
+## Current committed catalog root page ID (O(1) version identifier).
+fn catalog_root(store: Store) : Int
+  store.meta.catalog_root
 end
 
 ## Total allocated 4 KiB pages in the database file.
@@ -363,14 +552,66 @@ fn prefix_scan(store: Store, bucket: Text, prefix: Bytes, limit: Int) : Result(
   end
 end
 
-## Starts an uncommitted write transaction.
+## Point lookup in `bucket` at an explicit committed/pinned `cat_root`.
+fn get_at_root(store: Store, cat_root: Int, bucket: Text, key: Bytes) : Result(
+  Option(Bytes),
+  ModbError
+)
+  bucket_root = try lookup_bucket_root(store.pager, {}, cat_root, bucket)
+  Tree.get(store.pager, {}, bucket_root, key)
+end
+
+## Ordered range scan over `[start_key, end_key)` in `bucket` at an explicit committed/pinned `cat_root`.
+fn scan_at_root(
+  store: Store,
+  cat_root: Int,
+  bucket: Text,
+  start_key: Option(Bytes),
+  end_key: Option(Bytes),
+  limit: Int
+) : Result(List((Bytes, Bytes)), ModbError)
+  bucket_root = try lookup_bucket_root(store.pager, {}, cat_root, bucket)
+  Tree.scan(store.pager, {}, bucket_root, start_key, end_key, limit)
+end
+
+## Lists all currently active persistent root pins.
+fn list_pins(store: Store) : Result(List(PinnedRoot), ModbError)
+  pins = try ensure_pinned_roots(store)
+  Ok(pins.values)
+end
+
+## Looks up a persistent root pin by `id`.
+fn get_pin(store: Store, id: Text) : Result(Option(PinnedRoot), ModbError)
+  pins = try ensure_pinned_roots(store)
+  Ok(pins.get(id))
+end
+
+## Starts an uncommitted write transaction against the current committed main line.
 fn begin_write(store: Store) : WriteTx
   WriteTx(
     base: store,
     alloc: empty_allocator(store.meta.page_count, store.ready_free),
     catalog_root: store.meta.catalog_root,
     dirty_buckets: {},
-    dirty: false
+    dirty: false,
+    speculative: false,
+    added_pins: {},
+    removed_pins: Set.empty
+  )
+end
+
+## Starts an isolated, non-committable speculative `WriteTx` rooted at a pinned `cat_root`
+## (used by `Modb.World` to evaluate in-world reads and calls without touching the main line).
+fn begin_write_from_root(store: Store, cat_root: Int) : WriteTx
+  WriteTx(
+    base: store,
+    alloc: empty_allocator(store.meta.page_count, []),
+    catalog_root: cat_root,
+    dirty_buckets: {},
+    dirty: false,
+    speculative: true,
+    added_pins: {},
+    removed_pins: Set.empty
   )
 end
 
@@ -397,8 +638,7 @@ fn tx_scan(tx: WriteTx, bucket: Text, start_key: Option(Bytes), end_key: Option(
   Tree.scan_tx(tx.base.pager, tx.alloc, bucket_root, start_key, end_key, limit)
 end
 
-## Inserts or updates `(key, value)` in `bucket`, creating the bucket if needed.
-fn tx_put(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(WriteTx, ModbError)
+fn tx_put_raw(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(WriteTx, ModbError)
   bucket_root = try tx_bucket_root(tx, bucket)
   (a1, new_bucket_root) = try Tree.put(tx.base.pager, tx.alloc, bucket_root, key, value)
   var next = tx
@@ -408,8 +648,7 @@ fn tx_put(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(WriteTx,
   Ok(next)
 end
 
-## Deletes `key` from `bucket`. Removes the bucket from the catalog if it becomes empty.
-fn tx_delete(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbError)
+fn tx_delete_raw(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbError)
   bucket_root = try tx_bucket_root(tx, bucket)
   return Ok(tx) if bucket_root == 0
   (a1, new_bucket_root, deleted?) = try Tree.delete(tx.base.pager, tx.alloc, bucket_root, key)
@@ -421,8 +660,27 @@ fn tx_delete(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbError)
   Ok(next)
 end
 
+## Inserts or updates `(key, value)` in `bucket`, creating the bucket if needed.
+fn tx_put(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(WriteTx, ModbError)
+  if bucket == pins_bucket
+    return Error(InvalidArgument(reason: "use tx_pin_base_root / tx_unpin_root to manage pins"))
+  end
+  tx_put_raw(tx, bucket, key, value)
+end
+
+## Deletes `key` from `bucket`. Removes the bucket from the catalog if it becomes empty.
+fn tx_delete(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbError)
+  if bucket == pins_bucket
+    return Error(InvalidArgument(reason: "use tx_pin_base_root / tx_unpin_root to manage pins"))
+  end
+  tx_delete_raw(tx, bucket, key)
+end
+
 ## Deletes an entire bucket and frees all of its pages.
 fn tx_delete_bucket(tx: WriteTx, bucket: Text) : Result(WriteTx, ModbError)
+  if bucket == pins_bucket
+    return Error(InvalidArgument(reason: "cannot delete internal #{pins_bucket} bucket"))
+  end
   bucket_root = try tx_bucket_root(tx, bucket)
   return Ok(tx) if bucket_root == 0
   a1 = try free_tree(tx.base.pager, tx.alloc, bucket_root)
@@ -431,6 +689,66 @@ fn tx_delete_bucket(tx: WriteTx, bucket: Text) : Result(WriteTx, ModbError)
   next.dirty_buckets = next.dirty_buckets.set(bucket, 0)
   next.dirty = true
   Ok(next)
+end
+
+fn effective_pins(tx: WriteTx) : Result(Map(Text, PinnedRoot), ModbError)
+  var pins = try ensure_pinned_roots(tx.base)
+  for rid in tx.removed_pins
+    pins = pins.remove(rid)
+  end
+  for (id, pin) in tx.added_pins.entries
+    pins = pins.set(id, pin)
+  end
+  Ok(pins)
+end
+
+## Records a crash-safe persistent pin of `tx.base.meta.catalog_root` (at `tx.base.meta.txid`) inside `tx`.
+fn tx_pin_base_root(tx: WriteTx, id: Text) : Result((WriteTx, PinnedRoot), ModbError)
+  if id.trim.empty?
+    return Error(InvalidArgument(reason: "pin id cannot be empty"))
+  end
+  if tx.speculative
+    return Error(InvalidArgument(reason: "cannot persist pin inside a speculative WriteTx"))
+  end
+  cur_pins = try effective_pins(tx)
+  if cur_pins.has?(id)
+    return Error(InvalidArgument(reason: "pin '#{id}' already exists"))
+  end
+  pin = PinnedRoot(id: id, txid: tx.base.meta.txid, catalog_root: tx.base.meta.catalog_root)
+  var next = try tx_put_raw(tx, pins_bucket, id.bytes, encode_pinned_root(pin))
+  next.removed_pins = next.removed_pins.remove(id)
+  next.added_pins = next.added_pins.set(id, pin)
+  Ok((next, pin))
+end
+
+## Removes a crash-safe persistent root pin inside `tx`, allowing deferred pages to reclaim on commit.
+fn tx_unpin_root(tx: WriteTx, id: Text) : Result(WriteTx, ModbError)
+  if tx.speculative
+    return Error(InvalidArgument(reason: "cannot unpin inside a speculative WriteTx"))
+  end
+  cur_pins = try effective_pins(tx)
+  if not cur_pins.has?(id)
+    return Error(InvalidArgument(reason: "unknown pin '#{id}'"))
+  end
+  var next = try tx_delete_raw(tx, pins_bucket, id.bytes)
+  next.added_pins = next.added_pins.remove(id)
+  next.removed_pins = next.removed_pins.add(id)
+  Ok(next)
+end
+
+## Atomically persists a root pin of the current committed `Store` state.
+fn pin_root(store: Store, id: Text) : Result((Store, PinnedRoot), ModbError)
+  tx = begin_write(store)
+  (t1, pin) = try tx_pin_base_root(tx, id)
+  committed = try commit(t1)
+  Ok((committed, pin))
+end
+
+## Atomically removes a persisted root pin and graduates any unpinned deferred pages for reuse.
+fn unpin_root(store: Store, id: Text) : Result(Store, ModbError)
+  tx = begin_write(store)
+  t1 = try tx_unpin_root(tx, id)
+  commit(t1)
 end
 
 ## Applies all buffered bucket root updates into `catalog_root` and seals all dirty nodes once.
@@ -463,75 +781,137 @@ fn rollback(tx: WriteTx) : Store
   tx.base
 end
 
-fn freelist_pages_needed(entry_count: Int) : Int
-  if entry_count <= 0: 0 else: (entry_count + max_freelist_entries - 1) / max_freelist_entries
+fn freelist_pages_needed(ready_count: Int, deferred_count: Int) : Int
+  r_pages = if ready_count <= 0: 0 else: (ready_count + max_freelist_entries - 1) /
+    max_freelist_entries
+  d_pages = if deferred_count <= 0
+    0
+  else
+    (deferred_count + max_deferred_freelist_entries - 1) / max_deferred_freelist_entries
+  end
+  r_pages + d_pages
 end
 
-## Stages the persisted freelist chain pages, preserving the exact disk page partition invariant.
-fn stage_freelist(alloc: Allocator, other_free: List(Int)) : Result(
-  (Allocator, Int, List(Int)),
-  ModbError
-)
+## Stages the persisted freelist chain (ready `kind_freelist` chunks followed by deferred
+## `kind_deferred_freelist` chunks), preserving exact crash-safe page partition invariants.
+fn stage_freelist(
+  alloc: Allocator,
+  extra_ready: List(Int),
+  deferred_entries: List(DeferredPageEntry)
+) : Result((Allocator, Int, List(Int)), ModbError)
   var cur_alloc = alloc
   var chain_pids = []
-  while freelist_pages_needed(cur_alloc.reusable.size + other_free.size) > chain_pids.size
+  while freelist_pages_needed(cur_alloc.reusable.size + extra_ready.size, deferred_entries.size) >
+    chain_pids.size
     (a1, pid) = alloc_page(cur_alloc)
     cur_alloc = a1
     chain_pids = chain_pids.append(pid)
   end
   return Ok((cur_alloc, 0, [])) if chain_pids.empty?
-  all_entries = cur_alloc.reusable.concat(other_free)
-  var i = chain_pids.size - 1
+
+  all_ready = cur_alloc.reusable.concat(extra_ready)
+  r_pages = if all_ready.size <= 0
+    0
+  else
+    (all_ready.size + max_freelist_entries - 1) / max_freelist_entries
+  end
+  d_pages = if deferred_entries.size <= 0
+    0
+  else
+    (deferred_entries.size + max_deferred_freelist_entries - 1) / max_deferred_freelist_entries
+  end
+  ## If allocating chain pages shrank `cur_alloc.reusable` below a chunk boundary, any trailing
+  ## allocated chain page simply carries an empty `ReadyChunk` so every allocated page is accounted.
+  total_ready_slots = chain_pids.size - d_pages
+
   var next_pid = 0
-  while i >= 0
-    pid = chain_pids.get(i) or stop "valid freelist chain pid"
-    start = i * max_freelist_entries
-    slice_entries = if start >= all_entries.size
+  var d_idx = d_pages - 1
+  while d_idx >= 0
+    pid = chain_pids.get(total_ready_slots + d_idx) or stop "valid deferred freelist chain pid"
+    start = d_idx * max_deferred_freelist_entries
+    slice_es = if start >= deferred_entries.size
       []
     else
-      all_entries.drop(start).take(max_freelist_entries)
+      deferred_entries.drop(start).take(max_deferred_freelist_entries)
     end
-    raw = try encode_freelist(pid, FreelistPage(next_page: next_pid, pages: slice_entries))
+    raw = try encode_deferred_freelist(
+      pid,
+      DeferredFreelistPage(next_page: next_pid, entries: slice_es)
+    )
     cur_alloc.staged = cur_alloc.staged.set(pid, raw)
     next_pid = pid
-    i -= 1
+    d_idx -= 1
+  end
+
+  var r_idx = total_ready_slots - 1
+  while r_idx >= 0
+    pid = chain_pids.get(r_idx) or stop "valid ready freelist chain pid"
+    start = r_idx * max_freelist_entries
+    slice_ps = if start >= all_ready.size or r_idx >= r_pages
+      []
+    else
+      all_ready.drop(start).take(max_freelist_entries)
+    end
+    raw = try encode_freelist(pid, FreelistPage(next_page: next_pid, pages: slice_ps))
+    cur_alloc.staged = cur_alloc.staged.set(pid, raw)
+    next_pid = pid
+    r_idx -= 1
   end
   Ok((cur_alloc, next_pid, chain_pids))
 end
 
-## Computes the lowest pinned snapshot txid, or `new_txid` if no snapshot is open.
-fn min_snapshot_txid(snapshots: Map(Int, Snapshot), fallback: Int) : Int
-  var lowest = fallback
-  for snap in snapshots.values
-    lowest = lowest.min(snap.txid)
+fn partition_deferred_for_commit(
+  base_deferred: List(DeferredFree),
+  new_txid: Int,
+  tree_freed: List(Int),
+  min_pin: Int
+) : (List(Int), List(DeferredFree))
+  all_deferred = if tree_freed.empty?
+    base_deferred
+  else
+    base_deferred.append(DeferredFree(txid: new_txid, pages: tree_freed))
   end
-  lowest
+  var graduated = []
+  var kept = []
+  for df in all_deferred
+    if df.txid <= min_pin
+      graduated = graduated.concat(df.pages)
+    else
+      kept = kept.append(df)
+    end
+  end
+  (graduated, kept)
 end
 
 ## Atomically commits a `WriteTx`:
-## 1. Stages freelist pages (without overwriting the previous commit's freelist chain).
+## 1. Stages freelist pages (ready + pin-protected deferred chunks) without overwriting old freelist.
 ## 2. Writes all staged CoW pages and calls `sync`.
 ## 3. Writes the alternating meta-page (`new_txid % 2`) and calls `sync`.
 fn commit(tx: WriteTx) : Result(Store, ModbError)
+  if tx.speculative
+    return Error(
+      InvalidArgument(reason: "cannot commit a speculative WriteTx rooted at a pinned snapshot")
+    )
+  end
   return Ok(tx.base) if not tx.dirty
   new_txid = tx.base.meta.txid + 1
 
   (a_dirty, final_catalog_root) = try finalize_tx_pages(tx)
+  next_pins = try effective_pins(tx)
+  min_pin = min_pin_txid(tx.base.snapshots, next_pins, new_txid)
 
-  ## Free the previous commit's freelist chain pages (kept intact on disk during this commit).
-  var cur_alloc = a_dirty
-  for old_fl_pid in tx.base.freelist_pages
-    cur_alloc = free_page(cur_alloc, old_fl_pid)
-  end
+  ## Tree pages freed during this commit stay deferred while any snapshot or persisted pin < new_txid.
+  ## Old freelist chain pages are never referenced by pinned catalog roots, so they become reusable on T+1.
+  (graduated_ready, next_deferred) = partition_deferred_for_commit(
+    tx.base.deferred_frees,
+    new_txid,
+    a_dirty.pending_free,
+    min_pin
+  )
+  extra_ready = tx.base.freelist_pages.concat(graduated_ready)
+  deferred_flat = flatten_deferred(next_deferred)
 
-  ## Gather all free pages not in `reusable` (previously deferred + freed during this commit).
-  var other_free = []
-  for df in tx.base.deferred_frees
-    other_free = other_free.concat(df.pages)
-  end
-  other_free = other_free.concat(cur_alloc.pending_free)
-
-  (a_fl, new_fl_root, new_fl_chain) = try stage_freelist(cur_alloc, other_free)
+  (a_fl, new_fl_root, new_fl_chain) = try stage_freelist(a_dirty, extra_ready, deferred_flat)
 
   ## Step 3: write all staged CoW data, branch, overflow, and freelist pages.
   var pager = tx.base.pager
@@ -552,22 +932,7 @@ fn commit(tx: WriteTx) : Result(Store, ModbError)
   pager = try write_page(pager, meta_slot, encode_meta(new_meta))
   pager = try sync(pager)
 
-  ## Graduate deferred frees once no open snapshot predates them.
-  all_deferred = if a_fl.pending_free.empty?
-    tx.base.deferred_frees
-  else
-    tx.base.deferred_frees.append(DeferredFree(txid: new_txid, pages: a_fl.pending_free))
-  end
-  min_pin = min_snapshot_txid(tx.base.snapshots, new_txid)
-  var next_ready = a_fl.reusable
-  var next_deferred = []
-  for df in all_deferred
-    if df.txid <= min_pin
-      next_ready = next_ready.concat(df.pages)
-    else
-      next_deferred = next_deferred.append(df)
-    end
-  end
+  next_ready = a_fl.reusable.concat(extra_ready)
 
   Ok(
     Store(
@@ -577,6 +942,8 @@ fn commit(tx: WriteTx) : Result(Store, ModbError)
       ready_free: next_ready,
       deferred_frees: next_deferred,
       snapshots: tx.base.snapshots,
+      pinned_roots: next_pins,
+      pins_loaded: true,
       next_snapshot_id: tx.base.next_snapshot_id
     )
   )
@@ -637,7 +1004,10 @@ fn release_snapshot(store: Store, snap: Snapshot) : Result(Store, ModbError)
   end
   var next = store
   next.snapshots = next.snapshots.remove(snap.id)
-  min_pin = min_snapshot_txid(next.snapshots, next.meta.txid)
+  pins = try ensure_pinned_roots(next)
+  next.pinned_roots = pins
+  next.pins_loaded = true
+  min_pin = min_pin_txid(next.snapshots, pins, next.meta.txid)
   var next_ready = next.ready_free
   var next_deferred = []
   for df in next.deferred_frees
@@ -652,12 +1022,99 @@ fn release_snapshot(store: Store, snap: Snapshot) : Result(Store, ModbError)
   Ok(next)
 end
 
+## Structural O(diff) comparison of a single bucket between two committed/pinned catalog roots.
+fn diff_bucket_roots(store: Store, root_a: Int, root_b: Int, bucket: Text) : Result(
+  List(KeyDiff),
+  ModbError
+)
+  return Ok([]) if root_a == root_b
+  ba = try lookup_bucket_root(store.pager, {}, root_a, bucket)
+  bb = try lookup_bucket_root(store.pager, {}, root_b, bucket)
+  diff_trees(store.pager, {}, {}, ba, bb)
+end
+
+fn diff_catalog_roots_internal(
+  pager: BlockStore,
+  staged_a: Map(Int, Bytes),
+  staged_b: Map(Int, Bytes),
+  root_a: Int,
+  root_b: Int
+) : Result((List(BucketDiff), DiffStats), ModbError)
+  (cat_diffs, cat_stats) = try diff_trees_with_stats(pager, staged_a, staged_b, root_a, root_b)
+  var stats = cat_stats
+  var out = []
+  for cd in cat_diffs
+    case cd
+      Added(key: kb, value: vb):
+        bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        bb = try decode_bucket_root(vb)
+        (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, 0, bb)
+        stats.pages_read += st.pages_read
+        stats.subtrees_skipped += st.subtrees_skipped
+        if not changes.empty?
+          out = out.append(BucketDiff(bucket: bname, changes: changes))
+        end
+      Removed(key: kb, value: va):
+        bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        ba = try decode_bucket_root(va)
+        (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, ba, 0)
+        stats.pages_read += st.pages_read
+        stats.subtrees_skipped += st.subtrees_skipped
+        if not changes.empty?
+          out = out.append(BucketDiff(bucket: bname, changes: changes))
+        end
+      Modified(key: kb, old_value: va, new_value: vb):
+        bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        ba = try decode_bucket_root(va)
+        bb = try decode_bucket_root(vb)
+        (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, ba, bb)
+        stats.pages_read += st.pages_read
+        stats.subtrees_skipped += st.subtrees_skipped
+        if not changes.empty?
+          out = out.append(BucketDiff(bucket: bname, changes: changes))
+        end
+    end
+  end
+  Ok((out, stats))
+end
+
+## Structural O(diff) comparison across all buckets between two committed/pinned catalog roots,
+## returning both bucket diffs and subtree-skip telemetry.
+fn diff_roots_with_stats(store: Store, root_a: Int, root_b: Int) : Result(
+  (List(BucketDiff), DiffStats),
+  ModbError
+)
+  diff_catalog_roots_internal(store.pager, {}, {}, root_a, root_b)
+end
+
+## Structural O(diff) comparison across all buckets between two committed/pinned catalog roots.
+fn diff_roots(store: Store, root_a: Int, root_b: Int) : Result(List(BucketDiff), ModbError)
+  (diffs, _stats) = try diff_roots_with_stats(store, root_a, root_b)
+  Ok(diffs)
+end
+
+## Structural O(diff) comparison from `base_root` to the uncommitted state staged in `tx`
+## (without modifying disk).
+fn diff_tx_from_root(tx: WriteTx, base_root: Int) : Result(List(BucketDiff), ModbError)
+  (a_dirty, final_cat) = try finalize_tx_pages(tx)
+  (diffs, _stats) = try diff_catalog_roots_internal(
+    tx.base.pager,
+    {},
+    a_dirty.staged,
+    base_root,
+    final_cat
+  )
+  Ok(diffs)
+end
+
 ## Full structural & page-accounting integrity check:
-## verifies every reachable page checksum, sorted key order, and exact disjoint partition
-## `{0, 1} U catalog U buckets U freelist_chain U freelist_entries == {0 .. page_count - 1}`.
+## verifies every reachable page checksum, sorted key order, exact disjoint partition
+## `{0, 1} U catalog U buckets U freelist_chain U ready_free U deferred_frees == {0 .. page_count - 1}`,
+## and verifies every persisted root pin in `_modb_pins` is intact and protected from reuse.
 fn verify(store: Store) : Result(VerifyReport, ModbError)
   cold_pager = clear_cache(store.pager)
   var seen = Set.empty.add(0).add(1)
+  var live_and_deferred = Set.empty.add(0).add(1)
   var live_count = 2
 
   catalog_pages = try collect_tree_pages(cold_pager, {}, store.meta.catalog_root)
@@ -669,6 +1126,7 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
       return Error(Corrupt(reason: "duplicate reference to catalog page #{pid}"))
     end
     seen = seen.add(pid)
+    live_and_deferred = live_and_deferred.add(pid)
     live_count += 1
   end
 
@@ -684,11 +1142,12 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
         return Error(Corrupt(reason: "duplicate reference to bucket page #{pid}"))
       end
       seen = seen.add(pid)
+      live_and_deferred = live_and_deferred.add(pid)
       live_count += 1
     end
   end
 
-  (fl_chain, fl_entries) = try load_freelist(
+  (fl_chain, fl_ready, fl_deferred) = try load_freelist(
     cold_pager,
     store.meta.freelist_root,
     store.meta.page_count
@@ -699,11 +1158,23 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
     end
     seen = seen.add(pid)
   end
-  for pid in fl_entries
+  var free_total = 0
+  for pid in fl_ready
     if seen.has?(pid)
       return Error(Corrupt(reason: "freelist entry #{pid} overlaps live or duplicate free page"))
     end
     seen = seen.add(pid)
+    free_total += 1
+  end
+  for df in fl_deferred
+    for pid in df.pages
+      if seen.has?(pid)
+        return Error(Corrupt(reason: "deferred free page #{pid} overlaps live or duplicate page"))
+      end
+      seen = seen.add(pid)
+      live_and_deferred = live_and_deferred.add(pid)
+      free_total += 1
+    end
   end
 
   if seen.size != store.meta.page_count
@@ -714,6 +1185,41 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
     )
   end
 
+  ## Verify every persisted root pin in `_modb_pins`: every reachable page must pass SHA-256
+  ## verification and live in `current_trees U deferred_frees` (never in `ready_free` or `fl_chain`).
+  pins = try load_pinned_roots(
+    cold_pager,
+    store.meta.catalog_root,
+    store.meta.page_count,
+    store.meta.txid
+  )
+  for pin in pins.values
+    p_cat_pages = try collect_tree_pages(cold_pager, {}, pin.catalog_root)
+    for pid in p_cat_pages
+      if not live_and_deferred.has?(pid)
+        return Error(
+          Corrupt(
+            reason: "pinned root '#{pin.id}' catalog page #{pid} is in ready_free/unprotected"
+          )
+        )
+      end
+    end
+    p_cat_rows = try Tree.scan(cold_pager, {}, pin.catalog_root, None, None, 0)
+    for (_pbname, prow) in p_cat_rows
+      pbroot = try decode_bucket_root(prow)
+      pbpages = try collect_tree_pages(cold_pager, {}, pbroot)
+      for pid in pbpages
+        if not live_and_deferred.has?(pid)
+          return Error(
+            Corrupt(
+              reason: "pinned root '#{pin.id}' bucket page #{pid} is in ready_free/unprotected"
+            )
+          )
+        end
+      end
+    end
+  end
+
   Ok(
     VerifyReport(
       txid: store.meta.txid,
@@ -721,7 +1227,7 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
       bucket_count: catalog_rows.size,
       live_pages: live_count,
       freelist_chain_pages: fl_chain.size,
-      free_entries: fl_entries.size
+      free_entries: free_total
     )
   )
 end
@@ -731,19 +1237,26 @@ end
 ## - `phase == 1`: writes staged CoW/freelist pages, crashes BEFORE syncing them (meta untouched).
 ## - `phase == 2`: writes and syncs CoW/freelist pages, writes meta-page, crashes BEFORE syncing meta.
 fn commit_and_crash(tx: WriteTx, phase: Int, rng: Random) : Result(BlockStore, ModbError)
+  if tx.speculative
+    return Error(InvalidArgument(reason: "cannot commit_and_crash a speculative WriteTx"))
+  end
   return Ok(simulate_crash(tx.base.pager, rng)) if not tx.dirty
   new_txid = tx.base.meta.txid + 1
   (a_dirty, final_catalog_root) = try finalize_tx_pages(tx)
-  var cur_alloc = a_dirty
-  for old_fl_pid in tx.base.freelist_pages
-    cur_alloc = free_page(cur_alloc, old_fl_pid)
-  end
-  var other_free = []
-  for df in tx.base.deferred_frees
-    other_free = other_free.concat(df.pages)
-  end
-  other_free = other_free.concat(cur_alloc.pending_free)
-  (a_fl, new_fl_root, _new_fl_chain) = try stage_freelist(cur_alloc, other_free)
+  next_pins = try effective_pins(tx)
+  min_pin = min_pin_txid(tx.base.snapshots, next_pins, new_txid)
+  (graduated_ready, next_deferred) = partition_deferred_for_commit(
+    tx.base.deferred_frees,
+    new_txid,
+    a_dirty.pending_free,
+    min_pin
+  )
+  extra_ready = tx.base.freelist_pages.concat(graduated_ready)
+  (a_fl, new_fl_root, _new_fl_chain) = try stage_freelist(
+    a_dirty,
+    extra_ready,
+    flatten_deferred(next_deferred)
+  )
 
   var pager = tx.base.pager
   for (pid, raw) in a_fl.staged.entries
