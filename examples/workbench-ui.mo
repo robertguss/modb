@@ -217,6 +217,8 @@ fn page_html() : Text
         font-family: var(--mono);
         font-size: 12px;
         overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
         max-height: 360px;
       }
       #toast {
@@ -951,7 +953,8 @@ fn page_html() : Text
         const skipped = metrics.total_reads_skipped || 0;
         const verified = metrics.total_reads_verified || 0;
         $('st-worlds').textContent = String(metrics.total_landed || 0);
-        $('st-open-worlds').textContent = openCount + ' open · ' + skipped + '/' + verified + ' reads skipped';
+        $('st-open-worlds').textContent = openCount + ' open · ' + skipped + '/' + verified + ' skipped';
+        $('st-open-worlds').title = skipped + ' of ' + verified + ' World reads skipped via CoW O(diff)';
         $('st-retries').textContent = String(metrics.stale_read_rejections || 0);
         $('st-needless').textContent = (metrics.needless_send_backs || 0) + ' needless';
         if (!worlds.length) {
