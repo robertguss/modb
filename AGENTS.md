@@ -5,10 +5,12 @@ and runtime as of `robertguss/mo#433`), alongside the research, formal models, a
 decisions toward a database for many AI agents. Milestone 1 (Layer 1 CoW B+Tree storage engine +
 Layer 2 typed tables and atomic secondary indexes), Milestone 2 (Layer 3 accountable
 hash-chained audit ledger, commit-time invariants, atomic schema migrations, advisory `flock` +
-`ReadFiles` least-privilege locking, and a live 8-worker `ShopApi` HTTP `api` server), and
+`ReadFiles` least-privilege locking, and a live 8-worker `ShopApi` HTTP `api` server),
 Milestone 3 (Layer 1 persistent root pins & O(diff) structural CoW diff + Layer 4 multi-agent
-attenuated `Grants`, `Claims`, and speculative `Worlds` with TLA+ parity) live in `src/`, verified
-in `tests/` and `bench/` and demonstrated in `examples/shop.mo` and `examples/shop-api.mo`.
+attenuated `Grants`, `Claims`, and speculative `Worlds` with TLA+ parity), and Milestone 4
+(layout-independent SHA-256 portable `Export`/import + upgrade-aware `Replay` with selective undo,
+bug-fix overrides, and proposal-first adoption) live in `src/`, verified in `tests/` and `bench/`
+and demonstrated in `examples/shop.mo` and `examples/shop-api.mo`.
 `specs/` holds active build specs, `design.md` holds the broader long-term design, and `map.md` is
 the earlier wayfinder map that Robert stopped on 2026-11-14.
 
@@ -16,11 +18,11 @@ the earlier wayfinder map that Robert stopped on 2026-11-14.
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree + pins/diff (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables & secondary indexes (`table.mo`), Layer 3 accountable ledger, invariants & migrations (`ledger.mo`), and Layer 4 multi-agent coordination (`grants.mo`, `claims.mo`, `world.mo`) | Active build sessions |
-| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests (`mo test`), and live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`) | Active build sessions |
+| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables & secondary indexes (`table.mo`), Layer 3 accountable ledger, invariants, migrations & portable export (`ledger.mo`, `export.mo`), and Layer 4 multi-agent coordination & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests (`mo test`), and live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`) | Active build sessions |
 | `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo and `shop-api.mo` HTTP `api` server) | Active build sessions |
 | `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`) plus real OS `SIGKILL` crash loop (`kill_loop.py`) | Active build sessions |
-| `specs/` | Active implementation specs (`milestone-1-storage-engine.md`, `milestone-2-ledger-and-api.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md`, `milestone-2-ledger-and-api.md`, `milestone-3-agent-coordination.md`, `milestone-4-replay-and-export.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
 | `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
@@ -45,14 +47,17 @@ Using the pure-Rust `mo` release binary (`~/code/mo/target/release/mo` or `mo` o
 mo test src/modb.mo
 mo test src/modb/table.mo
 mo test src/modb/ledger.mo
+mo test src/modb/export.mo
 mo test src/modb/grants.mo
 mo test src/modb/claims.mo
+mo test src/modb/replay.mo
 mo test src/modb/world.mo
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
 mo test tests/test-ledger.mo
 mo test tests/test-pins-diff.mo
 mo test tests/test-worlds.mo
+mo test tests/test-replay-export.mo
 mo test examples/shop.mo
 mo test examples/shop-api.mo
 python3 tests/test_shop_api_live.py "$(command -v mo || echo ~/code/mo/target/release/mo)"

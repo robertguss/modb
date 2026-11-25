@@ -13,9 +13,12 @@
 module ShopApi
 use Api
 use Json
+use Modb
 use Modb.Claims
+use Modb.Export
 use Modb.Grants
 use Modb.Ledger
+use Modb.Replay
 use Modb.Table
 use Modb.World
 
@@ -165,6 +168,17 @@ struct OkStatus
   ok: Bool
 end
 
+struct ReplaySimulateInput
+  proposal_id: Text
+  description: Text
+  exclude_principal: Option(Text)
+  exclude_grant: Option(Text)
+  exclude_world: Option(Text)
+  exclude_seqs: Option(List(Int))
+  stop_before_seq: Option(Int)
+  member_discount_override: Option(Decimal)
+end
+
 enum ShopApiError
   Unauthenticated
   Forbidden(required: Text)
@@ -183,6 +197,8 @@ enum ShopApiError
   ClaimConflict(detail: Text)
   WorldMissing(id: Text)
   WorldConflict(detail: Text)
+  ProposalMissing(id: Text)
+  ProposalConflict(detail: Text)
   StorageFailed(message: Text)
 end
 
@@ -237,6 +253,16 @@ api
   get "/audit" get_audit
   post "/admin/init" post_admin_init
   get "/admin/verify" get_admin_verify
+  get "/admin/export" get_admin_export
+
+  scope "/admin/replay"
+    get "/calls" get_replay_calls
+    post "/simulate" post_replay_simulate
+    get "/proposals" list_replay_proposals
+    get "/proposals/:id" get_replay_proposal
+    post "/proposals/:id/accept" post_replay_accept
+    delete "/proposals/:id" delete_replay_proposal
+  end
 
   status Unauthenticated = 401
   status Forbidden(_) = 403
@@ -255,6 +281,8 @@ api
   status ClaimConflict(_) = 409
   status WorldMissing(_) = 404
   status WorldConflict(_) = 409
+  status ProposalMissing(_) = 404
+  status ProposalConflict(_) = 409
   status StorageFailed(_) = 500
 end
 
@@ -414,6 +442,37 @@ fn map_world_error(err: World.WorldError) : ShopApiError
   end
 end
 
+fn map_export_error(err: Export.ExportError) : ShopApiError
+  case err
+    Export.LedgerFailure(le): map_ledger_error(le)
+    Export.StorageFailure(_) | Export.UnsupportedFormat(found: _, supported: _) | Export
+      .InvalidEncoding(bucket: _, detail: _) | Export.ChecksumMismatch(expected: _, actual: _) | Export
+      .TargetNotEmpty(path: _): StorageFailed(message: err.to_text)
+  end
+end
+
+fn map_replay_error(err: Replay.ReplayError) : ShopApiError
+  case err
+    Replay.LedgerFailure(le): map_ledger_error(le)
+    Replay.ExportFailure(ee): map_export_error(ee)
+    Replay.GrantFailure(ge): map_grant_error(ge)
+    Replay.ProposalNotFound(id: id): ProposalMissing(id: id)
+    Replay.ProposalAlreadyExists(id: _) | Replay.ProposalNotPending(id: _, status: _) | Replay
+      .ProposalStale(
+        id: _,
+        expected_audit_seq: _,
+        actual_audit_seq: _,
+        expected_call_seq: _,
+        actual_call_seq: _
+      ): ProposalConflict(detail: err.to_text)
+    Replay.UnknownReplayAction(action: _, schema_version: _) | Replay.MissingReplayMigration(
+      version: _
+    ) | Replay.ReplayActionRejected(action: _, detail: _) | Replay.ReplayFailed(detail: _): InvalidInput(
+      reason: err.to_text
+    )
+  end
+end
+
 ## Approved query & write action catalog exposed to speculative multi-agent Worlds.
 fn shop_catalog() : World.Catalog
   custs = customers_table()
@@ -550,6 +609,116 @@ fn shop_catalog() : World.Catalog
   )
 end
 
+fn place_order_action(rate: Decimal) : fn(Modb.WriteTx, Json) : Result((Modb.WriteTx, Json), Text)
+  custs = customers_table()
+  prods = products_table()
+  ords = orders_table()
+  fn(tx, args)
+    body = try Json.decode[OrderInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+    return Error("order id must be > 0") if body.id <= 0
+    return Error("quantity must be > 0") if body.quantity <= 0
+    buyer_opt = try Table.tx_get(tx, custs, body.buyer_id).map_error(fn(e) e.to_text end)
+    buyer = try buyer_opt.or_fail("customer ##{body.buyer_id} not found")
+    prod_opt = try Table.tx_get(tx, prods, body.sku).map_error(fn(e) e.to_text end)
+    prod = try prod_opt.or_fail("product '#{body.sku}' not found")
+    if prod.stock < body.quantity
+      return Error(
+        "insufficient stock for '#{body.sku}': requested #{body.quantity}, available #{prod.stock}"
+      )
+    end
+    subtotal = prod.price * body.quantity.to_decimal
+    total = case buyer.tier
+      Standard: subtotal.round(2)
+      Member: (subtotal * (1.00 - rate)).round(2)
+    end
+    var updated_prod = prod
+    updated_prod.stock -= body.quantity
+    ord = Order(
+      buyer_id: body.buyer_id,
+      sku: body.sku,
+      quantity: body.quantity,
+      total: total,
+      status: Placed
+    )
+    t1 = try Table.put(tx, prods, body.sku, updated_prod).map_error(fn(e) e.to_text end)
+    t2 = try Table.put(t1, ords, body.id, ord).map_error(fn(e) e.to_text end)
+    row = OrderRow(
+      id: body.id,
+      buyer_id: ord.buyer_id,
+      sku: ord.sku,
+      quantity: ord.quantity,
+      total: ord.total,
+      status: ord.status
+    )
+    Ok((t2, row.to_json))
+  end
+end
+
+## Replay action catalog covering all direct HTTP mutations and World actions, with optional
+## Member discount rate override (e.g. `Some(0.20)` = 20% off) for live bug-fix replay demos.
+fn shop_replay_catalog(member_discount_override: Option(Decimal)) : Replay.ReplayCatalog
+  custs = customers_table()
+  prods = products_table()
+  ords = orders_table()
+
+  base = Replay.catalog().with_action(
+    "register_customer",
+    fn(tx, args)
+      body = try Json.decode[CustomerInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      return Error("customer id must be > 0") if body.id <= 0
+      return Error("email cannot be empty") if body.email.trim.empty?
+      cust = Customer(email: body.email, name: body.name, tier: body.tier)
+      t1 = try Table.put(tx, custs, body.id, cust).map_error(fn(e) e.to_text end)
+      row = CustomerRow(id: body.id, email: body.email, name: body.name, tier: body.tier)
+      Ok((t1, row.to_json))
+    end
+  ).with_action(
+    "save_product",
+    fn(tx, args)
+      body = try Json.decode[ProductInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      return Error("sku cannot be empty") if body.sku.trim.empty?
+      prod = Product(
+        title: body.title,
+        category: body.category,
+        price: body.price,
+        stock: body.stock
+      )
+      t1 = try Table.put(tx, prods, body.sku, prod).map_error(fn(e) e.to_text end)
+      row = ProductRow(
+        sku: body.sku,
+        title: body.title,
+        category: body.category,
+        price: body.price,
+        stock: body.stock
+      )
+      Ok((t1, row.to_json))
+    end
+  ).with_action("place_order", place_order_action(0.10)).with_action(
+    "ship_order",
+    fn(tx, args)
+      id = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      ord_opt = try Table.tx_get(tx, ords, id).map_error(fn(e) e.to_text end)
+      ord = try ord_opt.or_fail("order ##{id} not found")
+      var next = ord
+      next.status = Shipped
+      t1 = try Table.put(tx, ords, id, next).map_error(fn(e) e.to_text end)
+      row = OrderRow(
+        id: id,
+        buyer_id: next.buyer_id,
+        sku: next.sku,
+        quantity: next.quantity,
+        total: next.total,
+        status: next.status
+      )
+      Ok((t1, row.to_json))
+    end
+  )
+  case member_discount_override
+    Some(rate): Replay.with_override_action(base, "place_order", place_order_action(rate))
+    None: base
+  end
+end
+
 ## Authenticates callers via Bearer token and captures accountable `X-Reason` header.
 fn authenticate(req: Api.Request, env: Env) : Result(Caller, ShopApiError)
   token = (req.bearer_token or "").trim
@@ -631,7 +800,7 @@ fn post_admin_init(caller: Caller, files: Files, clock: Clock) : Result(
   )
 end
 
-## Registers or updates a customer with unique-email enforcement and audit logging.
+## Registers or updates a customer with unique-email enforcement, audit logging & replay capture.
 fn post_customer(caller: Caller, files: Files, clock: Clock, body: CustomerInput) : Result(
   CustomerRow,
   ShopApiError
@@ -641,17 +810,45 @@ fn post_customer(caller: Caller, files: Files, clock: Clock, body: CustomerInput
   return Error(InvalidInput(reason: "email cannot be empty")) if body.email.trim.empty?
   meta = try write_meta(caller, "register_customer", clock)
   cust = Customer(email: body.email, name: body.name, tier: body.tier)
+  row = CustomerRow(id: body.id, email: body.email, name: body.name, tier: body.tier)
   custs = customers_table()
-  _ = try Ledger.write_locked(
+  Ledger.locked(
     files,
     db_path(),
     shop_schema(),
-    meta,
-    "register customer ##{body.id} (#{body.email})",
-    body.to_json,
-    fn(tx) Table.put(tx, custs, body.id, cust) end
-  ).map_error(map_ledger_error)
-  Ok(CustomerRow(id: body.id, email: body.email, name: body.name, tier: body.tier))
+    meta.at,
+    map_ledger_error,
+    fn(db)
+      sc_ver = Ledger.schema_version(db)
+      aseq = db.state.next_audit_seq
+      (_next, out) = try Ledger.transact(
+        db,
+        meta,
+        "register customer ##{body.id} (#{body.email})",
+        body.to_json,
+        map_ledger_error,
+        fn(tx)
+          t1 = try Table.put(tx, custs, body.id, cust).map_error(map_table_error)
+          (t2, _rec) = try Replay.tx_record_call(
+            t1,
+            sc_ver,
+            Some(aseq),
+            meta.principal,
+            None,
+            [],
+            None,
+            "register_customer",
+            body.to_json,
+            meta.reason,
+            meta.at,
+            Replay.OrigOk(reply: row.to_json)
+          ).map_error(map_table_error)
+          Ok((t2, row))
+        end
+      )
+      Ok(out)
+    end
+  )
 end
 
 ## Fetches a customer by primary ID (`ReadFiles` + shared `flock`).
@@ -710,24 +907,50 @@ fn post_product(caller: Caller, files: Files, clock: Clock, body: ProductInput) 
   return Error(InvalidInput(reason: "sku cannot be empty")) if body.sku.trim.empty?
   meta = try write_meta(caller, "save_product", clock)
   prod = Product(title: body.title, category: body.category, price: body.price, stock: body.stock)
+  row = ProductRow(
+    sku: body.sku,
+    title: body.title,
+    category: body.category,
+    price: body.price,
+    stock: body.stock
+  )
   prods = products_table()
-  _ = try Ledger.write_locked(
+  Ledger.locked(
     files,
     db_path(),
     shop_schema(),
-    meta,
-    "upsert product '#{body.sku}' (stock=#{body.stock}, price=#{body.price.to_fixed(2)})",
-    body.to_json,
-    fn(tx) Table.put(tx, prods, body.sku, prod) end
-  ).map_error(map_ledger_error)
-  Ok(
-    ProductRow(
-      sku: body.sku,
-      title: body.title,
-      category: body.category,
-      price: body.price,
-      stock: body.stock
-    )
+    meta.at,
+    map_ledger_error,
+    fn(db)
+      sc_ver = Ledger.schema_version(db)
+      aseq = db.state.next_audit_seq
+      (_next, out) = try Ledger.transact(
+        db,
+        meta,
+        "upsert product '#{body.sku}' (stock=#{body.stock}, price=#{body.price.to_fixed(2)})",
+        body.to_json,
+        map_ledger_error,
+        fn(tx)
+          t1 = try Table.put(tx, prods, body.sku, prod).map_error(map_table_error)
+          (t2, _rec) = try Replay.tx_record_call(
+            t1,
+            sc_ver,
+            Some(aseq),
+            meta.principal,
+            None,
+            [],
+            None,
+            "save_product",
+            body.to_json,
+            meta.reason,
+            meta.at,
+            Replay.OrigOk(reply: row.to_json)
+          ).map_error(map_table_error)
+          Ok((t2, row))
+        end
+      )
+      Ok(out)
+    end
   )
 end
 
@@ -785,7 +1008,8 @@ fn get_product(rf: ReadFiles, sku: Text) : Result(ProductRow, ShopApiError)
 end
 
 ## Places an order atomically under exclusive `flock` with exact `Decimal` Member discount,
-## stock decrement, commit-time referential/stock invariants, and a hash-chained audit entry.
+## stock decrement, commit-time referential/stock invariants, hash-chained audit entry, and
+## replay capture (including `InsufficientStock` refusals so selective undo surfaces `NowAccepted`).
 fn post_order(caller: Caller, files: Files, clock: Clock, body: OrderInput) : Result(
   OrderRow,
   ShopApiError
@@ -797,56 +1021,95 @@ fn post_order(caller: Caller, files: Files, clock: Clock, body: OrderInput) : Re
   prods = products_table()
   ords = orders_table()
 
-  placed = try Ledger.transact_locked(
+  Ledger.locked(
     files,
     db_path(),
     shop_schema(),
-    meta,
-    "place order ##{body.id} (#{body.quantity}x #{body.sku} for buyer ##{body.buyer_id})",
-    body.to_json,
+    meta.at,
     map_ledger_error,
-    fn(tx)
-      buyer_opt = try Table.tx_get(tx, custs, body.buyer_id).map_error(map_table_error)
-      buyer = try buyer_opt.or_fail(CustomerMissing(id: body.buyer_id))
-      prod_opt = try Table.tx_get(tx, prods, body.sku).map_error(map_table_error)
-      prod = try prod_opt.or_fail(ProductMissing(sku: body.sku))
-      if prod.stock < body.quantity
-        return Error(
-          InsufficientStock(sku: body.sku, requested: body.quantity, available: prod.stock)
-        )
-      end
-      subtotal = prod.price * body.quantity.to_decimal
-      total = case buyer.tier
-        Standard: subtotal.round(2)
-        Member: (subtotal * 0.90).round(2)
-      end
-      var updated_prod = prod
-      updated_prod.stock -= body.quantity
-      ord = Order(
-        buyer_id: body.buyer_id,
-        sku: body.sku,
-        quantity: body.quantity,
-        total: total,
-        status: Placed
+    fn(db)
+      sc_ver = Ledger.schema_version(db)
+      aseq = db.state.next_audit_seq
+      res = Ledger.transact(
+        db,
+        meta,
+        "place order ##{body.id} (#{body.quantity}x #{body.sku} for buyer ##{body.buyer_id})",
+        body.to_json,
+        map_ledger_error,
+        fn(tx)
+          buyer_opt = try Table.tx_get(tx, custs, body.buyer_id).map_error(map_table_error)
+          buyer = try buyer_opt.or_fail(CustomerMissing(id: body.buyer_id))
+          prod_opt = try Table.tx_get(tx, prods, body.sku).map_error(map_table_error)
+          prod = try prod_opt.or_fail(ProductMissing(sku: body.sku))
+          if prod.stock < body.quantity
+            return Error(
+              InsufficientStock(sku: body.sku, requested: body.quantity, available: prod.stock)
+            )
+          end
+          subtotal = prod.price * body.quantity.to_decimal
+          total = case buyer.tier
+            Standard: subtotal.round(2)
+            Member: (subtotal * 0.90).round(2)
+          end
+          var updated_prod = prod
+          updated_prod.stock -= body.quantity
+          ord = Order(
+            buyer_id: body.buyer_id,
+            sku: body.sku,
+            quantity: body.quantity,
+            total: total,
+            status: Placed
+          )
+          row = OrderRow(
+            id: body.id,
+            buyer_id: ord.buyer_id,
+            sku: ord.sku,
+            quantity: ord.quantity,
+            total: ord.total,
+            status: ord.status
+          )
+          t1 = try Table.put(tx, prods, body.sku, updated_prod).map_error(map_table_error)
+          t2 = try Table.put(t1, ords, body.id, ord).map_error(map_table_error)
+          (t3, _rec) = try Replay.tx_record_call(
+            t2,
+            sc_ver,
+            Some(aseq),
+            meta.principal,
+            None,
+            [],
+            None,
+            "place_order",
+            body.to_json,
+            meta.reason,
+            meta.at,
+            Replay.OrigOk(reply: row.to_json)
+          ).map_error(map_table_error)
+          Ok((t3, row))
+        end
       )
-      t1 = try Table.put(tx, prods, body.sku, updated_prod).map_error(map_table_error)
-      t2 = try Table.put(t1, ords, body.id, ord).map_error(map_table_error)
-      Ok((t2, ord))
+      case res
+        Ok((_next, row)): Ok(row)
+        Error(InsufficientStock(sku: s, requested: req, available: avail)):
+          _ = try Replay.record_refused(
+            db,
+            meta.principal,
+            None,
+            [],
+            None,
+            "place_order",
+            body.to_json,
+            meta.reason,
+            meta.at,
+            "insufficient stock for '#{s}': requested #{req}, available #{avail}"
+          ).map_error(map_replay_error)
+          Error(InsufficientStock(sku: s, requested: req, available: avail))
+        Error(other): Error(other)
+      end
     end
-  )
-  Ok(
-    OrderRow(
-      id: body.id,
-      buyer_id: placed.buyer_id,
-      sku: placed.sku,
-      quantity: placed.quantity,
-      total: placed.total,
-      status: placed.status
-    )
   )
 end
 
-## Marks an order as shipped (Admin/Clerk only) under exclusive `flock`.
+## Marks an order as shipped (Admin/Clerk only) under exclusive `flock` with replay capture.
 fn post_ship_order(caller: Caller, files: Files, clock: Clock, id: Int) : Result(
   OrderRow,
   ShopApiError
@@ -854,32 +1117,54 @@ fn post_ship_order(caller: Caller, files: Files, clock: Clock, id: Int) : Result
   try require_staff(caller)
   meta = try write_meta(caller, "ship_order", clock)
   ords = orders_table()
-  shipped = try Ledger.transact_locked(
+  Ledger.locked(
     files,
     db_path(),
     shop_schema(),
-    meta,
-    "ship order ##{id}",
-    Json.Object({"order_id": id.to_json}),
+    meta.at,
     map_ledger_error,
-    fn(tx)
-      ord_opt = try Table.tx_get(tx, ords, id).map_error(map_table_error)
-      ord = try ord_opt.or_fail(OrderMissing(id: id))
-      var next = ord
-      next.status = Shipped
-      t1 = try Table.put(tx, ords, id, next).map_error(map_table_error)
-      Ok((t1, next))
+    fn(db)
+      sc_ver = Ledger.schema_version(db)
+      aseq = db.state.next_audit_seq
+      (_next, row) = try Ledger.transact(
+        db,
+        meta,
+        "ship order ##{id}",
+        Json.Object({"order_id": id.to_json}),
+        map_ledger_error,
+        fn(tx)
+          ord_opt = try Table.tx_get(tx, ords, id).map_error(map_table_error)
+          ord = try ord_opt.or_fail(OrderMissing(id: id))
+          var next = ord
+          next.status = Shipped
+          row = OrderRow(
+            id: id,
+            buyer_id: next.buyer_id,
+            sku: next.sku,
+            quantity: next.quantity,
+            total: next.total,
+            status: next.status
+          )
+          t1 = try Table.put(tx, ords, id, next).map_error(map_table_error)
+          (t2, _rec) = try Replay.tx_record_call(
+            t1,
+            sc_ver,
+            Some(aseq),
+            meta.principal,
+            None,
+            [],
+            None,
+            "ship_order",
+            id.to_json,
+            meta.reason,
+            meta.at,
+            Replay.OrigOk(reply: row.to_json)
+          ).map_error(map_table_error)
+          Ok((t2, row))
+        end
+      )
+      Ok(row)
     end
-  )
-  Ok(
-    OrderRow(
-      id: id,
-      buyer_id: shipped.buyer_id,
-      sku: shipped.sku,
-      quantity: shipped.quantity,
-      total: shipped.total,
-      status: shipped.status
-    )
   )
 end
 
@@ -1147,6 +1432,101 @@ fn get_admin_verify(rf: ReadFiles) : Result(VerifySummary, ShopApiError)
       )
     end
   )
+end
+
+## Exports a layout-independent SHA-256 verified portable JSON snapshot (`ReadFiles` + shared `flock`).
+fn get_admin_export(rf: ReadFiles, clock: Clock, include_internal: Option(Bool)) : Result(
+  Export.PortableSnapshot,
+  ShopApiError
+)
+  inc = include_internal or true
+  Export.export_locked(rf, db_path(), shop_schema(), inc, clock.now).map_error(map_export_error)
+end
+
+## Lists all recorded replayable calls (`ReadFiles` + shared `flock`).
+fn get_replay_calls(rf: ReadFiles) : Result(List(Replay.CallRecord), ShopApiError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db) Replay.list_calls(Ledger.store(db)).map_error(map_replay_error) end
+  )
+end
+
+## Simulates an offline replay (selective undo or bug-fix discount override) and persists a
+## reviewable `ReplayProposal` without mutating live business tables (Admin only).
+fn post_replay_simulate(caller: Caller, files: Files, clock: Clock, body: ReplaySimulateInput) : Result(
+  Replay.ReplayProposal,
+  ShopApiError
+)
+  try require_admin(caller)
+  case body.member_discount_override
+    Some(rate):
+      if rate < 0.00 or rate >= 1.00
+        return Error(InvalidInput(reason: "member_discount_override must be in [0.00, 1.00)"))
+      end
+    None: Unit
+  end
+  flt = case (
+    body.exclude_principal,
+    body.exclude_grant,
+    body.exclude_world,
+    body.exclude_seqs,
+    body.stop_before_seq
+  )
+    (Some(p), _, _, _, _): Replay.ExcludePrincipal(principal: p)
+    (None, Some(g), _, _, _): Replay.ExcludeGrant(grant_id: g)
+    (None, None, Some(w), _, _): Replay.ExcludeWorld(world_id: w)
+    (None, None, None, Some(seqs), _): Replay.ExcludeSeqs(seqs: seqs)
+    (None, None, None, None, Some(s)): Replay.StopBeforeSeq(seq: s)
+    (None, None, None, None, None): Replay.ReplayAll
+  end
+  rc = shop_replay_catalog(body.member_discount_override)
+  Replay.simulate_replay_locked(
+    files,
+    db_path(),
+    shop_schema(),
+    rc,
+    flt,
+    body.proposal_id,
+    body.description,
+    caller.principal,
+    clock.now
+  ).map_error(map_replay_error)
+end
+
+## Lists all replay proposals (`ReadFiles` + shared `flock`).
+fn list_replay_proposals(rf: ReadFiles) : Result(List(Replay.ReplayProposal), ShopApiError)
+  Replay.list_proposals_locked(rf, db_path(), shop_schema()).map_error(map_replay_error)
+end
+
+## Inspects one replay proposal by ID (`ReadFiles` + shared `flock`).
+fn get_replay_proposal(rf: ReadFiles, id: Text) : Result(Replay.ReplayProposal, ShopApiError)
+  opt = try Replay.get_proposal_locked(rf, db_path(), shop_schema(), id).map_error(map_replay_error)
+  opt.or_fail(ProposalMissing(id: id))
+end
+
+## Atomically adopts a fresh `Pending` replay proposal onto live state with audit logging (Admin only).
+fn post_replay_accept(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Replay.ReplayProposal,
+  ShopApiError
+)
+  try require_admin(caller)
+  meta = try write_meta(caller, "accept_replay_proposal", clock)
+  Replay.accept_proposal_locked(files, db_path(), shop_schema(), id, meta).map_error(
+    map_replay_error
+  )
+end
+
+## Discards a `Pending` replay proposal without touching live data (Admin only).
+fn delete_replay_proposal(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Replay.ReplayProposal,
+  ShopApiError
+)
+  try require_admin(caller)
+  Replay.discard_proposal_locked(files, db_path(), shop_schema(), id, caller.principal, clock.now)
+    .map_error(map_replay_error)
 end
 
 test "ShopApi end-to-end via ApiTest.send: ReadFiles/Files split, locks, auth, X-Reason, invariants, orders, audit, and verify"
@@ -1669,4 +2049,232 @@ test "ShopApi Milestone 3 via ApiTest.send: Grants delegation/revocation, Claims
   assert ver.status == 200
   assert Json.decode_strict[VerifySummary](ver.text) is Ok(vsum)
   assert vsum.ok
+end
+
+test "ShopApi Milestone 4 via ApiTest.send: Selective undo (NowAccepted), bug-fix discount replay & portable export"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-25T16:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "SHOP_ADMIN_TOKEN": "tok-admin",
+    "SHOP_CLERK_TOKEN": "tok-clerk",
+    "SHOP_AGENT_TOKEN": "tok-agent"
+  })
+
+  ## 1. Bootstrap DB + register Member customer #1
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/admin/init").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/customers").with_bearer("tok-clerk").with_header("X-Reason", "seed").with_json(
+      CustomerInput(id: 1, email: "ada@replay.org", name: "Ada", tier: Member)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## 2. Issue root grant `g-rogue` -> child `g-rogue-sub`; rogue child drains all 5 brewer-v60 via World!
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "grant-rogue").with_json(
+      GrantInput(
+        id: "g-rogue",
+        principal: "agent:rogue",
+        allowed_actions: ["place_order"],
+        max_calls: 10,
+        ttl_seconds: 3600
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/grants/g-rogue/delegate").with_bearer("tok-agent").with_header("X-Reason", "sub")
+      .with_json(
+        GrantInput(
+          id: "g-rogue-sub",
+          principal: "helper:rogue",
+          allowed_actions: ["place_order"],
+          max_calls: 5,
+          ttl_seconds: 1800
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds").with_bearer("tok-agent").with_json(
+      WorldOpenInput(id: "w-drain", grant_id: "g-rogue-sub", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-drain/call").with_bearer("tok-agent").with_header("X-Reason", "drain-all")
+      .with_json(
+        WorldCallInput(
+          action: "place_order",
+          args: OrderInput(id: 4001, buyer_id: 1, sku: "brewer-v60", quantity: 5).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/worlds/w-drain/land").with_bearer("tok-agent").with_header("X-Reason", "land"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## 3. Legitimate customer order #4002 for 2x brewer-v60 is REFUSED (409 InsufficientStock)!
+  refused = ApiTest.send(
+    ShopApi,
+    Api.post("/orders").with_bearer("tok-clerk").with_header("X-Reason", "legit-order").with_json(
+      OrderInput(id: 4002, buyer_id: 1, sku: "brewer-v60", quantity: 2)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert refused.status == 409
+
+  ## 4. Admin simulates excluding `g-rogue` (catches child `g-rogue-sub`!):
+  ##    proposal shows Excluded=1, NowAccepted=1, and live stock stays 0 until accepted!
+  sim1 = ApiTest.send(
+    ShopApi,
+    Api.post("/admin/replay/simulate").with_bearer("tok-admin").with_json(
+      ReplaySimulateInput(
+        proposal_id: "undo-rogue",
+        description: "Remove rogue grant subtree",
+        exclude_principal: None,
+        exclude_grant: Some("g-rogue"),
+        exclude_world: None,
+        exclude_seqs: None,
+        stop_before_seq: None,
+        member_discount_override: None
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sim1.status == 200
+  assert Json.decode_strict[Replay.ReplayProposal](sim1.text) is Ok(prop1)
+  assert prop1.summary.excluded == 1 and prop1.summary.now_accepted == 1
+  assert not prop1.bucket_diffs.empty?
+
+  ## Live brewer-v60 stock is STILL 0 before Admin accepts!
+  p_before = ApiTest.send(ShopApi, Api.get("/products/brewer-v60"), files, ro, clock, env)
+  assert p_before.status == 200
+  assert Json.decode_strict[ProductRow](p_before.text) is Ok(pb)
+  assert pb.stock == 0
+
+  ## Read-only inspection over ReadFiles works
+  assert ApiTest.send(ShopApi, Api.get("/admin/replay/proposals/undo-rogue"), files, ro, clock, env)
+    .status ==
+    200
+
+  ## 5. Admin accepts proposal -> order #4002 is now fulfilled (2x $26 * 0.90 = $46.80) and stock = 3!
+  acc1 = ApiTest.send(
+    ShopApi,
+    Api.post("/admin/replay/proposals/undo-rogue/accept").with_bearer("tok-admin").with_header(
+      "X-Reason",
+      "approve rogue undo"
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert acc1.status == 200
+
+  p_after = ApiTest.send(ShopApi, Api.get("/products/brewer-v60"), files, ro, clock, env)
+  assert Json.decode_strict[ProductRow](p_after.text) is Ok(pa)
+  assert pa.stock == 3
+
+  o_after = ApiTest.send(ShopApi, Api.get("/customers/1/orders"), files, ro, clock, env)
+  assert Json.decode_strict[List(OrderRow)](o_after.text) ==
+    Ok([
+      OrderRow(id: 4002, buyer_id: 1, sku: "brewer-v60", quantity: 2, total: 46.80, status: Placed)
+    ])
+
+  ## 6. Bug-fix replay: override Member discount to 20% (0.20) while excluding `g-rogue` -> $41.60!
+  sim2 = ApiTest.send(
+    ShopApi,
+    Api.post("/admin/replay/simulate").with_bearer("tok-admin").with_json(
+      ReplaySimulateInput(
+        proposal_id: "fix-member-discount",
+        description: "Retroactively apply 20% Member discount",
+        exclude_principal: None,
+        exclude_grant: Some("g-rogue"),
+        exclude_world: None,
+        exclude_seqs: None,
+        stop_before_seq: None,
+        member_discount_override: Some(0.20)
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sim2.status == 200
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/admin/replay/proposals/fix-member-discount/accept").with_bearer("tok-admin")
+      .with_header("X-Reason", "apply 20% discount fix"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  o_fixed = ApiTest.send(ShopApi, Api.get("/customers/1/orders"), files, ro, clock, env)
+  assert Json.decode_strict[List(OrderRow)](o_fixed.text) ==
+    Ok([
+      OrderRow(id: 4002, buyer_id: 1, sku: "brewer-v60", quantity: 2, total: 41.60, status: Placed)
+    ])
+
+  ## 7. Full verify + portable export + round-trip import into a fresh file!
+  ver = ApiTest.send(ShopApi, Api.get("/admin/verify"), files, ro, clock, env)
+  assert ver.status == 200 and Json.decode_strict[VerifySummary](ver.text) is Ok(vs) and vs.ok
+
+  exp = ApiTest.send(ShopApi, Api.get("/admin/export"), files, ro, clock, env)
+  assert exp.status == 200
+  assert Json.decode_strict[Export.PortableSnapshot](exp.text) is Ok(snap)
+  assert Export.verify_snapshot(snap) is Ok(_)
+  assert Export.import_db(files, "reimported-shop.modb", shop_schema(), snap, t0) is Ok(db_reimp)
+  assert Ledger.verify_all(db_reimp) is Ok(_)
 end

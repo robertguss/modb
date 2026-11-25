@@ -91,6 +91,13 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** `mo serve` defaults to 8 concurrent HTTP worker threads, each receiving an isolated `Files` capability per request. Without advisory file locking (`Files.File.lock_shared` / `lock_exclusive` / `unlock`) or read-only random-access handles (`ReadFiles.open`), Phase 2A had to run `mo serve --workers 1`.
 - **Resolution:** PR #436 added safe BSD `flock` advisory locks (`File.lock_shared`, `File.lock_exclusive`, `File.unlock` via `rustix::fs::flock` with auto-unlock on drop and `Files.in_memory` parity) plus host-attenuated `ReadFiles.open` (and `ApiTest.send` `ReadFiles` derivation from supplied `Files`). Adopted across `src/modb.mo`, `src/modb/ledger.mo`, `examples/shop-api.mo`, and verified under `mo serve --workers 8` with an 8-thread concurrent HTTP + mid-flight `SIGKILL` stress test in `tests/test_shop_api_live.py`.
 
+### 17. BSD `flock` `LOCK_SH` reader starvation of `LOCK_EX` writers under continuous heavy reads & per-request VM instruction budget
+- **Where:** `examples/shop-api.mo` under `mo serve --workers 8` (`tests/test_shop_api_live.py` Waves 3–4) and `src/modb/replay.mo` (`preview_replay`)
+- **What happened:**
+  1. Under Linux BSD `flock`, 4 tight-loop HTTP reader threads overlapping `LOCK_SH` while executing full cold-read `/admin/verify` scans can continuously renew shared ownership and starve pending `LOCK_EX` writers for >15 s.
+  2. Replaying ~100 calls inside one HTTP request initially triggered `bug: internal error: instruction budget exhausted` (~1.8 s) when `preview_replay` committed (`Modb.commit` + SHA-256 page encoding) after every single replayed call. Switching `preview_replay` to keep a single pure in-memory `WriteTx` across all replayed calls (using Perceus immutable values for O(1) rollback on refusal/invariant rejection and committing once at the end) eliminated the budget exhaustion completely and sped up replay by >20×.
+- **Implication for Milestone 5 (Performance & Scale):** Target both fast-path storage/codec optimization (right-edge 90/10 split, single-pass page packing, reduced helper dispatch) and non-starving reader concurrency (e.g. fast snapshot/verify paths and lock-fairness strategies).
+
 ---
 
 ## What Worked Surprisingly Well

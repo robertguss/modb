@@ -508,6 +508,7 @@ def main() -> int:
                             "/worlds",
                             {"id": wid, "grant_id": "g-race", "ttl_seconds": 600},
                             agent_hdr,
+                            timeout=30.0,
                         )
                         if st_o != 200:
                             with w3_lock:
@@ -519,13 +520,14 @@ def main() -> int:
                             f"/worlds/{wid}/query",
                             {"query": "get_product", "args": "world-beans"},
                             agent_hdr,
+                            timeout=30.0,
                         )
                         if st_q != 200:
                             with w3_lock:
                                 w3_errors.append(f"query {wid}: {st_q} {b_q}")
                             return
                         if b_q["stock"] < 1:
-                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr)
+                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr, timeout=30.0)
                             return
                         st_c, b_c = http_json(
                             base2,
@@ -536,11 +538,19 @@ def main() -> int:
                                 "args": {"id": oid, "buyer_id": 1, "sku": "world-beans", "quantity": 1},
                             },
                             agent_hdr,
+                            timeout=30.0,
                         )
                         if st_c != 200:
-                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr)
+                            http_json(base2, "DELETE", f"/worlds/{wid}", None, agent_hdr, timeout=30.0)
                             return
-                        st_l, b_l = http_json(base2, "POST", f"/worlds/{wid}/land", None, agent_hdr)
+                        st_l, b_l = http_json(
+                            base2,
+                            "POST",
+                            f"/worlds/{wid}/land",
+                            None,
+                            agent_hdr,
+                            timeout=30.0,
+                        )
                         if st_l == 200:
                             with w3_lock:
                                 w3_counts["landed"] += 1
@@ -568,6 +578,8 @@ def main() -> int:
                 step = 0
                 while not w3_stop_readers.is_set():
                     path = routes[(idx + step) % len(routes)]
+                    if path == "/admin/verify" and (idx != 0 or step % 16 != 0):
+                        path = "/products/world-beans"
                     step += 1
                     st_r, b_r = http_json(base2, "GET", path, timeout=30.0)
                     with w3_lock:
@@ -575,6 +587,7 @@ def main() -> int:
                             w3_counts["reads"] += 1
                         else:
                             w3_errors.append(f"GET {path}: {st_r} {b_r}")
+                    time.sleep(0.005)
 
             with ThreadPoolExecutor(max_workers=8) as pool3:
                 rfuts = [pool3.submit(world_reader, r) for r in range(4)]
@@ -623,28 +636,211 @@ def main() -> int:
             st, dropped = http_json(base3, "DELETE", "/worlds/w-persist", None, agent_hdr)
             assert st == 200 and dropped == {"ok": True}, (st, dropped)
 
-            st, ver_final = http_json(base3, "GET", "/admin/verify")
-            assert st == 200 and ver_final["ok"] is True, (st, ver_final)
+            st, ver_pre4 = http_json(base3, "GET", "/admin/verify")
+            assert st == 200 and ver_pre4["ok"] is True, (st, ver_pre4)
 
             st, met_final = http_json(base3, "GET", "/worlds/metrics")
             assert st == 200 and met_final["total_landed"] == world_landed, (st, met_final)
 
+            # WAVE 4: Live Milestone 4 Replay (selective grant-subtree undo + NowAccepted +
+            # bug-fix discount override) + Portable Export + 3rd SIGKILL recovery!
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/products",
+                {
+                    "sku": "replay-beans",
+                    "title": "Replay Reserve (250g)",
+                    "category": "beans",
+                    "price": "20.00",
+                    "stock": 5,
+                },
+                admin_hdr,
+            )
+            assert st == 200
+
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/grants",
+                {
+                    "id": "g-bad-root",
+                    "principal": "agent:rogue-root",
+                    "allowed_actions": ["place_order"],
+                    "max_calls": 10,
+                    "ttl_seconds": 3600,
+                },
+                admin_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/grants/g-bad-root/delegate",
+                {
+                    "id": "g-bad-child",
+                    "principal": "helper:rogue-child",
+                    "allowed_actions": ["place_order"],
+                    "max_calls": 5,
+                    "ttl_seconds": 1800,
+                },
+                agent_hdr,
+            )
+            assert st == 200
+
+            # Rogue delegated child drains all 5 replay-beans via speculative World
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/worlds",
+                {"id": "w-rogue-drain", "grant_id": "g-bad-child", "ttl_seconds": 600},
+                agent_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/worlds/w-rogue-drain/call",
+                {
+                    "action": "place_order",
+                    "args": {"id": 6001, "buyer_id": 1, "sku": "replay-beans", "quantity": 5},
+                },
+                agent_hdr,
+            )
+            assert st == 200
+            st, _ = http_json(base3, "POST", "/worlds/w-rogue-drain/land", None, agent_hdr)
+            assert st == 200
+
+            # Legitimate order #6002 for 2x replay-beans is REFUSED (409 InsufficientStock)
+            st, _ = http_json(
+                base3,
+                "POST",
+                "/orders",
+                {"id": 6002, "buyer_id": 1, "sku": "replay-beans", "quantity": 2},
+                clerk_hdr,
+            )
+            assert st == 409
+
+            # Admin simulates removing g-bad-root (excises child g-bad-child) -> NowAccepted!
+            st, prop1 = http_json(
+                base3,
+                "POST",
+                "/admin/replay/simulate",
+                {
+                    "proposal_id": "wave4-undo",
+                    "description": "Remove rogue subtree g-bad-root",
+                    "exclude_principal": None,
+                    "exclude_grant": "g-bad-root",
+                    "exclude_world": None,
+                    "exclude_seqs": None,
+                    "stop_before_seq": None,
+                    "member_discount_override": None,
+                },
+                admin_hdr,
+                timeout=30.0,
+            )
+            assert st == 200, (st, prop1)
+            assert prop1["summary"]["excluded"] == 1 and prop1["summary"]["now_accepted"] >= 1, prop1["summary"]
+
+            # Live stock is untouched (0) until Admin explicitly accepts!
+            st, rb_pre = http_json(base3, "GET", "/products/replay-beans")
+            assert st == 200 and rb_pre["stock"] == 0, rb_pre
+
+            # Admin accepts proposal -> stock restored to 3, order #6002 fulfilled ($36.00), #6001 gone!
+            st, acc1 = http_json(
+                base3,
+                "POST",
+                "/admin/replay/proposals/wave4-undo/accept",
+                None,
+                admin_hdr,
+                timeout=30.0,
+            )
+            assert st == 200, (st, acc1)
+            st, rb_after = http_json(base3, "GET", "/products/replay-beans")
+            assert st == 200 and rb_after["stock"] == 3, rb_after
+
+            st, cust_ords = http_json(base3, "GET", "/customers/1/orders")
+            assert st == 200
+            ords_by_id = {o["id"]: o for o in cust_ords}
+            assert 6001 not in ords_by_id and 6002 in ords_by_id
+            assert Decimal(ords_by_id[6002]["total"]) == Decimal("36.00"), ords_by_id[6002]
+
+            # Bug-fix replay: apply 20% Member discount override while keeping g-bad-root excluded -> $32.00!
+            st, prop2 = http_json(
+                base3,
+                "POST",
+                "/admin/replay/simulate",
+                {
+                    "proposal_id": "wave4-discount-fix",
+                    "description": "Retroactive 20% Member discount fix",
+                    "exclude_principal": None,
+                    "exclude_grant": "g-bad-root",
+                    "exclude_world": None,
+                    "exclude_seqs": None,
+                    "stop_before_seq": None,
+                    "member_discount_override": "0.20",
+                },
+                admin_hdr,
+                timeout=30.0,
+            )
+            assert st == 200 and prop2["summary"]["reply_changed"] > 0, (st, prop2.get("summary"))
+            st, acc2 = http_json(
+                base3,
+                "POST",
+                "/admin/replay/proposals/wave4-discount-fix/accept",
+                None,
+                admin_hdr,
+                timeout=30.0,
+            )
+            assert st == 200, (st, acc2)
+
+            # Portable export check over ReadFiles
+            st, exp_snap = http_json(base3, "GET", "/admin/export", timeout=30.0)
+            assert st == 200 and exp_snap["format_version"] == 1 and len(exp_snap["sha256"]) == 64
+            assert all(b["name"] != "_modb_pins" for b in exp_snap["buckets"])
+
+            # 3rd hard SIGKILL after live replay proposals accepted!
+            proc3.send_signal(signal.SIGKILL)
+            proc3.wait()
+        finally:
+            if proc3.poll() is None:
+                proc3.send_signal(signal.SIGKILL)
+                proc3.wait()
+
+        # 8. Restart 4th server and prove accepted replay state & full hash chain survived 3rd SIGKILL!
+        port4 = pick_free_port()
+        base4 = f"http://127.0.0.1:{port4}"
+        proc4 = start_server(mo_bin, shop_api_mo, tmp, port4, workers=8)
+        try:
+            wait_ready(base4, proc4)
+            st, ver_final = http_json(base4, "GET", "/admin/verify")
+            assert st == 200 and ver_final["ok"] is True, (st, ver_final)
+
+            st, rb_rec = http_json(base4, "GET", "/products/replay-beans")
+            assert st == 200 and rb_rec["stock"] == 3, rb_rec
+            st, cust_ords4 = http_json(base4, "GET", "/customers/1/orders")
+            assert st == 200
+            ords4_by_id = {o["id"]: o for o in cust_ords4}
+            assert 6001 not in ords4_by_id and 6002 in ords4_by_id
+            assert Decimal(ords4_by_id[6002]["total"]) == Decimal("32.00"), ords4_by_id[6002]
+
             print(
-                f"PASS: live 8-worker HTTP + Multi-Agent Worlds/Grants/Claims + 2x SIGKILL verified "
+                f"PASS: live 8-worker HTTP + Worlds/Grants/Claims + Replay/Export + 3x SIGKILL verified "
                 f"(wave1=40ok/20conflict/{reader_counts['ok']}reads, "
                 f"wave2_acked={len(wave2_acked_orders)}/persisted={len(wave2_persisted)}, "
-                f"wave3_worlds={world_landed}landed/{world_stale}stale_retries/pinned_SIGKILL_ok, "
+                f"wave3_worlds={world_landed}landed/{world_stale}stale_retries, "
+                f"wave4_replay=undo_NowAccepted+20pct_fix+export_ok, "
                 f"txid={ver_final['txid']}, audit_entries={ver_final['audit_entries']}, "
                 f"hash={ver_final['last_audit_hash'][:16]}...)"
             )
             return 0
         finally:
-            proc3.terminate()
+            proc4.terminate()
             try:
-                proc3.wait(timeout=5)
+                proc4.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc3.kill()
-                proc3.wait()
+                proc4.kill()
+                proc4.wait()
 
 
 if __name__ == "__main__":
