@@ -1115,6 +1115,7 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
   cold_pager = clear_cache(store.pager)
   var seen = Set.empty.add(0).add(1)
   var live_and_deferred = Set.empty.add(0).add(1)
+  var verified_bucket_roots = Set.empty.add(0)
   var live_count = 2
 
   catalog_pages = try collect_tree_pages(cold_pager, {}, store.meta.catalog_root)
@@ -1145,6 +1146,7 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
       live_and_deferred = live_and_deferred.add(pid)
       live_count += 1
     end
+    verified_bucket_roots = verified_bucket_roots.add(broot)
   end
 
   (fl_chain, fl_ready, fl_deferred) = try load_freelist(
@@ -1187,36 +1189,44 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
 
   ## Verify every persisted root pin in `_modb_pins`: every reachable page must pass SHA-256
   ## verification and live in `current_trees U deferred_frees` (never in `ready_free` or `fl_chain`).
+  ## Unchanged shared catalog/bucket root IDs already verified above are skipped in O(1).
   pins = try load_pinned_roots(
     cold_pager,
     store.meta.catalog_root,
     store.meta.page_count,
     store.meta.txid
   )
+  var verified_cat_roots = Set.empty.add(0).add(store.meta.catalog_root)
   for pin in pins.values
-    p_cat_pages = try collect_tree_pages(cold_pager, {}, pin.catalog_root)
-    for pid in p_cat_pages
-      if not live_and_deferred.has?(pid)
-        return Error(
-          Corrupt(
-            reason: "pinned root '#{pin.id}' catalog page #{pid} is in ready_free/unprotected"
-          )
-        )
-      end
-    end
-    p_cat_rows = try Tree.scan(cold_pager, {}, pin.catalog_root, None, None, 0)
-    for (_pbname, prow) in p_cat_rows
-      pbroot = try decode_bucket_root(prow)
-      pbpages = try collect_tree_pages(cold_pager, {}, pbroot)
-      for pid in pbpages
+    if not verified_cat_roots.has?(pin.catalog_root)
+      p_cat_pages = try collect_tree_pages(cold_pager, {}, pin.catalog_root)
+      for pid in p_cat_pages
         if not live_and_deferred.has?(pid)
           return Error(
             Corrupt(
-              reason: "pinned root '#{pin.id}' bucket page #{pid} is in ready_free/unprotected"
+              reason: "pinned root '#{pin.id}' catalog page #{pid} is in ready_free/unprotected"
             )
           )
         end
       end
+      p_cat_rows = try Tree.scan(cold_pager, {}, pin.catalog_root, None, None, 0)
+      for (_pbname, prow) in p_cat_rows
+        pbroot = try decode_bucket_root(prow)
+        if not verified_bucket_roots.has?(pbroot)
+          pbpages = try collect_tree_pages(cold_pager, {}, pbroot)
+          for pid in pbpages
+            if not live_and_deferred.has?(pid)
+              return Error(
+                Corrupt(
+                  reason: "pinned root '#{pin.id}' bucket page #{pid} is in ready_free/unprotected"
+                )
+              )
+            end
+          end
+          verified_bucket_roots = verified_bucket_roots.add(pbroot)
+        end
+      end
+      verified_cat_roots = verified_cat_roots.add(pin.catalog_root)
     end
   end
 
