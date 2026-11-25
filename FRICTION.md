@@ -100,6 +100,12 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
   1. Upgraded `Modb.with_shared_lock` to lock-free optimistic CoW snapshot reads (verified by `start_txid == end_txid` on alternating SHA-256 meta-pages, since pages live at `txid` are immutable until commit `txid + 2`, with `lock_shared` fallback under continuous write storms). Verified with 6 tight-loop readers + 2 writers in `bench/bench_shop_api.py` (**323.1 req/s**, zero writer starvation) and unthrottled Wave 3 `/admin/verify` readers in `tests/test_shop_api_live.py`.
   2. Switched `Replay.preview_replay` to a single pure in-memory `WriteTx` with O(1) immutable rollback, and added `Modb.begin_write_tracked` + O(touched) incremental invariant checks in `Ledger.row_invariant` and `ShopApi.order_referential_integrity`, cutting 111-call HTTP replay simulation from 1,791 ms (budget exhaustion) down to **716.3 ms**.
 
+### 18. Pure-Mo `Json.quoted` per-character string escaping exhausts `mo serve` instruction budgets on large JSON responses
+- **Where:** `~/code/mo/lib/json.mo` (`Json.quoted` / `escape_char`), surfaced in `examples/agent-workbench.mo` (`GET /admin/export` in Milestone 6)
+- **What happened:** `Json.to_text` encodes every JSON string by splitting it into `List(Char)` and running pure-Mo `escape_char(c)` per character. Exporting a real multi-agent DB with `19` buckets and `916` hex-encoded entries (`~400+ KiB` JSON) burned through `MO_LIMIT_API_REQUEST_WORK` (`67,108,864` instructions) in `1,321.7 ms` and returned HTTP 500 (`bug: internal error: instruction budget exhausted`).
+- **Workaround & recommendation:** Added `Export.encode_snapshot_json` in `src/modb/export.mo` to format lowercase-hex `PortableSnapshot` payloads directly (interpolating guaranteed `[0-9a-f]` fields without char-by-char escaping) and return `Api.response(200, [("content-type", "application/json")], ...)`, dropping `GET /admin/export` on `916` entries from `1,321.7 ms` (500) to **`46.7 ms` (200)** while preserving strict `Json.decode_strict[PortableSnapshot]` round-trip parity. Longer term, a native Rust `Json.render` / `Json.parse` primitive in Mo would deliver a 50–100× speedup across all JSON-heavy services.
+- **Severity:** High for JSON-heavy HTTP services (worked around cleanly for `Modb.Export`).
+
 ---
 
 ## What Worked Surprisingly Well

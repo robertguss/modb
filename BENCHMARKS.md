@@ -173,3 +173,18 @@ Measured on the same pure-Rust `mo` binary (`7d5186d1`, ext4, 64-byte values, 8-
 | Mixed 6 readers + 2 synced writers (`565` reads + `100` audited orders in `2.06 s`) | **323.1 req/s** (0 errors, zero writer starvation) | reads p50 = `21.9 ms` / p95 = `36.6 ms`; writes p50 = `38.3 ms` / p95 = `63.2 ms` |
 | Live offline Replay Simulate (`111` calls, 15% discount override) | **716.3 ms** (was 500 budget exhaustion at 1,791 ms) | — |
 | Full `/admin/verify` (`113` audit entries, `64` pages) | **141.8 ms** | — |
+
+---
+
+## 8. Milestone 6 Real-World Multi-Agent Workbench Simulation (2026-11-25)
+
+Measured end-to-end against `examples/agent-workbench.mo` (`AgentWorkbench`, an 8-worker `mo serve` multi-agent engineering workbench with projects, budgets, tasks, artifacts, attenuated Grants, Claims, speculative Worlds, upgrade-aware Replay, and SHA-256 Export) via `python3 bench/real_world_agent_sim.py`:
+
+| Phase / Scenario (`mo serve --workers 8`) | Wall Time / Latency | Key Empirical Result |
+| --- | --- | --- |
+| **Phase 1A** — Uncoordinated coarse-query swarm (`list_project_tasks`, 6W + 2R, 18 tasks) | **9.51 s** (`land p50 = 145.4 ms`, `p95 = 344.7 ms`; `618` reads `p50 = 28.0 ms`) | **`49` `StaleRead` retries**, **`7` `needless_send_backs`** (agents re-sent identical calls after false sibling-task conflicts) |
+| **Phase 1B** — Fine-query + Claims swarm (`get_task`, 6W + 2R, 18 tasks) | **2.25 s** (`land p50 = 165.8 ms`, `p95 = 223.4 ms`; `127` reads `p50 = 27.8 ms`) | **`0` `StaleRead` retries**, **`0` `needless_send_backs`** (**4.2× faster** end-to-end under identical concurrency) |
+| **Phase 2** — Rogue delegated sub-agent excision (`exclude_grant` Replay over `82` calls) | `sim = 589.4 ms`, `accept = 330.0 ms` | Parent revoke cascaded mid-flight (`403`); replay excised `2` rogue calls and unblocked **`2` `NowAccepted`** SRE tasks atomically |
+| **Phase 3** — Retroactive 10%→0% overhead bug-fix Replay (`82` calls) | `sim = 690.9 ms`, `accept = 456.3 ms` | **`36` `ReplyChanged`** across all completed tasks + `2` `NowAccepted`; all 3 project budgets updated accurately |
+| **Phase 3** — Portable SHA-256 `GET /admin/export` (`19` buckets, `916` entries) | **46.7 ms** (cured `1,321.7 ms` 500 budget exhaustion via `Export.encode_snapshot_json`) | Canonical RFC 8259 JSON snapshot verified (`format_version = 1`, 64-char SHA-256 digest) |
+| **Post-`SIGKILL` recovery** (`GET /admin/verify` after hard OS kill + 8-worker restart) | **296.7 ms** | `ok = true`, `txid = 451`, `pages = 305`, `audit_entries = 137`; zero lost or corrupted state |
