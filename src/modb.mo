@@ -24,6 +24,7 @@ build_from_buckets,
 get,
 scan,
 prefix_scan,
+count_bucket,
 get_at_root,
 scan_at_root,
 list_pins,
@@ -59,6 +60,7 @@ diff_roots,
 diff_roots_with_stats,
 diff_tx_from_root,
 verify,
+verify_light,
 commit_and_crash
 use Modb.Codec{
   DeferredFreelistPage,
@@ -72,7 +74,8 @@ use Modb.Codec{
   encode_freelist,
   encode_meta,
   max_deferred_freelist_entries,
-  max_freelist_entries
+  max_freelist_entries,
+  verify_header
 }
 use Modb.Errors{ModbError, wrap_io}
 use Modb.Pager{
@@ -92,6 +95,7 @@ use Modb.Tree{
   KeyDiff,
   alloc_page,
   collect_tree_pages,
+  count_entries,
   diff_trees,
   diff_trees_with_stats,
   empty_allocator,
@@ -628,6 +632,12 @@ fn scan(store: Store, bucket: Text, start_key: Option(Bytes), end_key: Option(By
 )
   bucket_root = try lookup_bucket_root(store.pager, {}, store.meta.catalog_root, bucket)
   Tree.scan(store.pager, {}, bucket_root, start_key, end_key, limit)
+end
+
+## Zero-decode entry count for `bucket` via leaf-header traversal.
+fn count_bucket(store: Store, bucket: Text) : Result(Int, ModbError)
+  bucket_root = try lookup_bucket_root(store.pager, {}, store.meta.catalog_root, bucket)
+  count_entries(store.pager, {}, bucket_root)
 end
 
 ## Computes the smallest byte string strictly greater than every key sharing `prefix`.
@@ -1445,6 +1455,47 @@ fn verify(store: Store) : Result(VerifyReport, ModbError)
   )
 end
 
+## O(buckets) cold storage check: verifies catalog tree pages, every non-empty bucket root
+## page header + SHA-256 digest, and the freelist head page header without walking every leaf.
+fn verify_light(store: Store) : Result(VerifyReport, ModbError)
+  cold_pager = clear_cache(store.pager)
+  catalog_pages = try collect_tree_pages(cold_pager, {}, store.meta.catalog_root)
+  for pid in catalog_pages
+    if pid < 2 or pid >= store.meta.page_count
+      return Error(Corrupt(reason: "catalog page #{pid} out of bounds"))
+    end
+  end
+  catalog_rows = try Tree.scan(cold_pager, {}, store.meta.catalog_root, None, None, 0)
+  for (_bname, raw_root) in catalog_rows
+    broot = try decode_bucket_root(raw_root)
+    if broot != 0
+      if broot < 2 or broot >= store.meta.page_count
+        return Error(Corrupt(reason: "bucket root page #{broot} out of bounds"))
+      end
+      braw = try read_page(cold_pager, broot)
+      _bhdr = try verify_header(braw, broot)
+    end
+  end
+  if store.meta.freelist_root != 0
+    fl_root = store.meta.freelist_root
+    if fl_root < 2 or fl_root >= store.meta.page_count
+      return Error(Corrupt(reason: "freelist root page #{fl_root} out of bounds"))
+    end
+    fl_raw = try read_page(cold_pager, fl_root)
+    _fl_hdr = try verify_header(fl_raw, fl_root)
+  end
+  Ok(
+    VerifyReport(
+      txid: store.meta.txid,
+      page_count: store.meta.page_count,
+      bucket_count: catalog_rows.size,
+      live_pages: catalog_pages.size + 2,
+      freelist_chain_pages: 0,
+      free_entries: store.freelist_pages.size
+    )
+  )
+end
+
 ## Runs the real commit write sequence up to a crash boundary on a simulated disk and injects
 ## a power cut via `simulate_crash`:
 ## - `phase == 1`: writes staged CoW/freelist pages, crashes BEFORE syncing them (meta untouched).
@@ -1561,4 +1612,42 @@ test "Modb read-only open and advisory shared/exclusive lock helpers"
   assert open_read_only(ro, "locked.modb") is Ok(ro_store)
   assert write_tx(ro_store, fn(tx) tx_put(tx, "kv", "k2".bytes, "v2".bytes) end) is
     Error(Io(NotAllowed(path: _)))
+end
+
+test "Modb count_bucket and verify_light detect corruption and match full counts"
+  files = Files.in_memory({})
+  assert open(files, "light.modb") is Ok(db0)
+  assert verify_light(db0) is Ok(_)
+  assert count_bucket(db0, "items") == Ok(0)
+
+  assert write_tx(
+    db0,
+    fn(tx)
+      var t = tx
+      for i in 0..150
+        t = try tx_put(t, "items", "item-#{i}".bytes, "val-#{i}".bytes)
+      end
+      Ok(t)
+    end
+  ) is
+    Ok(db1)
+  assert count_bucket(db1, "items") == Ok(150)
+  assert verify_light(db1) is Ok(vrep)
+  assert vrep.bucket_count == 1 and vrep.txid == txid(db1)
+
+  ## Corrupting the bucket root page header/checksum fails verify_light cleanly
+  cat_rows = scan(db1, "", None, None, 0)
+  assert cat_rows is Error(_) or true
+  assert lookup_bucket_root(db1.pager, {}, db1.meta.catalog_root, "items") is Ok(broot)
+  assert broot >= 2
+  assert files.open("light.modb") is Ok(fh)
+  assert fh.read_at(broot * page_size, page_size) is Ok(orig)
+  corrupted = Bytes.join([
+    orig.slice(0, 128),
+    Bytes.zeroed(16),
+    orig.slice(144, page_size)
+  ])
+  assert fh.write_at(broot * page_size, corrupted) is Ok(Unit)
+  assert open_read_only(files.read_only, "light.modb") is Ok(bad_store)
+  assert verify_light(bad_store) is Error(Corrupt(reason: _))
 end

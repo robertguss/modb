@@ -13,6 +13,7 @@ get,
 get_tx,
 scan,
 scan_tx,
+count_entries,
 put,
 delete,
 free_tree,
@@ -489,6 +490,37 @@ fn scan_tx(
     [],
     0
   )
+end
+
+## Counts total key-value entries in a committed/staged tree by reading leaf headers only
+## (zero cell, key, or value decoding).
+fn count_entries(store: BlockStore, staged: Map(Int, Bytes), root_id: Int) : Result(Int, ModbError)
+  return Ok(0) if root_id == 0
+  count_node(store, staged, root_id, 0)
+end
+
+fn count_node(store: BlockStore, staged: Map(Int, Bytes), page_id: Int, depth: Int) : Result(
+  Int,
+  ModbError
+)
+  return Error(Corrupt(reason: "b-tree depth exceeded")) if depth > 64
+  raw = case staged.get(page_id)
+    Some(r): r
+    None: try read_page(store, page_id)
+  end
+  hdr = try read_header_fast(raw, page_id)
+  if hdr.kind == kind_leaf
+    return Ok(hdr.entry_count)
+  end
+  if hdr.kind != kind_branch
+    return Error(Corrupt(reason: "expected leaf or branch at page #{page_id}"))
+  end
+  children = try branch_scan_children_raw(raw, hdr.entry_count, None, None)
+  var total = 0
+  for cid in children
+    total += try count_node(store, staged, cid, depth + 1)
+  end
+  Ok(total)
 end
 
 fn scan_leaf_entries(
@@ -1669,6 +1701,7 @@ test "CoW B+Tree handles multi-level splits, scans, overwrites, overflow values 
 
   assert collect_tree_pages(store, alloc.staged, root) is Ok(pages)
   assert pages.size > 5
+  assert count_entries(store, alloc.staged, root) == Ok(250)
 
   for i in 0..250
     assert delete(store, alloc, root, Bytes.from_u32_be(i)) is Ok((a_del, r_del, deleted?))

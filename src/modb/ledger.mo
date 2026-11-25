@@ -10,6 +10,7 @@ Invariant(..),
 Schema(..),
 AuditReport(..),
 FullReport(..),
+VerifyCheckpoint(..),
 Db(..),
 to_text,
 genesis_hash,
@@ -17,6 +18,7 @@ meta_bucket,
 audit_bucket,
 audit_by_principal_bucket,
 audit_by_action_bucket,
+checkpoint_bucket,
 schema,
 with_migration,
 with_invariant,
@@ -52,9 +54,13 @@ audit_range,
 audit_by_principal,
 audit_by_action,
 snapshot_audit_tail,
+latest_checkpoint,
+record_verify_checkpoint,
 verify_audit,
+verify_audit_window,
 verify_invariants,
-verify_all
+verify_all,
+verify_fast
 use Crypto
 use Json
 use Modb{Snapshot, Store, VerifyReport, WriteTx}
@@ -167,6 +173,16 @@ struct FullReport
   invariants_checked: Int
 end
 
+## Persisted verification checkpoint recording the last fully verified audit sequence & hash.
+struct VerifyCheckpoint
+  seq: Int
+  txid: Int
+  audit_hash: Text
+  verified_at: Time
+end
+
+checkpoint_bucket = "_modb_checkpoints"
+
 ## Open ledger-backed MoDB handle combining the CoW B+Tree store with schema & audit state.
 struct Db
   store: Store
@@ -194,6 +210,15 @@ fn audit_table() : Table(Int, AuditEntry)
   Table.int_key[AuditEntry]("_modb_audit").with_index(audit_by_principal_index()).with_index(
     audit_by_action_index()
   )
+end
+
+fn checkpoint_table() : Table(Text, VerifyCheckpoint)
+  Table.text_key[VerifyCheckpoint](checkpoint_bucket)
+end
+
+## Returns the latest full-verification checkpoint recorded in `_modb_checkpoints`, if any.
+fn latest_checkpoint(db: Db) : Result(Option(VerifyCheckpoint), LedgerError)
+  Ok(try Table.get(db.store, checkpoint_table(), "latest"))
 end
 
 fn initial_schema_state() : SchemaState
@@ -800,30 +825,33 @@ end
 fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
   stored_opt = try Table.get(db.store, meta_table(), "state")
   rows = try Table.all(db.store, audit_table())
-  principal_idx_rows = try wrap_modb(Modb.scan(db.store, audit_by_principal_bucket, None, None, 0))
-  action_idx_rows = try wrap_modb(Modb.scan(db.store, audit_by_action_bucket, None, None, 0))
+  principal_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_principal_bucket))
+  action_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_action_bucket))
 
-  if principal_idx_rows.size != rows.size
+  if principal_cnt != rows.size
     return Error(
       AuditCorrupt(
-        reason: "principal audit index count #{principal_idx_rows.size} != audit entry count #{rows
-          .size}"
+        reason: "principal audit index count #{principal_cnt} != audit entry count #{rows.size}"
       )
     )
   end
-  if action_idx_rows.size != rows.size
+  if action_cnt != rows.size
     return Error(
       AuditCorrupt(
-        reason: "action audit index count #{action_idx_rows.size} != audit entry count #{rows.size}"
+        reason: "action audit index count #{action_cnt} != audit entry count #{rows.size}"
       )
     )
   end
 
+  cp_opt = try latest_checkpoint(db)
   stored = case stored_opt
     Some(st): st
     None:
       if not rows.empty?
         return Error(AuditCorrupt(reason: "audit entries exist without _modb_meta state"))
+      end
+      if cp_opt is Some(_)
+        return Error(AuditCorrupt(reason: "verify checkpoint exists without _modb_meta state"))
       end
       return Ok(
         AuditReport(entry_count: 0, schema_version: 0, last_seq: 0, last_hash: genesis_hash)
@@ -834,6 +862,7 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
   var prev = genesis_hash
   var last_txid = 0
   store_txid = Modb.txid(db.store)
+  var cp_matched = false
 
   for (key_seq, entry) in rows
     if key_seq != expected_seq or entry.seq != expected_seq
@@ -872,6 +901,14 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
         AuditCorrupt(reason: "tampered audit entry at seq #{entry.seq}: entry_hash mismatch")
       )
     end
+    if cp_opt is Some(cp) and entry.seq == cp.seq
+      if cp.audit_hash != entry.entry_hash
+        return Error(
+          AuditCorrupt(reason: "tampered verify checkpoint hash at seq #{cp.seq}")
+        )
+      end
+      cp_matched = true
+    end
     prev = entry.entry_hash
     last_txid = entry.txid
     expected_seq += 1
@@ -886,6 +923,14 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
   end
   if stored.last_audit_hash != prev
     return Error(AuditCorrupt(reason: "meta last_audit_hash disagrees with audit chain head"))
+  end
+  if cp_opt is Some(cp)
+    valid_zero = cp.seq == 0 and cp.audit_hash == genesis_hash
+    if (not valid_zero and (cp.seq < 1 or cp.seq >= expected_seq or not cp_matched)) or
+      cp.txid < 2 or
+      cp.txid > store_txid
+      return Error(AuditCorrupt(reason: "tampered verify checkpoint seq=#{cp.seq}"))
+    end
   end
 
   Ok(
@@ -909,6 +954,212 @@ end
 fn verify_all(db: Db) : Result(FullReport, LedgerError)
   storage_rep = try wrap_modb(Modb.verify(db.store))
   audit_rep = try verify_audit(db)
+  try verify_invariants(db)
+  Ok(
+    FullReport(
+      storage: storage_rep,
+      audit: audit_rep,
+      invariants_checked: db.schema.invariants.size
+    )
+  )
+end
+
+## Runs full genesis-to-tip `verify_all` and persists a verified checkpoint in `_modb_checkpoints`
+## so subsequent `verify_fast` checks only hash-verify audit entries appended after this checkpoint.
+fn record_verify_checkpoint(db: Db, at: Time) : Result((Db, VerifyCheckpoint), LedgerError)
+  rep = try verify_all(db)
+  cp = VerifyCheckpoint(
+    seq: rep.audit.last_seq,
+    txid: Modb.txid(db.store) + 1,
+    audit_hash: rep.audit.last_hash,
+    verified_at: at
+  )
+  tx0 = Modb.begin_write(db.store)
+  tx1 = try Table.put(tx0, checkpoint_table(), "latest", cp)
+  committed = try wrap_modb(Modb.commit(tx1))
+  Ok((Db(store: committed, schema: db.schema, state: db.state), cp))
+end
+
+fn verify_audit_entries_range(
+  rows: List((Int, AuditEntry)),
+  start_seq: Int,
+  expected_count: Int,
+  initial_prev: Option(Text),
+  expected_final_hash: Text,
+  store_txid: Int
+) : Result(Unit, LedgerError)
+  if rows.size != expected_count
+    return Error(
+      AuditCorrupt(
+        reason: "audit range count #{rows.size} != expected #{expected_count} from seq #{start_seq}"
+      )
+    )
+  end
+  var expected_seq = start_seq
+  var prev_opt = initial_prev
+  var last_txid = 0
+  for (key_seq, entry) in rows
+    if key_seq != expected_seq or entry.seq != expected_seq
+      return Error(
+        AuditCorrupt(
+          reason: "sequence gap/mismatch at key=#{key_seq}, entry.seq=#{entry.seq} (expected #{expected_seq})"
+        )
+      )
+    end
+    if entry.txid < 2 or entry.txid < last_txid or entry.txid > store_txid
+      return Error(
+        AuditCorrupt(
+          reason: "invalid txid #{entry.txid} at seq #{entry.seq} (last=#{last_txid}, store=#{store_txid})"
+        )
+      )
+    end
+    if prev_opt is Some(expected_prev) and entry.prev_hash != expected_prev
+      return Error(
+        AuditCorrupt(reason: "hash chain broken at seq #{entry.seq}: prev_hash mismatch")
+      )
+    end
+    recomputed = compute_entry_hash(
+      entry.seq,
+      entry.txid,
+      entry.schema_version,
+      entry.principal,
+      entry.action,
+      entry.reason,
+      entry.at,
+      entry.summary,
+      entry.payload,
+      entry.prev_hash
+    )
+    if entry.entry_hash != recomputed
+      return Error(
+        AuditCorrupt(reason: "tampered audit entry at seq #{entry.seq}: entry_hash mismatch")
+      )
+    end
+    prev_opt = Some(entry.entry_hash)
+    last_txid = entry.txid
+    expected_seq += 1
+  end
+  final_hash = prev_opt or ""
+  if final_hash != expected_final_hash
+    return Error(AuditCorrupt(reason: "meta last_audit_hash disagrees with audit chain head"))
+  end
+  Ok(Unit)
+end
+
+## Windowed / checkpoint-anchored audit verification (`O(entries since checkpoint)` or `max_entries`).
+## Verifies exact row counts on `_modb_audit` and both secondary indexes without scanning old rows.
+fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerError)
+  stored_opt = try Table.get(db.store, meta_table(), "state")
+  audit_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_bucket))
+  principal_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_principal_bucket))
+  action_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_action_bucket))
+
+  if principal_cnt != audit_cnt
+    return Error(
+      AuditCorrupt(
+        reason: "principal audit index count #{principal_cnt} != audit entry count #{audit_cnt}"
+      )
+    )
+  end
+  if action_cnt != audit_cnt
+    return Error(
+      AuditCorrupt(
+        reason: "action audit index count #{action_cnt} != audit entry count #{audit_cnt}"
+      )
+    )
+  end
+
+  stored = case stored_opt
+    Some(st): st
+    None:
+      if audit_cnt != 0
+        return Error(AuditCorrupt(reason: "audit entries exist without _modb_meta state"))
+      end
+      return Ok(
+        AuditReport(entry_count: 0, schema_version: 0, last_seq: 0, last_hash: genesis_hash)
+      )
+  end
+
+  total = stored.next_audit_seq - 1
+  if total < 0 or audit_cnt != total
+    return Error(
+      AuditCorrupt(
+        reason: "meta next_audit_seq=#{stored.next_audit_seq} disagrees with audit count #{audit_cnt}"
+      )
+    )
+  end
+  if total == 0
+    if stored.last_audit_hash != genesis_hash
+      return Error(AuditCorrupt(reason: "meta last_audit_hash disagrees with empty audit chain"))
+    end
+    return Ok(
+      AuditReport(entry_count: 0, schema_version: stored.version, last_seq: 0, last_hash: genesis_hash)
+    )
+  end
+  if max_entries <= 0 or total <= max_entries
+    return verify_audit(db)
+  end
+
+  store_txid = Modb.txid(db.store)
+  cp_opt = try latest_checkpoint(db)
+  case cp_opt
+    Some(cp) if cp.seq > 0 and cp.seq <= total and total - cp.seq <= max_entries and cp.txid >= 2 and
+      cp.txid <= store_txid:
+      if cp.seq == total
+        tail_entry = try (try audit_get(db, total)).or_fail(
+          AuditCorrupt(reason: "missing tail audit entry ##{total}")
+        )
+        if tail_entry.entry_hash != cp.audit_hash or tail_entry.txid < 2 or
+          tail_entry.txid > store_txid
+          return Error(AuditCorrupt(reason: "audit tail ##{total} disagrees with checkpoint"))
+        end
+        try verify_audit_entries_range(
+          [(total, tail_entry)],
+          total,
+          1,
+          None,
+          stored.last_audit_hash,
+          store_txid
+        )
+      else
+        tail_rows = try Table.scan(db.store, audit_table(), Some(cp.seq + 1), None, max_entries + 1)
+        try verify_audit_entries_range(
+          tail_rows,
+          cp.seq + 1,
+          total - cp.seq,
+          Some(cp.audit_hash),
+          stored.last_audit_hash,
+          store_txid
+        )
+      end
+    Some(_) | None:
+      start_seq = total - max_entries + 1
+      win_rows = try Table.scan(db.store, audit_table(), Some(start_seq), None, max_entries + 1)
+      try verify_audit_entries_range(
+        win_rows,
+        start_seq,
+        max_entries,
+        None,
+        stored.last_audit_hash,
+        store_txid
+      )
+  end
+
+  Ok(
+    AuditReport(
+      entry_count: total,
+      schema_version: stored.version,
+      last_seq: total,
+      last_hash: stored.last_audit_hash
+    )
+  )
+end
+
+## Fast bounded health check for latency-constrained HTTP endpoints: checks catalog + bucket root
+## headers (`Modb.verify_light`), checkpoint-anchored/windowed audit hash chain, and invariants.
+fn verify_fast(db: Db, max_audit_entries: Int) : Result(FullReport, LedgerError)
+  storage_rep = try wrap_modb(Modb.verify_light(db.store))
+  audit_rep = try verify_audit_window(db, max_audit_entries)
   try verify_invariants(db)
   Ok(
     FullReport(
@@ -1057,4 +1308,75 @@ test "Modb.Ledger locked read_only/write_locked/transact_locked helpers"
     end
   ) ==
     Ok((2, Some(CounterRow(value: 85))))
+end
+
+test "Modb.Ledger checkpointed and windowed verify_fast detects post-checkpoint and checkpoint tampering"
+  files = Files.in_memory({})
+  t0 = Time.parse("2026-11-25T05:00:00Z") or stop "t0"
+  counters = Table.text_key[CounterRow]("counters")
+  sc = schema(1).with_require_reason(true).with_migration(
+    migration(1, "seed counter", fn(tx) Table.put(tx, counters, "main", CounterRow(value: 0)) end)
+  )
+
+  assert open(files, "cp.modb", sc, t0) is Ok(db0)
+  meta = WriteMeta(principal: "ada", action: "inc", reason: "step", at: t0)
+  var db = db0
+  for i in 1..15
+    assert write(
+      db,
+      meta,
+      "set #{i}",
+      i.to_json,
+      fn(tx) Table.put(tx, counters, "main", CounterRow(value: i)) end
+    ) is
+      Ok(next)
+    db = next
+  end
+
+  ## Record checkpoint at seq 15 (1 migration + 14 writes in 1..15)
+  assert record_verify_checkpoint(db, t0) is Ok((db_cp, cp))
+  assert cp.seq == 15
+  assert latest_checkpoint(db_cp) == Ok(Some(cp))
+  assert verify_fast(db_cp, 8) is Ok(fast0)
+  assert fast0.audit.entry_count == 15 and fast0.audit.last_hash == cp.audit_hash
+
+  ## Append 4 more entries within window (16..20 -> total 19) and verify_fast passes anchored to cp
+  var db_more = db_cp
+  for i in 16..20
+    assert write(
+      db_more,
+      meta,
+      "set #{i}",
+      i.to_json,
+      fn(tx) Table.put(tx, counters, "main", CounterRow(value: i)) end
+    ) is
+      Ok(next)
+    db_more = next
+  end
+  assert verify_fast(db_more, 8) is Ok(fast1)
+  assert fast1.audit.entry_count == 19
+  assert verify_all(db_more) is Ok(_)
+
+  ## Sliding window mode when total - cp.seq > max_entries also passes cleanly
+  assert verify_fast(db_more, 2) is Ok(fast_win)
+  assert fast_win.audit.entry_count == 19
+
+  ## Tampering with a post-checkpoint audit entry is caught by verify_fast
+  assert Table.get(store(db_more), audit_table(), 18) is Ok(Some(e18))
+  var bad_e18 = e18
+  bad_e18.summary = "forged"
+  tx_tamper = Modb.begin_write(store(db_more))
+  assert Table.put(tx_tamper, audit_table(), 18, bad_e18) is Ok(tx_t1)
+  assert Modb.commit(tx_t1) is Ok(bad_s)
+  bad_db = update_store(db_more, bad_s)
+  assert verify_fast(bad_db, 8) is Error(AuditCorrupt(reason: _))
+
+  ## Tampering with _modb_checkpoints is caught by full verify_all
+  var bad_cp = cp
+  bad_cp.audit_hash = "deadbeef"
+  tx_cp = Modb.begin_write(store(db_more))
+  assert Table.put(tx_cp, checkpoint_table(), "latest", bad_cp) is Ok(tx_cp1)
+  assert Modb.commit(tx_cp1) is Ok(bad_cp_s)
+  bad_cp_db = update_store(db_more, bad_cp_s)
+  assert verify_all(bad_cp_db) is Error(AuditCorrupt(reason: _))
 end

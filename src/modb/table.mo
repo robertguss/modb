@@ -713,10 +713,10 @@ fn all(store: Store, tbl: Table(K, V)) : Result(List((K, V)), TableError)
   scan(store, tbl, None, None, 0)
 end
 
-## Counts committed rows in `tbl`.
+## Counts committed rows in `tbl` without decoding row payloads.
 fn count(store: Store, tbl: Table(K, V)) : Result(Int, TableError)
-  raw_rows = try Modb.scan(store, tbl.bucket, None, None, 0)
-  Ok(raw_rows.size)
+  n = try Modb.count_bucket(store, tbl.bucket)
+  Ok(n)
 end
 
 ## Exact secondary-index match returning all matching `(K, V)` pairs sorted by primary key `K`.
