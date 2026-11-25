@@ -59,6 +59,7 @@ diff_bucket_roots,
 diff_roots,
 diff_roots_with_stats,
 diff_tx_from_root,
+diff_user_tx_from_root,
 verify,
 verify_light,
 commit_and_crash
@@ -1251,7 +1252,8 @@ fn diff_catalog_roots_internal(
   staged_a: Map(Int, Bytes),
   staged_b: Map(Int, Bytes),
   root_a: Int,
-  root_b: Int
+  root_b: Int,
+  skip_internal: Bool
 ) : Result((List(BucketDiff), DiffStats), ModbError)
   (cat_diffs, cat_stats) = try diff_trees_with_stats(pager, staged_a, staged_b, root_a, root_b)
   var stats = cat_stats
@@ -1260,6 +1262,7 @@ fn diff_catalog_roots_internal(
     case cd
       Added(key: kb, value: vb):
         bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        continue if skip_internal and bname.starts_with?("_modb_")
         bb = try decode_bucket_root(vb)
         (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, 0, bb)
         stats.pages_read += st.pages_read
@@ -1269,6 +1272,7 @@ fn diff_catalog_roots_internal(
         end
       Removed(key: kb, value: va):
         bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        continue if skip_internal and bname.starts_with?("_modb_")
         ba = try decode_bucket_root(va)
         (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, ba, 0)
         stats.pages_read += st.pages_read
@@ -1278,6 +1282,7 @@ fn diff_catalog_roots_internal(
         end
       Modified(key: kb, old_value: va, new_value: vb):
         bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in diff"))
+        continue if skip_internal and bname.starts_with?("_modb_")
         ba = try decode_bucket_root(va)
         bb = try decode_bucket_root(vb)
         (changes, st) = try diff_trees_with_stats(pager, staged_a, staged_b, ba, bb)
@@ -1297,7 +1302,7 @@ fn diff_roots_with_stats(store: Store, root_a: Int, root_b: Int) : Result(
   (List(BucketDiff), DiffStats),
   ModbError
 )
-  diff_catalog_roots_internal(store.pager, {}, {}, root_a, root_b)
+  diff_catalog_roots_internal(store.pager, {}, {}, root_a, root_b, false)
 end
 
 ## Structural O(diff) comparison across all buckets between two committed/pinned catalog roots.
@@ -1315,7 +1320,23 @@ fn diff_tx_from_root(tx: WriteTx, base_root: Int) : Result(List(BucketDiff), Mod
     {},
     a_dirty.staged,
     base_root,
-    final_cat
+    final_cat,
+    false
+  )
+  Ok(diffs)
+end
+
+## Structural O(diff) comparison over user buckets only (skipping `_modb_*` buckets at catalog
+## level) from `base_root` to the uncommitted state staged in `tx`.
+fn diff_user_tx_from_root(tx: WriteTx, base_root: Int) : Result(List(BucketDiff), ModbError)
+  (a_dirty, final_cat) = try finalize_tx_pages(tx)
+  (diffs, _stats) = try diff_catalog_roots_internal(
+    tx.base.pager,
+    {},
+    a_dirty.staged,
+    base_root,
+    final_cat,
+    true
   )
   Ok(diffs)
 end

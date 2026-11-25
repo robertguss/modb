@@ -11,9 +11,14 @@ expose replay_calls_bucket,
 replay_by_principal_bucket,
 replay_meta_bucket,
 replay_proposals_bucket,
+replay_baseline_bucket,
+replay_baseline_pin_id,
 ReplayError(..),
 OriginalOutcome(..),
 CallRecord(..),
+ReplayBaseline(..),
+KeyDelta(..),
+BucketDelta(..),
 ReplayAction(..),
 ReplayCatalog(..),
 ReplayFilter(..),
@@ -32,11 +37,15 @@ with_override_action,
 with_override_timed_action,
 with_override_for_version,
 with_version_invariants,
+get_baseline,
+pin_baseline,
+pin_baseline_locked,
 tx_record_call,
 record_refused,
 execute,
 execute_recording_refusals,
 list_calls,
+list_calls_tail,
 calls_by_principal,
 call_count,
 get_proposal,
@@ -59,12 +68,15 @@ use Modb.Grants
 use Modb.Ledger{Db, Invariant, LedgerError, Migration, Schema, WriteMeta}
 use Modb.Pager{BlockStore, sim_empty}
 use Modb.Table{Index, Table, TableError}
+use Modb.Tree{KeyDiff}
 
-## Reserved internal buckets for replayable call history and proposals.
+## Reserved internal buckets for replayable call history, baseline pin, and proposals.
 replay_calls_bucket = "_modb_replay_calls"
 replay_by_principal_bucket = "_modb_replay_by_principal"
 replay_meta_bucket = "_modb_replay_meta"
 replay_proposals_bucket = "_modb_replay_proposals"
+replay_baseline_bucket = "_modb_replay_baseline"
+replay_baseline_pin_id = "_modb_replay_baseline"
 
 ## Every failure returned by `Modb.Replay` operations.
 enum ReplayError
@@ -206,6 +218,26 @@ enum ProposalStatus
   Discarded(discarded_by: Text, discarded_at: Time)
 end
 
+## CoW-pinned starting baseline used after compaction/import so delta replay preserves prior state.
+struct ReplayBaseline
+  pin_id: Text
+  schema_version: Int
+  txid: Int
+  pinned_at: Time
+end
+
+## One hex-encoded key upsert (`Some`) or deletion (`None`) in a delta-based `ReplayProposal`.
+struct KeyDelta
+  key_hex: Text
+  value_hex: Option(Text)
+end
+
+## Compact per-bucket row delta (`live -> proposed`) produced by O(diff) CoW baseline replay.
+struct BucketDelta
+  bucket: Text
+  ops: List(KeyDelta)
+end
+
 ## Structured candidate history produced by offline replay for human/Admin review before acceptance.
 struct ReplayProposal
   id: Text
@@ -222,6 +254,7 @@ struct ReplayProposal
   outcomes: List(CallOutcome)
   bucket_diffs: List(BucketRowDiff)
   proposed_state: PortableSnapshot
+  proposed_delta: Option(List(BucketDelta))
 end
 
 struct AcceptProposalAuditPayload
@@ -361,6 +394,60 @@ end
 
 fn replay_proposals_table() : Table(Text, ReplayProposal)
   Table.text_key[ReplayProposal](replay_proposals_bucket)
+end
+
+fn replay_baseline_table() : Table(Text, ReplayBaseline)
+  Table.text_key[ReplayBaseline](replay_baseline_bucket)
+end
+
+## Returns the persisted CoW replay baseline pin if one has been recorded.
+fn get_baseline(store: Store) : Result(Option(ReplayBaseline), ReplayError)
+  wrap_table(Table.get(store, replay_baseline_table(), "current"))
+end
+
+## Pins the current committed CoW catalog root as the replay starting baseline (before any
+## new replayable calls are recorded, typically right after compaction or snapshot import).
+fn pin_baseline(db: Db, now: Time) : Result((Db, ReplayBaseline), ReplayError)
+  cnt = try call_count(Ledger.store(db))
+  if cnt > 0
+    return Error(
+      ReplayFailed(
+        detail: "cannot pin replay baseline after #{cnt} replay calls have been recorded; compact first"
+      )
+    )
+  end
+  var tx = Modb.begin_write(Ledger.store(db))
+  if (try wrap_modb(Modb.get_pin(Ledger.store(db), replay_baseline_pin_id))) is Some(_)
+    tx = try wrap_modb(Modb.tx_unpin_root(tx, replay_baseline_pin_id))
+  end
+  (tx1, _pin) = try wrap_modb(Modb.tx_pin_base_root(tx, replay_baseline_pin_id))
+  bl = ReplayBaseline(
+    pin_id: replay_baseline_pin_id,
+    schema_version: db.state.version,
+    txid: Ledger.txid(db),
+    pinned_at: now
+  )
+  tx2 = try wrap_table(Table.put(tx1, replay_baseline_table(), "current", bl))
+  committed = try wrap_modb(Modb.commit(tx2))
+  Ok((Ledger.update_store(db, committed), bl))
+end
+
+## Lock-coordinated `pin_baseline` for multi-worker HTTP servers.
+fn pin_baseline_locked(files: Files, path: Text, sc: Schema, now: Time) : Result(
+  ReplayBaseline,
+  ReplayError
+)
+  Ledger.locked(
+    files,
+    path,
+    sc,
+    now,
+    fn(le) LedgerFailure(le) end,
+    fn(db)
+      (_next, bl) = try pin_baseline(db, now)
+      Ok(bl)
+    end
+  )
 end
 
 fn wrap_table(res: Result(T, TableError)) : Result(T, ReplayError)
@@ -555,6 +642,19 @@ end
 fn list_calls(store: Store) : Result(List(CallRecord), ReplayError)
   rows = try wrap_table(Table.all(store, replay_calls_table()))
   Ok(rows.map(fn(p) p.1 end))
+end
+
+## Returns the most recent `limit` replayable calls in ascending sequence order (`limit <= 0` = all).
+fn list_calls_tail(store: Store, limit: Int) : Result(List(CallRecord), ReplayError)
+  total = try call_count(store)
+  return Ok([]) if total <= 0
+  if limit <= 0 or limit >= total
+    list_calls(store)
+  else
+    start_seq = total - limit + 1
+    rows = try wrap_table(Table.scan(store, replay_calls_table(), Some(start_seq), None, limit))
+    Ok(rows.map(fn(p) p.1 end))
+  end
 end
 
 ## Lists all recorded replayable calls submitted by `principal`.
@@ -768,9 +868,19 @@ fn preview_replay(
 
   calls = try list_calls(Ledger.store(db))
   base_calls = try call_count(Ledger.store(db))
-  sim_base = try wrap_modb(Modb.open_disk(sim_empty()))
-  var cur_tx = Modb.begin_write_tracked(sim_base)
-  var cur_ver = 0
+  baseline_opt = try get_baseline(Ledger.store(db))
+  (init_tx, init_ver) = case baseline_opt
+    Some(bl):
+      pin = try (try wrap_modb(Modb.get_pin(Ledger.store(db), bl.pin_id))).or_fail(
+        ReplayFailed(detail: "missing replay baseline pin '#{bl.pin_id}'")
+      )
+      (Modb.begin_write_from_root(Ledger.store(db), pin.catalog_root), bl.schema_version)
+    None:
+      sim_base = try wrap_modb(Modb.open_disk(sim_empty()))
+      (Modb.begin_write_tracked(sim_base), 0)
+  end
+  var cur_tx = init_tx
+  var cur_ver = init_ver
   var migrations_run = []
   var outcomes = []
   var excluded_n = 0
@@ -909,11 +1019,66 @@ fn preview_replay(
     migrations_run = m_final
   end
 
-  sim_store = try wrap_modb(Modb.commit(cur_tx))
-  diffs = try diff_user_stores(Ledger.store(db), sim_store)
-  proposed_snap = try Export.export_store(sim_store, false, now).map_error(fn(e)
-    ExportFailure(e)
-  end)
+  (diffs, proposed_snap, proposed_delta_opt) = case baseline_opt
+    Some(_bl):
+      raw_diffs = try wrap_modb(
+        Modb.diff_user_tx_from_root(cur_tx, Modb.catalog_root(Ledger.store(db)))
+      )
+      var row_diffs = []
+      var deltas = []
+      for bd in raw_diffs
+        var a = 0
+        var r = 0
+        var m = 0
+        var ops = []
+        for ch in bd.changes
+          case ch
+            Added(key: k, value: v):
+              a += 1
+              ops = ops.append(KeyDelta(key_hex: k.to_hex, value_hex: Some(v.to_hex)))
+            Modified(key: k, old_value: _, new_value: nv):
+              m += 1
+              ops = ops.append(KeyDelta(key_hex: k.to_hex, value_hex: Some(nv.to_hex)))
+            Removed(key: k, value: _):
+              r += 1
+              ops = ops.append(KeyDelta(key_hex: k.to_hex, value_hex: None))
+          end
+        end
+        if a + r + m > 0
+          row_diffs = row_diffs.append(
+            BucketRowDiff(bucket: bd.bucket, added: a, removed: r, modified: m)
+          )
+          deltas = deltas.append(BucketDelta(bucket: bd.bucket, ops: ops))
+        end
+      end
+      empty_digest = Export.compute_snapshot_digest(
+        Export.export_format_version,
+        Ledger.txid(db),
+        cur_ver,
+        false,
+        now,
+        []
+      )
+      empty_snap = Export.PortableSnapshot(
+        format_version: Export.export_format_version,
+        source_txid: Ledger.txid(db),
+        schema_version: cur_ver,
+        include_internal: false,
+        exported_at: now,
+        bucket_count: 0,
+        entry_count: 0,
+        buckets: [],
+        sha256: empty_digest
+      )
+      (row_diffs, empty_snap, Some(deltas))
+    None:
+      sim_store = try wrap_modb(Modb.commit(cur_tx))
+      full_diffs = try diff_user_stores(Ledger.store(db), sim_store)
+      full_snap = try Export.export_store(sim_store, false, now).map_error(fn(e)
+        ExportFailure(e)
+      end)
+      (full_diffs, full_snap, None)
+  end
 
   summary = ReplaySummary(
     total_calls: calls.size,
@@ -941,7 +1106,8 @@ fn preview_replay(
       summary: summary,
       outcomes: outcomes,
       bucket_diffs: diffs,
-      proposed_state: proposed_snap
+      proposed_state: proposed_snap,
+      proposed_delta: proposed_delta_opt
     )
   )
 end
@@ -975,8 +1141,13 @@ fn proposal_status_label(st: ProposalStatus) : Text
   end
 end
 
+enum ProposalPatch
+  ReplaceBuckets(live_user: List(Text), decoded_buckets: List((Text, List((Bytes, Bytes)))))
+  ApplyDeltas(decoded_deltas: List((Text, List((Bytes, Option(Bytes))))))
+end
+
 fn prepare_proposal_adoption(db: Db, proposal_id: Text) : Result(
-  (ReplayProposal, List(Text), List((Text, List((Bytes, Bytes))))),
+  (ReplayProposal, ProposalPatch),
   ReplayError
 )
   prop_opt = try get_proposal(Ledger.store(db), proposal_id)
@@ -987,14 +1158,6 @@ fn prepare_proposal_adoption(db: Db, proposal_id: Text) : Result(
       discarded_by: _,
       discarded_at: _
     ): return Error(ProposalNotPending(id: proposal_id, status: proposal_status_label(prop.status)))
-  end
-  decoded_buckets = try Export.decode_snapshot_buckets(prop.proposed_state).map_error(fn(e)
-    ExportFailure(e)
-  end)
-  for (bname, _rows) in decoded_buckets
-    if bname.starts_with?("_modb_")
-      return Error(ReplayFailed(detail: "proposal cannot overwrite internal bucket '#{bname}'"))
-    end
   end
   actual_audit = Ledger.audit_count(db)
   actual_calls = try call_count(Ledger.store(db))
@@ -1009,43 +1172,96 @@ fn prepare_proposal_adoption(db: Db, proposal_id: Text) : Result(
       )
     )
   end
-  all_live = try wrap_modb(Modb.buckets(Ledger.store(db)))
-  var live_user = []
-  for b in all_live
-    if not b.starts_with?("_modb_")
-      live_user = live_user.append(b)
-    end
+  patch = case prop.proposed_delta
+    Some(bd_list):
+      var decoded_deltas = []
+      for bd in bd_list
+        if bd.bucket.starts_with?("_modb_")
+          return Error(
+            ReplayFailed(detail: "proposal cannot overwrite internal bucket '#{bd.bucket}'")
+          )
+        end
+        var ops = []
+        for op in bd.ops
+          kb = try Bytes.from_hex(op.key_hex).or_fail(
+            ReplayFailed(detail: "invalid delta key hex in bucket '#{bd.bucket}'")
+          )
+          vb_opt = case op.value_hex
+            Some(vh):
+              vb = try Bytes.from_hex(vh).or_fail(
+                ReplayFailed(detail: "invalid delta value hex in bucket '#{bd.bucket}'")
+              )
+              Some(vb)
+            None: None
+          end
+          ops = ops.append((kb, vb_opt))
+        end
+        decoded_deltas = decoded_deltas.append((bd.bucket, ops))
+      end
+      ApplyDeltas(decoded_deltas: decoded_deltas)
+    None:
+      decoded_buckets = try Export.decode_snapshot_buckets(prop.proposed_state).map_error(fn(e)
+        ExportFailure(e)
+      end)
+      for (bname, _rows) in decoded_buckets
+        if bname.starts_with?("_modb_")
+          return Error(ReplayFailed(detail: "proposal cannot overwrite internal bucket '#{bname}'"))
+        end
+      end
+      all_live = try wrap_modb(Modb.buckets(Ledger.store(db)))
+      var live_user = []
+      for b in all_live
+        if not b.starts_with?("_modb_")
+          live_user = live_user.append(b)
+        end
+      end
+      ReplaceBuckets(live_user: live_user, decoded_buckets: decoded_buckets)
   end
-  Ok((prop, live_user, decoded_buckets))
+  Ok((prop, patch))
 end
 
 fn apply_proposal_in_tx(
   tx0: WriteTx,
-  live_user: List(Text),
-  decoded_buckets: List((Text, List((Bytes, Bytes)))),
+  patch: ProposalPatch,
   accepted_prop: ReplayProposal
 ) : Result(WriteTx, TableError)
   var cur_tx = tx0
-  for bname in live_user
-    cur_tx = try Modb.tx_delete_bucket(cur_tx, bname).map_error(fn(e) Table.Storage(e) end)
-  end
-  for (bname, rows) in decoded_buckets
-    for (k, v) in rows
-      cur_tx = try Modb.tx_put(cur_tx, bname, k, v).map_error(fn(e) Table.Storage(e) end)
-    end
+  case patch
+    ReplaceBuckets(live_user: live_user, decoded_buckets: decoded_buckets):
+      for bname in live_user
+        cur_tx = try Modb.tx_delete_bucket(cur_tx, bname).map_error(fn(e) Table.Storage(e) end)
+      end
+      for (bname, rows) in decoded_buckets
+        for (k, v) in rows
+          cur_tx = try Modb.tx_put(cur_tx, bname, k, v).map_error(fn(e) Table.Storage(e) end)
+        end
+      end
+    ApplyDeltas(decoded_deltas: decoded_deltas):
+      for (bname, ops) in decoded_deltas
+        for (k, v_opt) in ops
+          case v_opt
+            Some(v): cur_tx = try Modb.tx_put(cur_tx, bname, k, v).map_error(fn(e)
+              Table.Storage(e)
+            end)
+            None: cur_tx = try Modb.tx_delete(cur_tx, bname, k).map_error(fn(e)
+              Table.Storage(e)
+            end)
+          end
+        end
+      end
   end
   Table.put(cur_tx, replay_proposals_table(), accepted_prop.id, accepted_prop)
 end
 
 ## Atomically adopts a `Pending`, fresh `ReplayProposal` onto the live database:
-## replaces all user buckets with `proposed_state`, preserves all `_modb_*` audit/history/grant
-## buckets untouched, enforces every commit-time `Schema` invariant, and appends an immutable
-## hash-chained `AuditEntry`.
+## applies `proposed_delta` (when baseline-pinned) or replaces user buckets with `proposed_state`,
+## preserves all `_modb_*` audit/history/grant buckets untouched, enforces every commit-time
+## `Schema` invariant, and appends an immutable hash-chained `AuditEntry`.
 fn accept_proposal(db: Db, proposal_id: Text, admin_meta: WriteMeta) : Result(
   (Db, ReplayProposal),
   ReplayError
 )
-  (prop, live_user, decoded_buckets) = try prepare_proposal_adoption(db, proposal_id)
+  (prop, patch) = try prepare_proposal_adoption(db, proposal_id)
   expected_txid = Ledger.txid(db) + 1
   var accepted = prop
   accepted.status = Accepted(
@@ -1073,7 +1289,7 @@ fn accept_proposal(db: Db, proposal_id: Text, admin_meta: WriteMeta) : Result(
     audit_payload,
     fn(le) LedgerFailure(le) end,
     fn(tx)
-      t1 = try wrap_table(apply_proposal_in_tx(tx, live_user, decoded_buckets, accepted))
+      t1 = try wrap_table(apply_proposal_in_tx(tx, patch, accepted))
       Ok((t1, accepted))
     end
   )
@@ -1089,7 +1305,7 @@ fn accept_proposal_and_crash(
   phase: Int,
   rng: Random
 ) : Result(BlockStore, ReplayError)
-  (prop, live_user, decoded_buckets) = try prepare_proposal_adoption(db, proposal_id)
+  (prop, patch) = try prepare_proposal_adoption(db, proposal_id)
   expected_txid = Ledger.txid(db) + 1
   var accepted = prop
   accepted.status = Accepted(
@@ -1114,7 +1330,7 @@ fn accept_proposal_and_crash(
     audit_payload,
     phase,
     rng,
-    fn(tx) apply_proposal_in_tx(tx, live_user, decoded_buckets, accepted) end
+    fn(tx) apply_proposal_in_tx(tx, patch, accepted) end
   ).map_error(fn(le) LedgerFailure(le) end)
 end
 
@@ -1311,4 +1527,61 @@ test "Modb.Replay unit: execute, selective undo proposal, staleness guard, and a
   assert acc_prop.status is Accepted(commit_txid: _, accepted_by: "admin:ada", accepted_at: _)
   assert Table.get(Ledger.store(db4), tallies, "a") == Ok(Some(TallyRow(count: 5)))
   assert Ledger.verify_all(db4) is Ok(_)
+
+  ## CoW-pinned ReplayBaseline preserves pre-existing rows while applying O(diff) delta proposals
+  assert Export.export_db(db4, false, t0) is Ok(compacted_snap)
+  sc_v1 = Ledger.schema(1).with_require_reason(true).with_migration(
+    Ledger.migration(1, "init v1 tables", fn(tx) Ok(tx) end)
+  ).with_invariant(
+    Ledger.row_invariant(
+      "non_negative",
+      tallies,
+      fn(k, r) if r.count < 0: Some("tally '#{k}' < 0") else: None end
+    )
+  )
+  assert Export.import_db(files, "replay-compact.modb", sc_v1, compacted_snap, t0) is Ok(cdb0)
+  assert Table.get(Ledger.store(cdb0), tallies, "a") == Ok(Some(TallyRow(count: 5)))
+  assert pin_baseline(cdb0, t0) is Ok((cdb1, bl))
+  assert bl.schema_version == 1
+  assert call_count(Ledger.store(cdb1)) == Ok(0)
+
+  ## Post-baseline calls: rogue drains 4 (5 -> 1), then Alice -3 refused, then Carol +20 on 'b'
+  assert execute_recording_refusals(cdb1, rc, m_rogue, AddArgs(name: "a", delta: -4).to_json) is
+    Ok((cdb2, _, _))
+  ## Once calls exist, pin_baseline rejects cleanly
+  assert pin_baseline(cdb2, t0) is Error(ReplayFailed(detail: _))
+  assert execute_recording_refusals(cdb2, rc, m_alice, AddArgs(name: "a", delta: -3).to_json) is
+    Error((cdb3, ReplayActionRejected(action: "add", detail: _)))
+  m_carol = WriteMeta(principal: "user:carol", action: "add", reason: "fund b", at: t0)
+  assert execute_recording_refusals(cdb3, rc, m_carol, AddArgs(name: "b", delta: 20).to_json) is
+    Ok((cdb4, _, _))
+  assert list_calls_tail(Ledger.store(cdb4), 2) is Ok(tail2) and tail2.size == 2
+
+  assert simulate_replay(
+    cdb4,
+    rc,
+    ExcludePrincipal(principal: "agent:rogue"),
+    "prop-delta-1",
+    "Undo rogue post-compact drain via CoW baseline",
+    "admin:ada",
+    t0
+  ) is
+    Ok((cdb5, dprop))
+  assert dprop.proposed_delta is Some(deltas) and not deltas.empty?
+  assert dprop.proposed_state.bucket_count == 0
+  assert dprop.summary.excluded == 1 and dprop.summary.now_accepted == 1
+  assert Table.get(Ledger.store(cdb5), tallies, "a") == Ok(Some(TallyRow(count: 1)))
+
+  assert accept_proposal(cdb5, "prop-delta-1", m_acc) is Ok((cdb6, _))
+  ## Pre-baseline 'a'=5 preserved minus Alice's now-accepted 3 => 2; post-baseline 'b'=20 preserved!
+  assert Table.get(Ledger.store(cdb6), tallies, "a") == Ok(Some(TallyRow(count: 2)))
+  assert Table.get(Ledger.store(cdb6), tallies, "b") == Ok(Some(TallyRow(count: 20)))
+  assert Ledger.verify_all(cdb6) is Ok(_)
+  assert Modb.verify(Ledger.store(cdb6)) is Ok(_)
+
+  ## Adopting another proposal created prior to accept fails staleness guard
+  assert simulate_replay(cdb6, rc, ReplayAll, "prop-stale", "stale check", "admin:ada", t0) is
+    Ok((cdb7, _))
+  assert execute(cdb7, rc, m_carol, AddArgs(name: "b", delta: 1).to_json) is Ok((cdb8, _, _))
+  assert accept_proposal(cdb8, "prop-stale", m_acc) is Error(ProposalStale(id: "prop-stale", expected_audit_seq: _, actual_audit_seq: _, expected_call_seq: _, actual_call_seq: _))
 end
