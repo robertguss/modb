@@ -1,5 +1,5 @@
-## Pure Copy-on-Write (CoW) B+Tree over 4 KiB pages with dirty-node buffering,
-## overflow chains, binary search, and sibling rebalancing.
+## Pure Copy-on-Write (CoW) B+Tree over 4 KiB pages with O(1) size-tracked dirty-node buffering,
+## right-edge sequential splitting, zero-decode raw lookups/scans, overflow chains, and rebalancing.
 module Modb.Tree
 expose Allocator(..),
 KeyDiff(..),
@@ -27,30 +27,47 @@ use Modb.Codec{
   OverflowPage,
   ValueRef,
   body_size,
-  branch_body_size,
-  branch_lookup_child_unchecked,
+  branch_lookup_child_raw,
+  branch_scan_children_raw,
   decode_branch_unchecked,
+  decode_branch_with_bytes_unchecked,
   decode_leaf_unchecked,
+  decode_leaf_with_bytes_unchecked,
   decode_overflow,
   encode_branch,
   encode_leaf,
   encode_overflow,
   kind_branch,
   kind_leaf,
-  leaf_body_size,
-  leaf_lookup_entry_unchecked,
+  leaf_lookup_entry_raw,
+  leaf_scan_raw,
   max_inline_value,
   max_key_size,
   max_overflow_chunk,
   read_header_fast,
-  verify_header
+  verify_header,
+  verify_leaf_raw
 }
 use Modb.Errors{ModbError}
-use Modb.Pager{BlockStore, read_page, sim_empty}
+use Modb.Pager{BlockStore, page_size, read_page, sim_empty}
 
 ## Thresholds for merging adjacent underfull sibling nodes after deletes.
 merge_trigger_bytes = 1024
 merge_target_bytes = 3800
+
+## Buffered dirty leaf paired with its exact encoded body byte size and O(1) locality hint.
+struct DirtyLeaf
+  entries: List(LeafEntry)
+  body_bytes: Int
+  hint: Int
+end
+
+## Buffered dirty branch paired with its exact encoded body byte size.
+struct DirtyBranch
+  first_child: Int
+  entries: List(BranchEntry)
+  body_bytes: Int
+end
 
 ## Per-transaction CoW page allocator and dirty-node buffer.
 ## Committed pages are never overwritten. Modified branch/leaf nodes stay decoded in
@@ -61,8 +78,8 @@ struct Allocator
   reusable: List(Int)
   pending_free: List(Int)
   staged: Map(Int, Bytes)
-  dirty_leaves: Map(Int, LeafNode)
-  dirty_branches: Map(Int, BranchNode)
+  dirty_leaves: Map(Int, DirtyLeaf)
+  dirty_branches: Map(Int, DirtyBranch)
 end
 
 ## Single key-level difference between two B+Tree versions (`root_a -> root_b`).
@@ -157,11 +174,14 @@ end
 fn flush_dirty(alloc: Allocator) : Result(Allocator, ModbError)
   var next = alloc
   for (pid, leaf) in next.dirty_leaves.entries
-    raw = try encode_leaf(pid, leaf)
+    raw = try encode_leaf(pid, LeafNode(entries: leaf.entries))
     next.staged = next.staged.set(pid, raw)
   end
   for (pid, branch) in next.dirty_branches.entries
-    raw = try encode_branch(pid, branch)
+    raw = try encode_branch(
+      pid,
+      BranchNode(first_child: branch.first_child, entries: branch.entries)
+    )
     next.staged = next.staged.set(pid, raw)
   end
   next.dirty_leaves = {}
@@ -171,44 +191,70 @@ end
 
 ## Reads a page, verifying SHA-256 once when loaded from cold disk (skipping re-hash on cache hits).
 fn read_node_page(store: BlockStore, staged: Map(Int, Bytes), page_id: Int) : Result(
-  (Bytes, Bool),
+  Bytes,
   ModbError
 )
   case staged.get(page_id)
-    Some(raw): Ok((raw, true))
+    Some(raw): Ok(raw)
     None:
       case store.cache.get(page_id)
-        Some(cached): Ok((cached, true))
+        Some(cached): Ok(cached)
         None:
           raw = try read_page(store, page_id)
           _ = try verify_header(raw, page_id)
-          Ok((raw, true))
+          Ok(raw)
       end
   end
 end
 
-## Binary search over sorted `LeafEntry` list: returns `(index, found?)`.
-fn leaf_binary_search(entries: List(LeafEntry), target: Bytes) : (Int, Bool)
+## Binary search over sorted `LeafEntry` list with O(1) right-edge and sequential-overwrite hints:
+## returns `(index, found?)`.
+fn leaf_search_hinted(entries: List(LeafEntry), target: Bytes, hint: Int) : (Int, Bool)
+  n = entries.size
+  return (0, false) if n == 0
+  last_k = (entries.get(n - 1) or stop "valid leaf last").key
+  if last_k < target
+    return (n, false)
+  end
+  next_h = hint + 1
+  if next_h >= 0 and next_h < n
+    if (entries.get(next_h) or stop "valid leaf hint").key == target
+      return (next_h, true)
+    end
+  end
+  if last_k == target
+    return (n - 1, true)
+  end
   var lo = 0
-  var hi = entries.size
+  var hi = n - 1
   while lo < hi
     mid = lo + (hi - lo) / 2
     k = (entries.get(mid) or stop "valid leaf mid").key
-    if k == target
-      return (mid, true)
+    if k < target
+      lo = mid + 1
     else if target < k
       hi = mid
     else
-      lo = mid + 1
+      return (mid, true)
     end
   end
   (lo, false)
 end
 
-## Binary search over sorted `BranchEntry` list: returns child slot index `0..entries.size`.
+## Binary search over sorted `LeafEntry` list with O(1) right-edge fast path: returns `(index, found?)`.
+fn leaf_binary_search(entries: List(LeafEntry), target: Bytes) : (Int, Bool)
+  leaf_search_hinted(entries, target, -2)
+end
+
+## Binary search over sorted `BranchEntry` list with O(1) right-edge fast path:
+## returns child slot index `0..entries.size`.
 fn branch_child_index(entries: List(BranchEntry), target: Bytes) : Int
+  n = entries.size
+  return 0 if n == 0
+  last_sep = (entries.get(n - 1) or stop "valid branch last").key
+  return n if target >= last_sep
   var lo = 0
-  var hi = entries.size
+  var hi = n - 1
   while lo < hi
     mid = lo + (hi - lo) / 2
     sep = (entries.get(mid) or stop "valid branch mid").key
@@ -263,7 +309,7 @@ fn materialize_value(store: BlockStore, staged: Map(Int, Bytes), vref: ValueRef)
       while cur != 0
         steps += 1
         return Error(Corrupt(reason: "overflow chain cycle detected")) if steps > max_steps
-        (raw, _v) = try read_node_page(store, staged, cur)
+        raw = try read_node_page(store, staged, cur)
         ov = try decode_overflow(raw, cur)
         parts = parts.append(ov.data)
         collected += ov.data.size
@@ -293,7 +339,7 @@ fn free_value_ref(store: BlockStore, alloc: Allocator, vref: ValueRef) : Result(
       while cur != 0
         steps += 1
         return Error(Corrupt(reason: "overflow chain cycle while freeing")) if steps > max_steps
-        (raw, _v) = try read_node_page(store, cur_alloc.staged, cur)
+        raw = try read_node_page(store, cur_alloc.staged, cur)
         ov = try decode_overflow(raw, cur)
         cur_alloc = free_page(cur_alloc, cur)
         cur = ov.next_page
@@ -302,7 +348,7 @@ fn free_value_ref(store: BlockStore, alloc: Allocator, vref: ValueRef) : Result(
   end
 end
 
-## Point lookup on committed pages using single-verify zero-decode binary search.
+## Point lookup on committed pages using single-verify zero-decode inline binary search.
 fn get(store: BlockStore, staged: Map(Int, Bytes), root_id: Int, key: Bytes) : Result(
   Option(Bytes),
   ModbError
@@ -313,19 +359,33 @@ fn get(store: BlockStore, staged: Map(Int, Bytes), root_id: Int, key: Bytes) : R
   while true
     depth += 1
     return Error(Corrupt(reason: "b-tree depth limit exceeded")) if depth > 64
-    (raw, _v) = try read_node_page(store, staged, cur)
-    hdr = try read_header_fast(raw, cur)
-    if hdr.kind == kind_branch
-      cur = try branch_lookup_child_unchecked(raw, cur, key)
-    else if hdr.kind == kind_leaf
-      case try leaf_lookup_entry_unchecked(raw, cur, key)
+    raw = try read_node_page(store, staged, cur)
+    if raw.size != page_size
+      return Error(Corrupt(reason: "page #{cur} size #{raw.size} != #{page_size}"))
+    end
+    kind = case raw.u16_be_at(0)
+      Some(v): v
+      None: return Error(Corrupt(reason: "truncated kind"))
+    end
+    count = case raw.u16_be_at(2)
+      Some(v): v
+      None: return Error(Corrupt(reason: "truncated entry_count"))
+    end
+    if raw.i64_be_at(8) != Some(cur)
+      return Error(Corrupt(reason: "page id mismatch on page #{cur}"))
+    end
+    if kind == kind_branch
+      cur = try branch_lookup_child_raw(raw, count, key)
+    else if kind == kind_leaf
+      case try leaf_lookup_entry_raw(raw, count, key)
         None: return Ok(None)
+        Some(Inline(data: d)): return Ok(Some(d))
         Some(vref):
           val = try materialize_value(store, staged, vref)
           return Ok(Some(val))
       end
     else
-      return Error(Corrupt(reason: "unexpected page kind #{hdr.kind} at page #{cur}"))
+      return Error(Corrupt(reason: "unexpected page kind #{kind} at page #{cur}"))
     end
   end
   Ok(None)
@@ -354,23 +414,41 @@ fn get_tx(store: BlockStore, alloc: Allocator, root_id: Int, key: Bytes) : Resul
         (pos, found) = leaf_binary_search(leaf.entries, key)
         return Ok(None) if not found
         e = leaf.entries.get(pos) or stop "valid dirty leaf pos"
-        val = try materialize_value(store, alloc.staged, e.value)
-        return Ok(Some(val))
+        case e.value
+          Inline(data: d): return Ok(Some(d))
+          Overflow(first_page: _, total_len: _):
+            val = try materialize_value(store, alloc.staged, e.value)
+            return Ok(Some(val))
+        end
       None: Unit
     end
-    (raw, _v) = try read_node_page(store, alloc.staged, cur)
-    hdr = try read_header_fast(raw, cur)
-    if hdr.kind == kind_branch
-      cur = try branch_lookup_child_unchecked(raw, cur, key)
-    else if hdr.kind == kind_leaf
-      case try leaf_lookup_entry_unchecked(raw, cur, key)
+    raw = try read_node_page(store, alloc.staged, cur)
+    if raw.size != page_size
+      return Error(Corrupt(reason: "page #{cur} size #{raw.size} != #{page_size}"))
+    end
+    kind = case raw.u16_be_at(0)
+      Some(v): v
+      None: return Error(Corrupt(reason: "truncated kind"))
+    end
+    count = case raw.u16_be_at(2)
+      Some(v): v
+      None: return Error(Corrupt(reason: "truncated entry_count"))
+    end
+    if raw.i64_be_at(8) != Some(cur)
+      return Error(Corrupt(reason: "page id mismatch on page #{cur}"))
+    end
+    if kind == kind_branch
+      cur = try branch_lookup_child_raw(raw, count, key)
+    else if kind == kind_leaf
+      case try leaf_lookup_entry_raw(raw, count, key)
         None: return Ok(None)
+        Some(Inline(data: d)): return Ok(Some(d))
         Some(vref):
           val = try materialize_value(store, alloc.staged, vref)
           return Ok(Some(val))
       end
     else
-      return Error(Corrupt(reason: "unexpected page kind #{hdr.kind} at page #{cur}"))
+      return Error(Corrupt(reason: "unexpected page kind #{kind} at page #{cur}"))
     end
   end
   Ok(None)
@@ -446,9 +524,10 @@ end
 fn scan_branch_node(
   store: BlockStore,
   staged: Map(Int, Bytes),
-  dirty_leaves: Map(Int, LeafNode),
-  dirty_branches: Map(Int, BranchNode),
-  branch: BranchNode,
+  dirty_leaves: Map(Int, DirtyLeaf),
+  dirty_branches: Map(Int, DirtyBranch),
+  first_child: Int,
+  entries: List(BranchEntry),
   start_key: Option(Bytes),
   end_key: Option(Bytes),
   limit: Int,
@@ -456,22 +535,22 @@ fn scan_branch_node(
   depth: Int
 ) : Result(List((Bytes, Bytes)), ModbError)
   var out = acc
-  count = branch.entries.size
+  count = entries.size
   var child_idx = case start_key
-    Some(s): branch_child_index(branch.entries, s)
+    Some(s): branch_child_index(entries, s)
     None: 0
   end
   while child_idx <= count
     break if limit > 0 and out.size >= limit
     if child_idx > 0
-      lower = (branch.entries.get(child_idx - 1) or stop "valid branch index").key
+      lower = (entries.get(child_idx - 1) or stop "valid branch index").key
       past_end = case end_key
         Some(ek): lower >= ek
         None: false
       end
       break if past_end
     end
-    child_pid = child_at(branch.first_child, branch.entries, child_idx)
+    child_pid = child_at(first_child, entries, child_idx)
     out = try scan_node(
       store,
       staged,
@@ -492,8 +571,8 @@ end
 fn scan_node(
   store: BlockStore,
   staged: Map(Int, Bytes),
-  dirty_leaves: Map(Int, LeafNode),
-  dirty_branches: Map(Int, BranchNode),
+  dirty_leaves: Map(Int, DirtyLeaf),
+  dirty_branches: Map(Int, DirtyBranch),
   page_id: Int,
   start_key: Option(Bytes),
   end_key: Option(Bytes),
@@ -521,7 +600,8 @@ fn scan_node(
       staged,
       dirty_leaves,
       dirty_branches,
-      branch,
+      branch.first_child,
+      branch.entries,
       start_key,
       end_key,
       limit,
@@ -530,65 +610,97 @@ fn scan_node(
     )
     None: Unit
   end
-  (raw, _v) = try read_node_page(store, staged, page_id)
-  hdr = try read_header_fast(raw, page_id)
-  if hdr.kind == kind_leaf
-    leaf = try decode_leaf_unchecked(raw, page_id)
-    scan_leaf_entries(store, staged, leaf.entries, start_key, end_key, limit, acc)
-  else if hdr.kind == kind_branch
-    branch = try decode_branch_unchecked(raw, page_id)
-    scan_branch_node(
-      store,
-      staged,
-      dirty_leaves,
-      dirty_branches,
-      branch,
-      start_key,
-      end_key,
-      limit,
-      acc,
-      depth
-    )
+  raw = try read_node_page(store, staged, page_id)
+  if raw.size != page_size
+    return Error(Corrupt(reason: "page #{page_id} size #{raw.size} != #{page_size}"))
+  end
+  kind = case raw.u16_be_at(0)
+    Some(v): v
+    None: return Error(Corrupt(reason: "truncated kind"))
+  end
+  count = case raw.u16_be_at(2)
+    Some(v): v
+    None: return Error(Corrupt(reason: "truncated entry_count"))
+  end
+  if raw.i64_be_at(8) != Some(page_id)
+    return Error(Corrupt(reason: "page id mismatch on page #{page_id}"))
+  end
+  if kind == kind_leaf
+    rem = if limit > 0: limit - acc.size else: 0
+    raw_rows = try leaf_scan_raw(raw, count, start_key, end_key, rem)
+    var out = acc
+    for (k, vref) in raw_rows
+      case vref
+        Inline(data: d): out = out.append((k, d))
+        Overflow(first_page: _, total_len: _):
+          val = try materialize_value(store, staged, vref)
+          out = out.append((k, val))
+      end
+    end
+    Ok(out)
+  else if kind == kind_branch
+    children = try branch_scan_children_raw(raw, count, start_key, end_key)
+    var out = acc
+    for child_pid in children
+      break if limit > 0 and out.size >= limit
+      out = try scan_node(
+        store,
+        staged,
+        dirty_leaves,
+        dirty_branches,
+        child_pid,
+        start_key,
+        end_key,
+        limit,
+        out,
+        depth + 1
+      )
+    end
+    Ok(out)
   else
-    Error(Corrupt(reason: "unexpected page kind #{hdr.kind} at page #{page_id}"))
+    Error(Corrupt(reason: "unexpected page kind #{kind} at page #{page_id}"))
   end
 end
 
 fn leaf_entry_bytes(e: LeafEntry) : Int
   case e.value
-    Inline(data: d): 2 + 6 + e.key.size + d.size
-    Overflow(first_page: _, total_len: _): 2 + 20 + e.key.size
+    Inline(data: d): 8 + e.key.size + d.size
+    Overflow(first_page: _, total_len: _): 22 + e.key.size
   end
 end
 
 fn branch_entry_bytes(e: BranchEntry) : Int
-  2 + 10 + e.key.size
+  12 + e.key.size
 end
 
-## Finds a split index `1 <= mid <= entries.size - 1` so both leaf halves fit within `body_size`.
-fn find_leaf_split(entries: List(LeafEntry)) : Int
-  total = leaf_body_size(entries)
+## Finds a split index `1 <= mid <= entries.size - 1` so both leaf halves fit within `body_size`,
+## returning `(mid, left_bytes, right_bytes)`.
+fn find_leaf_split(entries: List(LeafEntry), total: Int) : (Int, Int, Int)
   target = total / 2
   var left_bytes = 0
   var best = 1
+  var best_left = leaf_entry_bytes(entries.first or stop "non-empty leaf split")
   for i in 0..(entries.size - 1)
     e = entries.get(i) or stop "valid leaf split index"
     left_bytes += leaf_entry_bytes(e)
     right_bytes = total - left_bytes
     if left_bytes <= body_size and right_bytes <= body_size
       best = i + 1
+      best_left = left_bytes
       break if left_bytes >= target
     end
   end
-  best
+  (best, best_left, total - best_left)
 end
 
-## Finds a promotion index `1 <= mid <= entries.size - 2` for splitting a branch node.
-fn find_branch_split(entries: List(BranchEntry)) : Int
-  total = branch_body_size(entries)
-  target = total / 2
+## Finds a promotion index `1 <= mid <= entries.size - 2` for splitting a branch node,
+## returning `(mid, left_bytes, right_bytes)`. Uses `right_edge?` to pack sequential appends ~90%.
+fn find_branch_split(entries: List(BranchEntry), total: Int, right_edge?: Bool) : (Int, Int, Int)
+  target = if right_edge?: (total * 9) / 10 else: total / 2
   var left_bytes = 8
   var best = 1
+  var best_left = 8 + branch_entry_bytes(entries.first or stop "non-empty branch split")
+  var best_right = total - best_left
   for i in 0..(entries.size - 1)
     e = entries.get(i) or stop "valid branch split index"
     eb = branch_entry_bytes(e)
@@ -596,29 +708,61 @@ fn find_branch_split(entries: List(BranchEntry)) : Int
       right_bytes = total - left_bytes - eb + 8
       if left_bytes <= body_size and right_bytes <= body_size
         best = i
+        best_left = left_bytes
+        best_right = right_bytes
         break if left_bytes >= target
       end
     end
     left_bytes += eb
   end
-  best
+  (best, best_left, best_right)
 end
 
-fn buffer_leaf(alloc: Allocator, old_pid: Int, entries: List(LeafEntry)) : (Allocator, Int)
+fn buffer_leaf_owned(
+  alloc: Allocator,
+  pid: Int,
+  entries: List(LeafEntry),
+  body_bytes: Int,
+  hint: Int
+) : (Allocator, Int)
+  var a = alloc
+  a.dirty_leaves = a.dirty_leaves.set(
+    pid,
+    DirtyLeaf(entries: entries, body_bytes: body_bytes, hint: hint)
+  )
+  (a, pid)
+end
+
+fn buffer_leaf(alloc: Allocator, old_pid: Int, entries: List(LeafEntry), body_bytes: Int, hint: Int) : (
+  Allocator,
+  Int
+)
   (a1, dst) = prepare_target(alloc, old_pid)
   var a2 = a1
   a2.staged = a2.staged.remove(dst)
   a2.dirty_branches = a2.dirty_branches.remove(dst)
-  a2.dirty_leaves = a2.dirty_leaves.set(dst, LeafNode(entries: entries))
+  a2.dirty_leaves = a2.dirty_leaves.set(
+    dst,
+    DirtyLeaf(entries: entries, body_bytes: body_bytes, hint: hint)
+  )
   (a2, dst)
 end
 
-fn buffer_branch(alloc: Allocator, old_pid: Int, node: BranchNode) : (Allocator, Int)
+fn buffer_branch(
+  alloc: Allocator,
+  old_pid: Int,
+  first_child: Int,
+  entries: List(BranchEntry),
+  body_bytes: Int
+) : (Allocator, Int)
   (a1, dst) = prepare_target(alloc, old_pid)
   var a2 = a1
   a2.staged = a2.staged.remove(dst)
   a2.dirty_leaves = a2.dirty_leaves.remove(dst)
-  a2.dirty_branches = a2.dirty_branches.set(dst, node)
+  a2.dirty_branches = a2.dirty_branches.set(
+    dst,
+    DirtyBranch(first_child: first_child, entries: entries, body_bytes: body_bytes)
+  )
   (a2, dst)
 end
 
@@ -632,16 +776,14 @@ fn put(store: BlockStore, alloc: Allocator, root_id: Int, key: Bytes, value: Byt
   end
   (a1, vref) = try write_overflow_chain(alloc, value)
   if root_id == 0
-    return Ok(buffer_leaf(a1, 0, [LeafEntry(key: key, value: vref)]))
+    entry = LeafEntry(key: key, value: vref)
+    return Ok(buffer_leaf(a1, 0, [entry], leaf_entry_bytes(entry), 0))
   end
   case try put_node(store, a1, root_id, key, vref, 0)
     PutUpdated(alloc: a2, page_id: new_root): Ok((a2, new_root))
     PutSplit(alloc: a2, left_id: left_id, sep_key: sep, right_id: right_id):
-      root_node = BranchNode(
-        first_child: left_id,
-        entries: [BranchEntry(key: sep, child: right_id)]
-      )
-      Ok(buffer_branch(a2, 0, root_node))
+      be = BranchEntry(key: sep, child: right_id)
+      Ok(buffer_branch(a2, 0, left_id, [be], 8 + branch_entry_bytes(be)))
   end
 end
 
@@ -654,22 +796,46 @@ fn put_node(
   depth: Int
 ) : Result(PutResult, ModbError)
   return Error(Corrupt(reason: "b-tree depth limit exceeded during put")) if depth > 64
-  case alloc.dirty_leaves.get(page_id)
-    Some(leaf): return put_in_leaf(store, alloc, page_id, leaf.entries, key, vref)
+  var cur_alloc = alloc
+  case cur_alloc.dirty_leaves.get(page_id)
+    Some(DirtyLeaf(entries: entries, body_bytes: bbytes, hint: hint)):
+      ## Detach from `dirty_leaves` so `entries` has refcount == 1 for O(1) Perceus in-place mutation!
+      cur_alloc.dirty_leaves = cur_alloc.dirty_leaves.remove(page_id)
+      return put_in_leaf(store, cur_alloc, page_id, true, entries, bbytes, hint, key, vref)
     None: Unit
   end
-  case alloc.dirty_branches.get(page_id)
-    Some(branch): return put_in_branch(store, alloc, page_id, branch, key, vref, depth)
+  case cur_alloc.dirty_branches.get(page_id)
+    Some(branch): return put_in_branch(
+      store,
+      cur_alloc,
+      page_id,
+      branch.first_child,
+      branch.entries,
+      branch.body_bytes,
+      key,
+      vref,
+      depth
+    )
     None: Unit
   end
-  (raw, _v) = try read_node_page(store, alloc.staged, page_id)
+  raw = try read_node_page(store, cur_alloc.staged, page_id)
   hdr = try read_header_fast(raw, page_id)
   if hdr.kind == kind_leaf
-    leaf = try decode_leaf_unchecked(raw, page_id)
-    put_in_leaf(store, alloc, page_id, leaf.entries, key, vref)
+    (leaf, bbytes) = try decode_leaf_with_bytes_unchecked(raw, page_id)
+    put_in_leaf(store, cur_alloc, page_id, false, leaf.entries, bbytes, -2, key, vref)
   else if hdr.kind == kind_branch
-    branch = try decode_branch_unchecked(raw, page_id)
-    put_in_branch(store, alloc, page_id, branch, key, vref, depth)
+    (branch, bbytes) = try decode_branch_with_bytes_unchecked(raw, page_id)
+    put_in_branch(
+      store,
+      cur_alloc,
+      page_id,
+      branch.first_child,
+      branch.entries,
+      bbytes,
+      key,
+      vref,
+      depth
+    )
   else
     Error(Corrupt(reason: "unexpected page kind #{hdr.kind} at page #{page_id}"))
   end
@@ -679,34 +845,74 @@ fn put_in_leaf(
   store: BlockStore,
   alloc: Allocator,
   page_id: Int,
+  tx_owned?: Bool,
   entries: List(LeafEntry),
+  old_bytes: Int,
+  hint: Int,
   key: Bytes,
   vref: ValueRef
 ) : Result(PutResult, ModbError)
   var cur_alloc = alloc
-  (pos, found) = leaf_binary_search(entries, key)
-  if found
-    existing = entries.get(pos) or stop "valid leaf index"
-    cur_alloc = try free_value_ref(store, cur_alloc, existing.value)
-  end
+  (pos, found) = leaf_search_hinted(entries, key, hint)
   new_entry = LeafEntry(key: key, value: vref)
-  updated = if found
-    entries.set(pos, new_entry) or stop "valid leaf replace index"
-  else if pos == entries.size
-    entries.append(new_entry)
+  new_eb = leaf_entry_bytes(new_entry)
+  next_bytes = if found
+    existing = entries.get(pos) or stop "valid leaf index"
+    old_eb = leaf_entry_bytes(existing)
+    case existing.value
+      Inline(data: _): Unit
+      Overflow(first_page: _, total_len: _): cur_alloc = try free_value_ref(
+        store,
+        cur_alloc,
+        existing.value
+      )
+    end
+    old_bytes - old_eb + new_eb
   else
-    entries.take(pos).append(new_entry).concat(entries.drop(pos))
+    old_bytes + new_eb
   end
-  if leaf_body_size(updated) <= body_size
-    (a1, new_pid) = buffer_leaf(cur_alloc, page_id, updated)
+
+  if next_bytes <= body_size
+    updated = if found
+      entries.set(pos, new_entry) or stop "valid leaf replace index"
+    else if pos == entries.size
+      entries.append(new_entry)
+    else
+      entries.take(pos).append(new_entry).concat(entries.drop(pos))
+    end
+    (a1, new_pid) = if tx_owned?
+      buffer_leaf_owned(cur_alloc, page_id, updated, next_bytes, pos)
+    else
+      buffer_leaf(cur_alloc, page_id, updated, next_bytes, pos)
+    end
     Ok(PutUpdated(alloc: a1, page_id: new_pid))
+  else if not found and pos == entries.size and not entries.empty?
+    ## Right-edge sequential split: keep left leaf ~98% packed without slicing, start right leaf cleanly!
+    (a1, left_pid) = if tx_owned?
+      buffer_leaf_owned(cur_alloc, page_id, entries, old_bytes, pos - 1)
+    else
+      buffer_leaf(cur_alloc, page_id, entries, old_bytes, pos - 1)
+    end
+    (a2, right_pid) = buffer_leaf(a1, 0, [new_entry], new_eb, 0)
+    Ok(PutSplit(alloc: a2, left_id: left_pid, sep_key: new_entry.key, right_id: right_pid))
   else
-    mid = find_leaf_split(updated)
+    updated = if found
+      entries.set(pos, new_entry) or stop "valid leaf replace index"
+    else if pos == entries.size
+      entries.append(new_entry)
+    else
+      entries.take(pos).append(new_entry).concat(entries.drop(pos))
+    end
+    (mid, left_bytes, right_bytes) = find_leaf_split(updated, next_bytes)
     left_entries = updated.take(mid)
     right_entries = updated.drop(mid)
     sep_key = (right_entries.first or stop "non-empty right leaf").key
-    (a1, left_pid) = buffer_leaf(cur_alloc, page_id, left_entries)
-    (a2, right_pid) = buffer_leaf(a1, 0, right_entries)
+    (a1, left_pid) = if tx_owned?
+      buffer_leaf_owned(cur_alloc, page_id, left_entries, left_bytes, -2)
+    else
+      buffer_leaf(cur_alloc, page_id, left_entries, left_bytes, -2)
+    end
+    (a2, right_pid) = buffer_leaf(a1, 0, right_entries, right_bytes, -2)
     Ok(PutSplit(alloc: a2, left_id: left_pid, sep_key: sep_key, right_id: right_pid))
   end
 end
@@ -715,62 +921,62 @@ fn put_in_branch(
   store: BlockStore,
   alloc: Allocator,
   page_id: Int,
-  branch: BranchNode,
+  first_child: Int,
+  entries: List(BranchEntry),
+  old_bytes: Int,
   key: Bytes,
   vref: ValueRef,
   depth: Int
 ) : Result(PutResult, ModbError)
-  idx = branch_child_index(branch.entries, key)
-  target_child = child_at(branch.first_child, branch.entries, idx)
+  idx = branch_child_index(entries, key)
+  target_child = child_at(first_child, entries, idx)
   case try put_node(store, alloc, target_child, key, vref, depth + 1)
     PutUpdated(alloc: a1, page_id: new_child):
-      ## Fast path: if child stayed at the same tx-owned page_id and this branch is already dirty,
-      ## no change is needed to this branch!
+      ## Zero-mutation fast path: child stayed at same tx-owned page_id and branch is already dirty!
       if new_child == target_child and a1.dirty_branches.has?(page_id)
         return Ok(PutUpdated(alloc: a1, page_id: page_id))
       end
-      next_branch = if idx == 0
-        BranchNode(first_child: new_child, entries: branch.entries)
+      if idx == 0
+        (a2, new_pid) = buffer_branch(a1, page_id, new_child, entries, old_bytes)
+        Ok(PutUpdated(alloc: a2, page_id: new_pid))
       else
-        old_e = branch.entries.get(idx - 1) or stop "valid branch index"
-        updated_entries = branch.entries.set(idx - 1, BranchEntry(key: old_e.key, child: new_child)) or
+        old_e = entries.get(idx - 1) or stop "valid branch index"
+        updated_entries = entries.set(idx - 1, BranchEntry(key: old_e.key, child: new_child)) or
           stop "valid branch set"
-        BranchNode(first_child: branch.first_child, entries: updated_entries)
+        (a2, new_pid) = buffer_branch(a1, page_id, first_child, updated_entries, old_bytes)
+        Ok(PutUpdated(alloc: a2, page_id: new_pid))
       end
-      (a2, new_pid) = buffer_branch(a1, page_id, next_branch)
-      Ok(PutUpdated(alloc: a2, page_id: new_pid))
     PutSplit(alloc: a1, left_id: left_id, sep_key: sep_key, right_id: right_id):
-      var next_first = branch.first_child
-      var updated_entries = branch.entries
+      var next_first = first_child
+      var updated_entries = entries
+      new_be = BranchEntry(key: sep_key, child: right_id)
+      next_bytes = old_bytes + branch_entry_bytes(new_be)
+      right_edge? = idx == entries.size
       if idx == 0
         next_first = left_id
-        updated_entries = updated_entries.prepend(BranchEntry(key: sep_key, child: right_id))
+        updated_entries = updated_entries.prepend(new_be)
       else
         old_e = updated_entries.get(idx - 1) or stop "valid branch index"
         updated_entries = updated_entries.set(idx - 1, BranchEntry(key: old_e.key, child: left_id)) or
           stop "valid branch set"
-        if idx == updated_entries.size
-          updated_entries = updated_entries.append(BranchEntry(key: sep_key, child: right_id))
+        if right_edge?
+          updated_entries = updated_entries.append(new_be)
         else
-          updated_entries = updated_entries.take(idx).append(
-            BranchEntry(key: sep_key, child: right_id)
-          ).concat(updated_entries.drop(idx))
+          updated_entries = updated_entries.take(idx).append(new_be).concat(
+            updated_entries.drop(idx)
+          )
         end
       end
-      if branch_body_size(updated_entries) <= body_size
-        (a2, new_pid) = buffer_branch(
-          a1,
-          page_id,
-          BranchNode(first_child: next_first, entries: updated_entries)
-        )
+      if next_bytes <= body_size
+        (a2, new_pid) = buffer_branch(a1, page_id, next_first, updated_entries, next_bytes)
         Ok(PutUpdated(alloc: a2, page_id: new_pid))
       else
-        mid = find_branch_split(updated_entries)
+        (mid, left_bytes, right_bytes) = find_branch_split(updated_entries, next_bytes, right_edge?)
         promoted = updated_entries.get(mid) or stop "valid promoted entry"
-        left_node = BranchNode(first_child: next_first, entries: updated_entries.take(mid))
-        right_node = BranchNode(first_child: promoted.child, entries: updated_entries.drop(mid + 1))
-        (a2, left_pid) = buffer_branch(a1, page_id, left_node)
-        (a3, right_pid) = buffer_branch(a2, 0, right_node)
+        left_entries = updated_entries.take(mid)
+        right_entries = updated_entries.drop(mid + 1)
+        (a2, left_pid) = buffer_branch(a1, page_id, next_first, left_entries, left_bytes)
+        (a3, right_pid) = buffer_branch(a2, 0, promoted.child, right_entries, right_bytes)
         Ok(PutSplit(alloc: a3, left_id: left_pid, sep_key: promoted.key, right_id: right_pid))
       end
   end
@@ -791,6 +997,7 @@ fn delete_in_leaf(
   alloc: Allocator,
   page_id: Int,
   entries: List(LeafEntry),
+  old_bytes: Int,
   key: Bytes
 ) : Result((Allocator, Int, Bool), ModbError)
   (pos, found) = leaf_binary_search(entries, key)
@@ -802,7 +1009,7 @@ fn delete_in_leaf(
     a2 = free_page(a1, page_id)
     Ok((a2, 0, true))
   else
-    (a2, new_pid) = buffer_leaf(a1, page_id, remaining)
+    (a2, new_pid) = buffer_leaf(a1, page_id, remaining, old_bytes - leaf_entry_bytes(removed), -2)
     Ok((a2, new_pid, true))
   end
 end
@@ -813,21 +1020,30 @@ fn delete_node(store: BlockStore, alloc: Allocator, page_id: Int, key: Bytes, de
 )
   return Error(Corrupt(reason: "b-tree depth limit exceeded during delete")) if depth > 64
   case alloc.dirty_leaves.get(page_id)
-    Some(leaf): return delete_in_leaf(store, alloc, page_id, leaf.entries, key)
+    Some(leaf): return delete_in_leaf(store, alloc, page_id, leaf.entries, leaf.body_bytes, key)
     None: Unit
   end
   case alloc.dirty_branches.get(page_id)
-    Some(branch): return delete_in_branch(store, alloc, page_id, branch, key, depth)
+    Some(branch): return delete_in_branch(
+      store,
+      alloc,
+      page_id,
+      branch.first_child,
+      branch.entries,
+      branch.body_bytes,
+      key,
+      depth
+    )
     None: Unit
   end
-  (raw, _v) = try read_node_page(store, alloc.staged, page_id)
+  raw = try read_node_page(store, alloc.staged, page_id)
   hdr = try read_header_fast(raw, page_id)
   if hdr.kind == kind_leaf
-    leaf = try decode_leaf_unchecked(raw, page_id)
-    delete_in_leaf(store, alloc, page_id, leaf.entries, key)
+    (leaf, bbytes) = try decode_leaf_with_bytes_unchecked(raw, page_id)
+    delete_in_leaf(store, alloc, page_id, leaf.entries, bbytes, key)
   else if hdr.kind == kind_branch
-    branch = try decode_branch_unchecked(raw, page_id)
-    delete_in_branch(store, alloc, page_id, branch, key, depth)
+    (branch, bbytes) = try decode_branch_with_bytes_unchecked(raw, page_id)
+    delete_in_branch(store, alloc, page_id, branch.first_child, branch.entries, bbytes, key, depth)
   else
     Error(Corrupt(reason: "unexpected page kind #{hdr.kind} at page #{page_id}"))
   end
@@ -837,18 +1053,21 @@ fn delete_in_branch(
   store: BlockStore,
   alloc: Allocator,
   page_id: Int,
-  branch: BranchNode,
+  first_child: Int,
+  entries: List(BranchEntry),
+  old_bytes: Int,
   key: Bytes,
   depth: Int
 ) : Result((Allocator, Int, Bool), ModbError)
-  idx = branch_child_index(branch.entries, key)
-  target_child = child_at(branch.first_child, branch.entries, idx)
+  idx = branch_child_index(entries, key)
+  target_child = child_at(first_child, entries, idx)
   (a1, new_child, deleted?) = try delete_node(store, alloc, target_child, key, depth + 1)
   return Ok((a1, page_id, false)) if not deleted?
 
   var cur_alloc = a1
-  var next_first = branch.first_child
-  var next_entries = branch.entries
+  var next_first = first_child
+  var next_entries = entries
+  var next_bytes = old_bytes
 
   if new_child == 0
     if idx == 0
@@ -859,8 +1078,11 @@ fn delete_in_branch(
       first_e = next_entries.first or stop "non-empty branch entries"
       next_first = first_e.child
       next_entries = next_entries.drop(1)
+      next_bytes -= branch_entry_bytes(first_e)
     else
+      rem_e = next_entries.get(idx - 1) or stop "valid branch remove idx"
       next_entries = next_entries.remove_at(idx - 1) or stop "valid branch remove"
+      next_bytes -= branch_entry_bytes(rem_e)
     end
   else
     if idx == 0
@@ -870,21 +1092,25 @@ fn delete_in_branch(
       next_entries = next_entries.set(idx - 1, BranchEntry(key: old_e.key, child: new_child)) or
         stop "valid branch set"
     end
-    (a_merged, mf, me) = try maybe_merge_child(store, cur_alloc, next_first, next_entries, idx)
+    (a_merged, mf, me, mb) = try maybe_merge_child(
+      store,
+      cur_alloc,
+      next_first,
+      next_entries,
+      next_bytes,
+      idx
+    )
     cur_alloc = a_merged
     next_first = mf
     next_entries = me
+    next_bytes = mb
   end
 
   if next_entries.empty?
     cur_alloc = free_page(cur_alloc, page_id)
     Ok((cur_alloc, next_first, true))
   else
-    (a_done, new_pid) = buffer_branch(
-      cur_alloc,
-      page_id,
-      BranchNode(first_child: next_first, entries: next_entries)
-    )
+    (a_done, new_pid) = buffer_branch(cur_alloc, page_id, next_first, next_entries, next_bytes)
     Ok((a_done, new_pid, true))
   end
 end
@@ -898,7 +1124,7 @@ fn child_at(first_child: Int, entries: List(BranchEntry), idx: Int) : Int
 end
 
 fn load_leaf_for_merge(store: BlockStore, alloc: Allocator, pid: Int) : Result(
-  Option(LeafNode),
+  Option(DirtyLeaf),
   ModbError
 )
   case alloc.dirty_leaves.get(pid)
@@ -906,17 +1132,18 @@ fn load_leaf_for_merge(store: BlockStore, alloc: Allocator, pid: Int) : Result(
     None: Unit
   end
   return Ok(None) if alloc.dirty_branches.has?(pid)
-  (raw, _v) = try read_node_page(store, alloc.staged, pid)
+  raw = try read_node_page(store, alloc.staged, pid)
   hdr = try read_header_fast(raw, pid)
   if hdr.kind == kind_leaf
-    Ok(Some(try decode_leaf_unchecked(raw, pid)))
+    (leaf, bbytes) = try decode_leaf_with_bytes_unchecked(raw, pid)
+    Ok(Some(DirtyLeaf(entries: leaf.entries, body_bytes: bbytes, hint: -2)))
   else
     Ok(None)
   end
 end
 
 fn load_branch_for_merge(store: BlockStore, alloc: Allocator, pid: Int) : Result(
-  Option(BranchNode),
+  Option(DirtyBranch),
   ModbError
 )
   case alloc.dirty_branches.get(pid)
@@ -924,10 +1151,15 @@ fn load_branch_for_merge(store: BlockStore, alloc: Allocator, pid: Int) : Result
     None: Unit
   end
   return Ok(None) if alloc.dirty_leaves.has?(pid)
-  (raw, _v) = try read_node_page(store, alloc.staged, pid)
+  raw = try read_node_page(store, alloc.staged, pid)
   hdr = try read_header_fast(raw, pid)
   if hdr.kind == kind_branch
-    Ok(Some(try decode_branch_unchecked(raw, pid)))
+    (branch, bbytes) = try decode_branch_with_bytes_unchecked(raw, pid)
+    Ok(
+      Some(
+        DirtyBranch(first_child: branch.first_child, entries: branch.entries, body_bytes: bbytes)
+      )
+    )
   else
     Ok(None)
   end
@@ -939,35 +1171,37 @@ fn maybe_merge_child(
   alloc: Allocator,
   first_child: Int,
   entries: List(BranchEntry),
+  parent_bytes: Int,
   idx: Int
-) : Result((Allocator, Int, List(BranchEntry)), ModbError)
-  return Ok((alloc, first_child, entries)) if entries.empty?
+) : Result((Allocator, Int, List(BranchEntry), Int), ModbError)
+  return Ok((alloc, first_child, entries, parent_bytes)) if entries.empty?
   left_idx = if idx > 0: idx - 1 else: 0
   right_idx = left_idx + 1
-  return Ok((alloc, first_child, entries)) if right_idx > entries.size
+  return Ok((alloc, first_child, entries, parent_bytes)) if right_idx > entries.size
 
   left_pid = child_at(first_child, entries, left_idx)
   right_pid = child_at(first_child, entries, right_idx)
-  sep = (entries.get(left_idx) or stop "valid sep index").key
+  sep_entry = entries.get(left_idx) or stop "valid sep index"
+  sep = sep_entry.key
 
   case (
     try load_leaf_for_merge(store, alloc, left_pid),
     try load_leaf_for_merge(store, alloc, right_pid)
   )
     (Some(ln), Some(rn)):
-      lbytes = leaf_body_size(ln.entries)
-      rbytes = leaf_body_size(rn.entries)
+      lbytes = ln.body_bytes
+      rbytes = rn.body_bytes
       if lbytes >= merge_trigger_bytes and rbytes >= merge_trigger_bytes
-        return Ok((alloc, first_child, entries))
+        return Ok((alloc, first_child, entries, parent_bytes))
       end
       if lbytes + rbytes > merge_target_bytes
-        return Ok((alloc, first_child, entries))
+        return Ok((alloc, first_child, entries, parent_bytes))
       end
       merged_entries = ln.entries.concat(rn.entries)
       a1 = free_page(alloc, right_pid)
-      (a2, merged_pid) = buffer_leaf(a1, left_pid, merged_entries)
+      (a2, merged_pid) = buffer_leaf(a1, left_pid, merged_entries, lbytes + rbytes, -2)
       (nf, ne) = replace_merged_pair(first_child, entries, left_idx, merged_pid)
-      return Ok((a2, nf, ne))
+      return Ok((a2, nf, ne, parent_bytes - branch_entry_bytes(sep_entry)))
     _: Unit
   end
 
@@ -976,28 +1210,25 @@ fn maybe_merge_child(
     try load_branch_for_merge(store, alloc, right_pid)
   )
     (Some(ln), Some(rn)):
-      lbytes = branch_body_size(ln.entries)
-      rbytes = branch_body_size(rn.entries)
+      lbytes = ln.body_bytes
+      rbytes = rn.body_bytes
       if lbytes >= merge_trigger_bytes and rbytes >= merge_trigger_bytes
-        return Ok((alloc, first_child, entries))
+        return Ok((alloc, first_child, entries, parent_bytes))
       end
       demoted = BranchEntry(key: sep, child: rn.first_child)
-      merged_entries = ln.entries.append(demoted).concat(rn.entries)
-      if branch_body_size(merged_entries) > merge_target_bytes
-        return Ok((alloc, first_child, entries))
+      merged_bytes = lbytes + rbytes - 8 + branch_entry_bytes(demoted)
+      if merged_bytes > merge_target_bytes
+        return Ok((alloc, first_child, entries, parent_bytes))
       end
+      merged_entries = ln.entries.append(demoted).concat(rn.entries)
       a1 = free_page(alloc, right_pid)
-      (a2, merged_pid) = buffer_branch(
-        a1,
-        left_pid,
-        BranchNode(first_child: ln.first_child, entries: merged_entries)
-      )
+      (a2, merged_pid) = buffer_branch(a1, left_pid, ln.first_child, merged_entries, merged_bytes)
       (nf, ne) = replace_merged_pair(first_child, entries, left_idx, merged_pid)
-      return Ok((a2, nf, ne))
+      return Ok((a2, nf, ne, parent_bytes - branch_entry_bytes(sep_entry)))
     _: Unit
   end
 
-  Ok((alloc, first_child, entries))
+  Ok((alloc, first_child, entries, parent_bytes))
 end
 
 fn replace_merged_pair(first_child: Int, entries: List(BranchEntry), left_idx: Int, merged_pid: Int) : (
@@ -1055,48 +1286,26 @@ fn verify_walk(
   hdr = try verify_header(raw, page_id)
   var pages = acc.append(page_id)
   if hdr.kind == kind_leaf
-    leaf = try decode_leaf_unchecked(raw, page_id)
-    var prev_key = None
-    for e in leaf.entries
-      case prev_key
-        Some(pk): return Error(Corrupt(reason: "unsorted keys on leaf #{page_id}")) if e.key <= pk
-        None: Unit
+    overflows = try verify_leaf_raw(raw, hdr.entry_count, page_id, low, high)
+    for (fp, tl) in overflows
+      max_steps = tl / max_overflow_chunk + 2
+      var cur = fp
+      var steps = 0
+      var seen_bytes = 0
+      while cur != 0
+        steps += 1
+        return Error(Corrupt(reason: "overflow cycle in verify")) if steps > max_steps
+        ov_raw = case staged.get(cur)
+          Some(r): r
+          None: try read_page(store, cur)
+        end
+        ov = try decode_overflow(ov_raw, cur)
+        pages = pages.append(cur)
+        seen_bytes += ov.data.size
+        cur = ov.next_page
       end
-      case low
-        Some(lo): return Error(Corrupt(reason: "key below branch lower bound on leaf #{page_id}")) if e
-          .key <
-          lo
-        None: Unit
-      end
-      case high
-        Some(hi): return Error(Corrupt(reason: "key >= branch upper bound on leaf #{page_id}")) if e
-          .key >=
-          hi
-        None: Unit
-      end
-      prev_key = Some(e.key)
-      case e.value
-        Inline(data: _): Unit
-        Overflow(first_page: fp, total_len: tl):
-          max_steps = tl / max_overflow_chunk + 2
-          var cur = fp
-          var steps = 0
-          var seen_bytes = 0
-          while cur != 0
-            steps += 1
-            return Error(Corrupt(reason: "overflow cycle in verify")) if steps > max_steps
-            ov_raw = case staged.get(cur)
-              Some(r): r
-              None: try read_page(store, cur)
-            end
-            ov = try decode_overflow(ov_raw, cur)
-            pages = pages.append(cur)
-            seen_bytes += ov.data.size
-            cur = ov.next_page
-          end
-          if seen_bytes != tl
-            return Error(Corrupt(reason: "overflow size mismatch in verify"))
-          end
+      if seen_bytes != tl
+        return Error(Corrupt(reason: "overflow size mismatch in verify"))
       end
     end
     Ok(pages)
@@ -1298,8 +1507,8 @@ fn diff_nodes(
     return Ok((out, st))
   end
 
-  (raw_a, _va) = try read_node_page(store, staged_a, root_a)
-  (raw_b, _vb) = try read_node_page(store, staged_b, root_b)
+  raw_a = try read_node_page(store, staged_a, root_a)
+  raw_b = try read_node_page(store, staged_b, root_b)
   var cur_stats = stats
   cur_stats.pages_read += 2
   hdr_a = try read_header_fast(raw_a, root_a)
