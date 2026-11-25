@@ -71,25 +71,25 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
   2. Because `Modb.Store` wraps `Files.File` (a capability), `Result(Store, TableError)` does not implement `Equal`, so tests must match errors with `is Error(...)` rather than `== Error(...)`.
 - **Severity:** Minor stdlib / testing ergonomics notes.
 
-### 13. `actor` is a hard keyword in struct fields, parameters, and `api` query parameters (`E0013` / cascading `E0007`)
+### 13. ~~`actor` is a hard keyword in struct fields, parameters, and `api` query parameters (`E0013` / cascading `E0007`)~~ — Fixed in [robertguss/mo#436](https://github.com/robertguss/mo/pull/436)
 - **Where:** `src/modb/ledger.mo` (`WriteMeta`, `AuditEntry`), `examples/shop-api.mo` (`Caller`, `get_audit`)
-- **What happened:** Naming a field or parameter `actor: Text` (a standard audit-log / RBAC domain word) fails with `E0013: expected snake_case name, found actor`. Worse, when `actor` appears inside a function parameter list, parser error recovery enters `actor` block parsing and floods dozens of cascading `E0007: an actor clause starts with state, calls, every or promise` diagnostics across the rest of the file. Renamed to `principal` across Layer 3 and `ShopApi`.
-- **Severity:** Moderate ergonomics & parser-recovery friction (good candidate for making `actor` contextual or tightening parser recovery in Phase 2B).
+- **What happened:** Naming a field or parameter `actor: Text` (a standard audit-log / RBAC domain word) failed with `E0013: expected snake_case name, found actor`, and parser error recovery mis-synchronized into `actor` block parsing and flooded dozens of cascading `E0007` diagnostics.
+- **Resolution:** PR #436 kept `actor` reserved (preserving zero-conflict `grammar/mo.y`) and added clean in-place parser recovery in struct fields, enum named fields, and function parameter lists so reserved-keyword misuse emits one crisp diagnostic with zero `E0007` cascade.
 
 ### 14. Struct field names shadow UFCS builder functions of the same name (`E0072`)
 - **Where:** `src/modb/ledger.mo` (`Schema.require_reason` vs `fn require_reason(sc: Schema, required?: Bool)`)
 - **What happened:** Calling `schema(1).require_reason(true)` resolved `.require_reason` to the `Bool` struct field rather than the UFCS function (`E0072: expected fn, found Bool`). Resolved cleanly by naming all fluent builders `with_*` (`with_require_reason`, `with_migration`, `with_invariant`).
 - **Severity:** Minor convention note.
 
-### 15. CLI directory flag inconsistency (`--root` / `--state-dir` vs `--data`) and missing subcommand `--help`
+### 15. ~~CLI directory flag inconsistency (`--root` / `--state-dir` vs `--data`) and missing subcommand `--help`~~ — Fixed in [robertguss/mo#436](https://github.com/robertguss/mo/pull/436)
 - **Where:** `tests/test_shop_api_live.py`, `mo serve` vs `mo run`
-- **What happened:** `mo run` accepts `--root` and `--state-dir`, whereas `mo serve` requires `--data` and rejects `--root`, `--state-dir`, and `--help` (`unknown flag: "--help"`).
-- **Severity:** Minor CLI discoverability friction (easy Phase 2B cleanup).
+- **What happened:** `mo run` accepted `--root` and `--state-dir`, whereas `mo serve` required `--data` and rejected `--root`, `--state-dir`, and `--help` (`unknown flag: "--help"`).
+- **Resolution:** PR #436 added top-level and per-subcommand `--help` / `-h` (derived from `FLAGS_TABLE`, exiting `0`) and a concise `(hint: mo serve uses --data DIR)` hint when `--root` or `--state-dir` is passed to `mo serve`.
 
-### 16. Multi-worker `mo serve` concurrency gap for pure-Mo file-backed stores *(Phase 2B driver)*
-- **Where:** `examples/shop-api.mo` under `mo serve` (`~/code/mo/crates/mo-service/src/api_server.rs:1635-1642`, `crates/mo-def/defs/hostops.def:107-114`)
-- **What happened:** `mo serve` defaults to 8 concurrent HTTP worker threads, each receiving an isolated `Files` capability per request. Because `Files.File` has no advisory file locking (`lock_shared` / `lock_exclusive` / `unlock`), `ReadFiles` has no `open`, and `actor`s cannot hold `Files` (and force `--workers 1`), concurrent HTTP writes to a `.modb` file cannot synchronize safely yet—so Phase 2A runs `mo serve --workers 1`.
-- **Severity:** Key architectural driver for Phase 2B (minimal general-purpose `rustix::fs::flock` hostops on `Files.File` + `ReadFiles.open` with `Files.in_memory` parity).
+### 16. ~~Multi-worker `mo serve` concurrency gap for pure-Mo file-backed stores~~ — Fixed in [robertguss/mo#436](https://github.com/robertguss/mo/pull/436)
+- **Where:** `examples/shop-api.mo` under `mo serve` (`~/code/mo/crates/mo-service/src/api_server.rs`, `crates/mo-def/defs/hostops.def`)
+- **What happened:** `mo serve` defaults to 8 concurrent HTTP worker threads, each receiving an isolated `Files` capability per request. Without advisory file locking (`Files.File.lock_shared` / `lock_exclusive` / `unlock`) or read-only random-access handles (`ReadFiles.open`), Phase 2A had to run `mo serve --workers 1`.
+- **Resolution:** PR #436 added safe BSD `flock` advisory locks (`File.lock_shared`, `File.lock_exclusive`, `File.unlock` via `rustix::fs::flock` with auto-unlock on drop and `Files.in_memory` parity) plus host-attenuated `ReadFiles.open` (and `ApiTest.send` `ReadFiles` derivation from supplied `Files`). Adopted across `src/modb.mo`, `src/modb/ledger.mo`, `examples/shop-api.mo`, and verified under `mo serve --workers 8` with an 8-thread concurrent HTTP + mid-flight `SIGKILL` stress test in `tests/test_shop_api_live.py`.
 
 ---
 

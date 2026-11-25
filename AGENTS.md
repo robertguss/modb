@@ -3,10 +3,11 @@
 MoDB is an embedded, crash-safe database built in pure Mo (`~/code/mo`, now a pure-Rust compiler
 and runtime as of `robertguss/mo#433`), alongside the research, formal models, and design
 decisions toward a database for many AI agents. Milestone 1 (Layer 1 CoW B+Tree storage engine +
-Layer 2 typed tables and atomic secondary indexes) and Milestone 2A (Layer 3 accountable
-hash-chained audit ledger, commit-time invariants, atomic schema migrations, and a live `ShopApi`
-HTTP `api` server) live in `src/`, verified in `tests/` and `bench/` and demonstrated in
-`examples/shop.mo` and `examples/shop-api.mo`. `specs/` holds active build specs, `design.md`
+Layer 2 typed tables and atomic secondary indexes) and Milestone 2 (Layer 3 accountable
+hash-chained audit ledger, commit-time invariants, atomic schema migrations, advisory `flock` +
+`ReadFiles` least-privilege locking, and a live 8-worker `ShopApi` HTTP `api` server) live in
+`src/`, verified in `tests/` and `bench/` and demonstrated in `examples/shop.mo` and
+`examples/shop-api.mo`. `specs/` holds active build specs, `design.md`
 holds the broader long-term design, and `map.md` is the earlier wayfinder map that Robert stopped
 on 2026-11-14.
 

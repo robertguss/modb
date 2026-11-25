@@ -1,9 +1,12 @@
-## Milestone 2A: Real typed HTTP/REST API server (`mo serve`) backed by pure-Mo MoDB
-## (Layer 1 CoW B+Tree + Layer 2 typed tables & secondary indexes + Layer 3 accountable
-## tamper-evident audit ledger, commit-time invariants, and atomic schema migrations).
+## Milestone 2B: Multi-worker concurrent typed HTTP/REST API server (`mo serve --workers 8`)
+## backed by pure-Mo MoDB (Layer 1 CoW B+Tree + Layer 2 typed tables & secondary indexes +
+## Layer 3 accountable tamper-evident audit ledger, commit-time invariants, and migrations).
+##
+## Every `GET` route holds ONLY `ReadFiles` + advisory shared `flock`;
+## every `POST` route holds `Files` + advisory exclusive `flock`.
 ##
 ## Run locally:
-##   mo serve --workers 1 --data ./shop-data examples/shop-api.mo
+##   mo serve --workers 8 --data ./shop-data examples/shop-api.mo
 ## Test in-memory (zero sockets):
 ##   mo test examples/shop-api.mo
 module ShopApi
@@ -158,6 +161,7 @@ api
   end
 
   get "/audit" get_audit
+  post "/admin/init" post_admin_init
   get "/admin/verify" get_admin_verify
 
   status Unauthenticated = 401
@@ -286,10 +290,6 @@ fn map_table_error(err: Table.TableError) : ShopApiError
   map_ledger_error(Ledger.TableFailure(err))
 end
 
-fn open_shop(files: Files, clock: Clock) : Result(Ledger.Db, ShopApiError)
-  Ledger.open(files, db_path(), shop_schema(), clock.now).map_error(map_ledger_error)
-end
-
 ## Authenticates callers via Bearer token and captures accountable `X-Reason` header.
 fn authenticate(req: Api.Request, env: Env) : Result(Caller, ShopApiError)
   token = (req.bearer_token or "").trim
@@ -329,15 +329,44 @@ fn require_admin(caller: Caller) : Result(Unit, ShopApiError)
   end
 end
 
-## Public health & ledger status endpoint.
-fn get_health(files: Files, clock: Clock) : Result(HealthResponse, ShopApiError)
-  db = try open_shop(files, clock)
+## Public read-only health & ledger status endpoint (`ReadFiles` + shared `flock`).
+fn get_health(rf: ReadFiles) : Result(HealthResponse, ShopApiError)
+  if not rf.exists?(db_path())
+    return Ok(HealthResponse(status: "uninitialized", txid: 0, schema_version: 0, audit_count: 0))
+  end
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      Ok(
+        HealthResponse(
+          status: "ok",
+          txid: Ledger.txid(db),
+          schema_version: Ledger.schema_version(db),
+          audit_count: Ledger.audit_count(db)
+        )
+      )
+    end
+  )
+end
+
+## Idempotent Admin bootstrap endpoint: initializes and atomically runs migrations under exclusive lock.
+fn post_admin_init(caller: Caller, files: Files, clock: Clock) : Result(
+  HealthResponse,
+  ShopApiError
+)
+  try require_admin(caller)
+  (cur_txid, st) = try Ledger.init_locked(files, db_path(), shop_schema(), clock.now).map_error(
+    map_ledger_error
+  )
   Ok(
     HealthResponse(
       status: "ok",
-      txid: Ledger.txid(db),
-      schema_version: Ledger.schema_version(db),
-      audit_count: Ledger.audit_count(db)
+      txid: cur_txid,
+      schema_version: st.version,
+      audit_count: st.next_audit_seq - 1
     )
   )
 end
@@ -351,11 +380,12 @@ fn post_customer(caller: Caller, files: Files, clock: Clock, body: CustomerInput
   return Error(InvalidInput(reason: "customer id must be > 0")) if body.id <= 0
   return Error(InvalidInput(reason: "email cannot be empty")) if body.email.trim.empty?
   meta = try write_meta(caller, "register_customer", clock)
-  db = try open_shop(files, clock)
   cust = Customer(email: body.email, name: body.name, tier: body.tier)
   custs = customers_table()
-  _ = try Ledger.write(
-    db,
+  _ = try Ledger.write_locked(
+    files,
+    db_path(),
+    shop_schema(),
     meta,
     "register customer ##{body.id} (#{body.email})",
     body.to_json,
@@ -364,34 +394,50 @@ fn post_customer(caller: Caller, files: Files, clock: Clock, body: CustomerInput
   Ok(CustomerRow(id: body.id, email: body.email, name: body.name, tier: body.tier))
 end
 
-## Fetches a customer by primary ID.
-fn get_customer(files: Files, clock: Clock, id: Int) : Result(CustomerRow, ShopApiError)
-  db = try open_shop(files, clock)
-  cust_opt = try Table.get(Ledger.store(db), customers_table(), id).map_error(map_table_error)
-  cust = try cust_opt.or_fail(CustomerMissing(id: id))
-  Ok(CustomerRow(id: id, email: cust.email, name: cust.name, tier: cust.tier))
+## Fetches a customer by primary ID (`ReadFiles` + shared `flock`).
+fn get_customer(rf: ReadFiles, id: Int) : Result(CustomerRow, ShopApiError)
+  custs = customers_table()
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      cust_opt = try Table.get(Ledger.store(db), custs, id).map_error(map_table_error)
+      cust = try cust_opt.or_fail(CustomerMissing(id: id))
+      Ok(CustomerRow(id: id, email: cust.email, name: cust.name, tier: cust.tier))
+    end
+  )
 end
 
-## Lists all orders placed by customer `id` via the `orders_by_buyer` secondary index.
-fn get_customer_orders(files: Files, clock: Clock, id: Int) : Result(List(OrderRow), ShopApiError)
-  db = try open_shop(files, clock)
-  if (try Table.get(Ledger.store(db), customers_table(), id).map_error(map_table_error)) is None
-    return Error(CustomerMissing(id: id))
-  end
-  rows = try Table.lookup(Ledger.store(db), orders_table(), orders_by_buyer(), id).map_error(
-    map_table_error
-  )
-  Ok(
-    rows.map(fn(p)
-      OrderRow(
-        id: p.0,
-        buyer_id: p.1.buyer_id,
-        sku: p.1.sku,
-        quantity: p.1.quantity,
-        total: p.1.total,
-        status: p.1.status
+## Lists all orders placed by customer `id` via `orders_by_buyer` (`ReadFiles` + shared `flock`).
+fn get_customer_orders(rf: ReadFiles, id: Int) : Result(List(OrderRow), ShopApiError)
+  custs = customers_table()
+  ords = orders_table()
+  idx = orders_by_buyer()
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      if (try Table.get(Ledger.store(db), custs, id).map_error(map_table_error)) is None
+        return Error(CustomerMissing(id: id))
+      end
+      rows = try Table.lookup(Ledger.store(db), ords, idx, id).map_error(map_table_error)
+      Ok(
+        rows.map(fn(p)
+          OrderRow(
+            id: p.0,
+            buyer_id: p.1.buyer_id,
+            sku: p.1.sku,
+            quantity: p.1.quantity,
+            total: p.1.total,
+            status: p.1.status
+          )
+        end)
       )
-    end)
+    end
   )
 end
 
@@ -403,11 +449,12 @@ fn post_product(caller: Caller, files: Files, clock: Clock, body: ProductInput) 
   try require_admin(caller)
   return Error(InvalidInput(reason: "sku cannot be empty")) if body.sku.trim.empty?
   meta = try write_meta(caller, "save_product", clock)
-  db = try open_shop(files, clock)
   prod = Product(title: body.title, category: body.category, price: body.price, stock: body.stock)
   prods = products_table()
-  _ = try Ledger.write(
-    db,
+  _ = try Ledger.write_locked(
+    files,
+    db_path(),
+    shop_schema(),
     meta,
     "upsert product '#{body.sku}' (stock=#{body.stock}, price=#{body.price.to_fixed(2)})",
     body.to_json,
@@ -424,48 +471,61 @@ fn post_product(caller: Caller, files: Files, clock: Clock, body: ProductInput) 
   )
 end
 
-## Lists products (uses `products_by_category` secondary index when `?category=` is passed).
-fn list_products(files: Files, clock: Clock, category: Option(Text)) : Result(
-  List(ProductRow),
-  ShopApiError
-)
-  db = try open_shop(files, clock)
-  rows = case category
-    Some(cat): try Table.lookup(Ledger.store(db), products_table(), products_by_category(), cat)
-      .map_error(map_table_error)
-    None: try Table.all(Ledger.store(db), products_table()).map_error(map_table_error)
-  end
-  Ok(
-    rows.map(fn(p)
-      ProductRow(
-        sku: p.0,
-        title: p.1.title,
-        category: p.1.category,
-        price: p.1.price,
-        stock: p.1.stock
+## Lists products (`ReadFiles` + shared `flock`; uses `products_by_category` when `?category=` is passed).
+fn list_products(rf: ReadFiles, category: Option(Text)) : Result(List(ProductRow), ShopApiError)
+  prods = products_table()
+  idx = products_by_category()
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      rows = case category
+        Some(cat): try Table.lookup(Ledger.store(db), prods, idx, cat).map_error(map_table_error)
+        None: try Table.all(Ledger.store(db), prods).map_error(map_table_error)
+      end
+      Ok(
+        rows.map(fn(p)
+          ProductRow(
+            sku: p.0,
+            title: p.1.title,
+            category: p.1.category,
+            price: p.1.price,
+            stock: p.1.stock
+          )
+        end)
       )
-    end)
+    end
   )
 end
 
-## Fetches a single product by SKU.
-fn get_product(files: Files, clock: Clock, sku: Text) : Result(ProductRow, ShopApiError)
-  db = try open_shop(files, clock)
-  prod_opt = try Table.get(Ledger.store(db), products_table(), sku).map_error(map_table_error)
-  prod = try prod_opt.or_fail(ProductMissing(sku: sku))
-  Ok(
-    ProductRow(
-      sku: sku,
-      title: prod.title,
-      category: prod.category,
-      price: prod.price,
-      stock: prod.stock
-    )
+## Fetches a single product by SKU (`ReadFiles` + shared `flock`).
+fn get_product(rf: ReadFiles, sku: Text) : Result(ProductRow, ShopApiError)
+  prods = products_table()
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      prod_opt = try Table.get(Ledger.store(db), prods, sku).map_error(map_table_error)
+      prod = try prod_opt.or_fail(ProductMissing(sku: sku))
+      Ok(
+        ProductRow(
+          sku: sku,
+          title: prod.title,
+          category: prod.category,
+          price: prod.price,
+          stock: prod.stock
+        )
+      )
+    end
   )
 end
 
-## Places an order atomically with exact `Decimal` Member discount, stock decrement,
-## commit-time referential/stock invariants, and a hash-chained audit entry.
+## Places an order atomically under exclusive `flock` with exact `Decimal` Member discount,
+## stock decrement, commit-time referential/stock invariants, and a hash-chained audit entry.
 fn post_order(caller: Caller, files: Files, clock: Clock, body: OrderInput) : Result(
   OrderRow,
   ShopApiError
@@ -473,13 +533,14 @@ fn post_order(caller: Caller, files: Files, clock: Clock, body: OrderInput) : Re
   return Error(InvalidInput(reason: "order id must be > 0")) if body.id <= 0
   return Error(InvalidInput(reason: "quantity must be > 0")) if body.quantity <= 0
   meta = try write_meta(caller, "place_order", clock)
-  db = try open_shop(files, clock)
   custs = customers_table()
   prods = products_table()
   ords = orders_table()
 
-  (_next_db, placed) = try Ledger.transact(
-    db,
+  placed = try Ledger.transact_locked(
+    files,
+    db_path(),
+    shop_schema(),
     meta,
     "place order ##{body.id} (#{body.quantity}x #{body.sku} for buyer ##{body.buyer_id})",
     body.to_json,
@@ -525,17 +586,18 @@ fn post_order(caller: Caller, files: Files, clock: Clock, body: OrderInput) : Re
   )
 end
 
-## Marks an order as shipped (Admin/Clerk only).
+## Marks an order as shipped (Admin/Clerk only) under exclusive `flock`.
 fn post_ship_order(caller: Caller, files: Files, clock: Clock, id: Int) : Result(
   OrderRow,
   ShopApiError
 )
   try require_staff(caller)
   meta = try write_meta(caller, "ship_order", clock)
-  db = try open_shop(files, clock)
   ords = orders_table()
-  (_next_db, shipped) = try Ledger.transact(
-    db,
+  shipped = try Ledger.transact_locked(
+    files,
+    db_path(),
+    shop_schema(),
     meta,
     "ship order ##{id}",
     Json.Object({"order_id": id.to_json}),
@@ -561,50 +623,64 @@ fn post_ship_order(caller: Caller, files: Files, clock: Clock, id: Int) : Result
   )
 end
 
-## Queries the accountable audit log (supports `?principal=`, `?action=`, `?since=`, `?limit=`).
+## Queries the accountable audit log (`ReadFiles` + shared `flock`).
 fn get_audit(
-  files: Files,
-  clock: Clock,
+  rf: ReadFiles,
   principal: Option(Text),
   action: Option(Text),
   since: Option(Int),
   limit: Option(Int)
 ) : Result(List(Ledger.AuditEntry), ShopApiError)
-  db = try open_shop(files, clock)
   cap = limit or 50
-  entries = case (principal, action, since)
-    (Some(who), _, _): try Ledger.audit_by_principal(db, who).map_error(map_ledger_error)
-    (None, Some(act), _): try Ledger.audit_by_action(db, act).map_error(map_ledger_error)
-    (None, None, Some(s)): try Ledger.audit_since(db, s, cap).map_error(map_ledger_error)
-    (None, None, None): try Ledger.audit_tail(db, cap).map_error(map_ledger_error)
-  end
-  if cap > 0 and entries.size > cap
-    Ok(entries.drop(entries.size - cap))
-  else
-    Ok(entries)
-  end
-end
-
-## Runs full B+Tree + audit hash-chain + schema invariant verification.
-fn get_admin_verify(files: Files, clock: Clock) : Result(VerifySummary, ShopApiError)
-  db = try open_shop(files, clock)
-  rep = try Ledger.verify_all(db).map_error(map_ledger_error)
-  Ok(
-    VerifySummary(
-      ok: true,
-      txid: rep.storage.txid,
-      page_count: rep.storage.page_count,
-      bucket_count: rep.storage.bucket_count,
-      schema_version: rep.audit.schema_version,
-      audit_entries: rep.audit.entry_count,
-      last_audit_hash: rep.audit.last_hash,
-      invariants_checked: rep.invariants_checked
-    )
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      entries = case (principal, action, since)
+        (Some(who), _, _): try Ledger.audit_by_principal(db, who).map_error(map_ledger_error)
+        (None, Some(act), _): try Ledger.audit_by_action(db, act).map_error(map_ledger_error)
+        (None, None, Some(s)): try Ledger.audit_since(db, s, cap).map_error(map_ledger_error)
+        (None, None, None): try Ledger.audit_tail(db, cap).map_error(map_ledger_error)
+      end
+      if cap > 0 and entries.size > cap
+        Ok(entries.drop(entries.size - cap))
+      else
+        Ok(entries)
+      end
+    end
   )
 end
 
-test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, audit, and verify"
+## Runs full B+Tree + audit hash-chain + schema invariant verification (`ReadFiles` + shared `flock`).
+fn get_admin_verify(rf: ReadFiles) : Result(VerifySummary, ShopApiError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    shop_schema(),
+    map_ledger_error,
+    fn(db)
+      rep = try Ledger.verify_all(db).map_error(map_ledger_error)
+      Ok(
+        VerifySummary(
+          ok: true,
+          txid: rep.storage.txid,
+          page_count: rep.storage.page_count,
+          bucket_count: rep.storage.bucket_count,
+          schema_version: rep.audit.schema_version,
+          audit_entries: rep.audit.entry_count,
+          last_audit_hash: rep.audit.last_hash,
+          invariants_checked: rep.invariants_checked
+        )
+      )
+    end
+  )
+end
+
+test "ShopApi end-to-end via ApiTest.send: ReadFiles/Files split, locks, auth, X-Reason, invariants, orders, audit, and verify"
   files = Files.in_memory({})
+  ro = files.read_only
   t0 = Time.parse("2026-11-25T03:00:00Z") or stop "t0"
   clock = Clock.fixed(t0)
   env = Env.of({
@@ -613,7 +689,35 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
     "SHOP_AGENT_TOKEN": "tok-agent"
   })
 
-  ## 1. Health triggers atomic v0 -> v1 -> v2 schema migration
+  ## 1. Read-only GET /health before init does NOT create or mutate shop.modb
+  h_pre = ApiTest.send(ShopApi, Api.get("/health"), files, ro, clock, env)
+  assert h_pre.status == 200
+  assert Json.decode_strict[HealthResponse](h_pre.text) ==
+    Ok(HealthResponse(status: "uninitialized", txid: 0, schema_version: 0, audit_count: 0))
+  assert not files.exists?(db_path())
+
+  ## Admin bootstrap runs atomic v0 -> v1 -> v2 schema migration under exclusive lock (idempotent)
+  assert ApiTest.send(
+    ShopApi,
+    Api.post("/admin/init").with_bearer("tok-clerk"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    403
+  init_resp = ApiTest.send(
+    ShopApi,
+    Api.post("/admin/init").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert init_resp.status == 200
+  assert Json.decode_strict[HealthResponse](init_resp.text) ==
+    Ok(HealthResponse(status: "ok", txid: 2, schema_version: 2, audit_count: 2))
+
   h0 = ApiTest.send(ShopApi, Api.get("/health"), files, clock, env)
   assert h0.status == 200
   assert Json.decode_strict[HealthResponse](h0.text) ==
@@ -626,6 +730,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       CustomerInput(id: 1, email: "ada@shop.org", name: "Ada", tier: Member)
     ),
     files,
+    ro,
     clock,
     env
   ).status ==
@@ -637,6 +742,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       CustomerInput(id: 1, email: "ada@shop.org", name: "Ada", tier: Member)
     ),
     files,
+    ro,
     clock,
     env
   ).status ==
@@ -648,6 +754,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       CustomerInput(id: 1, email: "ada@shop.org", name: "Ada", tier: Member)
     ),
     files,
+    ro,
     clock,
     env
   ).status ==
@@ -660,6 +767,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       CustomerInput(id: 1, email: "ada@shop.org", name: "Ada Lovelace", tier: Member)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -673,6 +781,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       CustomerInput(id: 2, email: "ada@shop.org", name: "Impostor", tier: Standard)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -685,6 +794,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       ProductInput(sku: "bad-1", title: "Broken", category: "beans", price: 12.00, stock: -3)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -696,6 +806,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       ProductInput(sku: "bad-2", title: "Free", category: "beans", price: 0.00, stock: 5)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -708,6 +819,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       OrderInput(id: 1001, buyer_id: 1, sku: "house-blend", quantity: 2)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -723,6 +835,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       OrderInput(id: 1002, buyer_id: 1, sku: "brewer-v60", quantity: 99)
     ),
     files,
+    ro,
     clock,
     env
   )
@@ -733,6 +846,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
     ShopApi,
     Api.post("/orders/1001/ship").with_bearer("tok-clerk").with_header("X-Reason", "packed-box"),
     files,
+    ro,
     clock,
     env
   )
@@ -749,7 +863,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       )
     )
 
-  beans = ApiTest.send(ShopApi, Api.get("/products?category=beans"), files, clock, env)
+  beans = ApiTest.send(ShopApi, Api.get("/products?category=beans"), files, ro, clock, env)
   assert beans.status == 200
   assert Json.decode_strict[List(ProductRow)](beans.text) ==
     Ok([
@@ -762,7 +876,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
       )
     ])
 
-  cust_orders = ApiTest.send(ShopApi, Api.get("/customers/1/orders"), files, clock, env)
+  cust_orders = ApiTest.send(ShopApi, Api.get("/customers/1/orders"), files, ro, clock, env)
   assert cust_orders.status == 200
   assert Json.decode_strict[List(OrderRow)](cust_orders.text) ==
     Ok([
@@ -781,6 +895,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
     ShopApi,
     Api.get("/audit?principal=agent:order-bot"),
     files,
+    ro,
     clock,
     env
   )
@@ -792,7 +907,7 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
   assert first_agent.reason == "agent-task-77"
 
   ## 8. Full B+Tree + hash-chain + invariant verification + OpenAPI docs
-  ver = ApiTest.send(ShopApi, Api.get("/admin/verify"), files, clock, env)
+  ver = ApiTest.send(ShopApi, Api.get("/admin/verify"), files, ro, clock, env)
   assert ver.status == 200
   assert Json.decode_strict[VerifySummary](ver.text) is Ok(vsum)
   assert vsum.ok and
@@ -800,6 +915,6 @@ test "ShopApi end-to-end via ApiTest.send: auth, X-Reason, invariants, orders, a
     vsum.schema_version == 2 and
     vsum.invariants_checked == 3
 
-  docs = ApiTest.send(ShopApi, Api.get("/docs"), files, clock, env)
+  docs = ApiTest.send(ShopApi, Api.get("/docs"), files, ro, clock, env)
   assert docs.status == 200 and docs.text.contains?("/openapi.json")
 end
