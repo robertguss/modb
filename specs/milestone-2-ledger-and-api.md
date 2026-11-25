@@ -42,10 +42,10 @@ Runs cleanly alongside ongoing `~/code/mo` post-cutover hardening:
 4. **Friction Log Update (`FRICTION.md`):**
    - Record every new Mo `api`, `Json`, `Time`, `Files`, or compiler rough edge discovered during 2A so Phase 2B addresses them all in one consolidated Mo PR.
 
-### Phase 2B — Multi-Worker Concurrency PR in `~/code/mo` (Queued After Mo Hardening)
-Once `robertguss/mo` finishes its post-cutover hardening pass:
-- Add minimal general-purpose concurrency support in `~/code/mo` (candidate: advisory file locks `File.lock_shared` / `File.lock_exclusive` / `File.unlock` via `rustix::fs::flock` with `Files.in_memory` parity, plus `ReadFiles.open` for read-only snapshots, or capability-holding `actor`s) and any high-value 2A friction fixes.
-- Wire locking/snapshot readers into `Modb` / `Modb.Ledger` and stress-test `examples/shop-api.mo` under `mo serve --workers 8` concurrent readers and writers.
+### Phase 2B — Multi-Worker Concurrency PR in `~/code/mo` (Contract Ready)
+Detailed implementation contract: [mo-pr-file-locks-and-dx.md](mo-pr-file-locks-and-dx.md). Once `robertguss/mo` finishes its post-cutover hardening PR:
+- Land general-purpose advisory file locks (`File.lock_shared` / `File.lock_exclusive` / `File.unlock` via safe `rustix::fs::flock` + `Files.in_memory` parity), `ReadFiles.open` (read-only random-access handle), and Milestone 2A DX fixes (`FRICTION.md` #13 & #15) in `~/code/mo`.
+- Wire `ReadFiles` + `lock_shared` (read routes) and `Files` + `lock_exclusive` (write routes) into `Modb` / `Modb.Ledger` and `examples/shop-api.mo`, and stress-test under `mo serve --workers 8` concurrent readers and writers plus `SIGKILL` recovery.
 
 ---
 
