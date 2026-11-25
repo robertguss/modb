@@ -19,6 +19,8 @@ catalog_root,
 page_count,
 free_page_count,
 buckets,
+buckets_at_root,
+build_from_buckets,
 get,
 scan,
 prefix_scan,
@@ -237,12 +239,15 @@ fn open_disk(store: BlockStore) : Result(Store, ModbError)
   end
 end
 
-fn init_empty(store: BlockStore) : Result(Store, ModbError)
-  meta = MetaPage(txid: 1, catalog_root: 0, freelist_root: 0, page_count: 2)
-  p0 = Bytes.zeroed(page_size)
-  p1 = encode_meta(meta)
-  s1 = try write_page(store, 0, p0)
-  s2 = try write_page(s1, 1, p1)
+fn init_empty_at(store: BlockStore, start_txid: Int) : Result(Store, ModbError)
+  eff_txid = if start_txid < 1: 1 else: start_txid
+  meta = MetaPage(txid: eff_txid, catalog_root: 0, freelist_root: 0, page_count: 2)
+  meta_slot = eff_txid % 2
+  other_slot = (eff_txid + 1) % 2
+  p_zero = Bytes.zeroed(page_size)
+  p_meta = encode_meta(meta)
+  s1 = try write_page(store, other_slot, p_zero)
+  s2 = try write_page(s1, meta_slot, p_meta)
   s3 = try sync(s2)
   Ok(
     Store(
@@ -257,6 +262,49 @@ fn init_empty(store: BlockStore) : Result(Store, ModbError)
       next_snapshot_id: 1
     )
   )
+end
+
+fn init_empty(store: BlockStore) : Result(Store, ModbError)
+  init_empty_at(store, 1)
+end
+
+## Builds a freshly compacted database on an empty `BlockStore` from logical `(bucket, rows)` data,
+## setting the committed `txid` watermark to at least `target_txid` (preserving audit-chain txid bounds).
+fn build_from_buckets(
+  disk: BlockStore,
+  target_txid: Int,
+  bucket_rows: List((Text, List((Bytes, Bytes))))
+) : Result(Store, ModbError)
+  existing_pages = try disk_page_count(disk)
+  if existing_pages != 0
+    return Error(
+      InvalidArgument(
+        reason: "build_from_buckets requires an empty BlockStore (found #{existing_pages} pages)"
+      )
+    )
+  end
+  var has_entries = false
+  for (bname, rows) in bucket_rows
+    if bname == pins_bucket
+      return Error(InvalidArgument(reason: "cannot import layout-dependent #{pins_bucket} bucket"))
+    end
+    if not rows.empty?
+      has_entries = true
+    end
+  end
+  eff_target = if target_txid < 1: 1 else: target_txid
+  if not has_entries
+    return init_empty_at(disk, eff_target)
+  end
+  base_txid = if eff_target > 2: eff_target - 1 else: 1
+  s0 = try init_empty_at(disk, base_txid)
+  var tx = begin_write(s0)
+  for (bname, rows) in bucket_rows
+    for (k, v) in rows
+      tx = try tx_put(tx, bname, k, v)
+    end
+  end
+  commit(tx)
 end
 
 fn encode_pinned_root(pin: PinnedRoot) : Bytes
@@ -496,9 +544,9 @@ fn lookup_bucket_root(pager: BlockStore, staged: Map(Int, Bytes), catalog_root: 
   end
 end
 
-## Lists all bucket names in sorted order.
-fn buckets(store: Store) : Result(List(Text), ModbError)
-  rows = try Tree.scan(store.pager, {}, store.meta.catalog_root, None, None, 0)
+## Lists all bucket names in sorted order at an explicit committed/pinned `cat_root`.
+fn buckets_at_root(store: Store, cat_root: Int) : Result(List(Text), ModbError)
+  rows = try Tree.scan(store.pager, {}, cat_root, None, None, 0)
   var names = []
   for (k, _v) in rows
     name = case k.decode_utf8
@@ -508,6 +556,11 @@ fn buckets(store: Store) : Result(List(Text), ModbError)
     names = names.append(name)
   end
   Ok(names)
+end
+
+## Lists all bucket names in sorted order.
+fn buckets(store: Store) : Result(List(Text), ModbError)
+  buckets_at_root(store, store.meta.catalog_root)
 end
 
 ## Point lookup in `bucket` on the current committed state.
