@@ -30,10 +30,13 @@ open_file,
 open_file_read_only,
 open_disk,
 init_locked,
+locked,
 read_locked,
 write_locked,
 transact_locked,
 store,
+update_store,
+check_invariants,
 schema_version,
 txid,
 audit_count,
@@ -315,6 +318,11 @@ fn find_migration(sc: Schema, version: Int) : Result(Migration, LedgerError)
   Error(InvalidMigration(reason: "missing migration for version #{version}"))
 end
 
+## Evaluates every invariant declared in `sc` against an uncommitted `WriteTx`.
+fn check_invariants(sc: Schema, tx: WriteTx) : Result(Unit, LedgerError)
+  check_all_invariants(sc.invariants, tx)
+end
+
 fn check_all_invariants(invariants: List(Invariant), tx: WriteTx) : Result(Unit, LedgerError)
   for inv in invariants
     case try inv.check(tx)
@@ -504,6 +512,27 @@ fn init_locked(files: Files, path: Text, sc: Schema, now: Time) : Result(
   )
 end
 
+## Acquires an exclusive advisory lock on `path` via `Files`, opens or migrates the database,
+## runs `work(db)` while holding the lock, and always releases the lock.
+fn locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  now: Time,
+  wrap_error: fn(LedgerError) : E,
+  work: fn(Db) : Result(R, E)
+) : Result(R, E)
+  Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(me) wrap_error(TableFailure(Table.Storage(me))) end,
+    fn(s)
+      db = try open_store_with_schema(s, sc, now).map_error(wrap_error)
+      work(db)
+    end
+  )
+end
+
 ## Acquires a shared advisory lock on `path` via `ReadFiles`, opens a fresh committed read-only
 ## ledger handle, executes `work(db)`, and always releases the lock.
 fn read_locked(
@@ -578,6 +607,12 @@ end
 ## Exposes the underlying `Modb.Store` for typed `Modb.Table` read queries.
 fn store(db: Db) : Store
   db.store
+end
+
+## Replaces `db.store` after an internal metadata commit (`_modb_pins` / `_modb_worlds`)
+## while preserving `db.schema` and `db.state`.
+fn update_store(db: Db, next_store: Store) : Db
+  Db(store: next_store, schema: db.schema, state: db.state)
 end
 
 ## Current persisted schema version.
