@@ -86,12 +86,56 @@ Controlled back-to-back A/B runs (`BEFORE = raw.slice + ==/<` vs `AFTER = Bytes.
 
 ---
 
-## 5. What These Numbers Tell Us (Including for a Future Rust Runtime)
+## 5. Pure-Rust `mo` Baseline (Post-Cutover, PR #433)
 
-1. **Bytecode interpretation + Perceus already clears the bar for real systems code:** ~10k point lookups/sec, ~8k writes/sec, 100k rows in ~70 MiB RSS, and ~4 ms durable commits—with zero compiler changes and zero memory blowup.
-2. **Where the 11×–21× gap to C SQLite actually lives:**
+Measured on **2026-11-25** against the unified pure-Rust `mo` release binary (`rustc 1.97.1 --release`, `#![forbid(unsafe_code)]`, `robertguss/mo` commit `22369508` — merged in [robertguss/mo#433](https://github.com/robertguss/mo/pull/433)), running on the same Linux ext4 machine (8 vCPUs; host load average ~4.5–5.8 during 1k/10k runs due to background work, ~5.1 at 100k with zero `rustc` active during the 100k run).
+
+### Correctness & Crash-Safety Gates on Pure-Rust `mo`
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| All 5 MoDB test suites (`modb`, `table`, `test-modb`, `test-table`, `shop`) | `mo test ...` | **29/29 passed** (`8 + 10 + 5 + 5 + 1`, 0 failed, 0 stopped) |
+| `examples/shop.mo` end-to-end CLI run | `mo run --root "$TMP" examples/shop.mo` | **Pass** (`txid=9, buckets=6, pages=26`, `Modb.verify` OK) |
+| Gate 3: 100× real OS `SIGKILL` (`kill -9`) crash loop | `python3 bench/kill_loop.py <rust-mo> 100` | **Pass** — 100/100 kills survived in **8.9s** (`acked=282`, recovered `txid=284`, `last_seq=283`, `pages=77`, `free=6`) |
+| Gate 4: 100k load + 100k overwrites freelist stability | `bench/bench-modb.mo 100000` | **Pass** — page count flat at **3,933 pages (`45` free)** across batches 26, 51, 76, and 100; final `verify: OK` |
+
+### Scaling Across 1k / 10k / 100k Rows (Pure-Rust `mo` `22369508`)
+
+| Metric | 1,000 rows | 10,000 rows | 100,000 rows |
+| --- | ---: | ---: | ---: |
+| Bulk load (`1,000`-row synced batches) | 170 ms | 1,946 ms | 19,246 ms |
+| Full overwrite (`1,000`-row synced batches) | 148 ms | 1,702 ms | 14,212 ms |
+| Warm point `get` (1,000×) | 125 ms | 151 ms | 138 ms |
+| Cold point `get` (1,000×, empty cache + SHA-256) | 175 ms | 215 ms | 179 ms |
+| 100-row ordered range `scan` (100×) | 207 ms | 231 ms | 225 ms |
+| Single-row synced `write_tx` (100×) | 428 ms | 756 ms | 462 ms |
+| File size on disk (after overwrites) | 336 KiB | 1.8 MiB | 16 MiB (`3,933` pages) |
+| Peak process RSS (combined MoDB + SQLite run) | 44.2 MiB | 44.4 MiB | **52.4 MiB** (`53,668 KiB`) |
+
+*(Note: 1k and 10k rows ran while another worktree was finishing a Rust build, which also inflated SQLite's 100× single-row sync to 290–312 ms; the 100k column ran after `rustc` finished, where SQLite single-row sync returned to 54 ms — matching Nov 23's 55 ms.)*
+
+### C `mo` (`gcc -O2`, PR #416) vs. Pure-Rust `mo` (PR #433) vs. SQLite at 100,000 Rows
+
+| Workload (100,000 rows, ext4) | C `mo` (`gcc -O2`) | Pure-Rust `mo` (`22369508`) | Rust / C | SQLite (same Rust run) |
+| --- | ---: | ---: | ---: | ---: |
+| Load 100k rows (100 × 1k batches) | 13,815 ms | 19,246 ms | 1.39× | 704 ms |
+| Overwrite 100k rows (100 × 1k batches) | 11,796 ms | 14,212 ms | 1.20× | 864 ms |
+| Warm point `get` (1,000×) | 104 ms | 138 ms | 1.33× | 8 ms |
+| Cold point `get` (1,000×, empty cache + SHA-256) | 152 ms | 179 ms | 1.18× | — |
+| 100-row range `scan` (100×) | 144 ms | 225 ms | 1.56× | 5 ms |
+| Single-row synced `write_tx` (100×) | 399 ms | 462 ms | 1.16× | 54 ms |
+| File size on disk (after overwrites) | 16 MiB | 16 MiB | 1.00× | 7.2 MiB |
+| Peak process RSS (combined run) | 69.8 MiB | **52.4 MiB** | **0.75× (25% less)** | — |
+| 100× real OS `SIGKILL` crash loop | 23.1 s | **8.9 s** | **0.39× (2.6× faster)** | — |
+
+---
+
+## 6. What These Numbers Tell Us
+
+1. **Pure safe Rust (`#![forbid(unsafe_code)]`) is immediately viable for real systems code:** ~7.2k warm point lookups/sec, ~7.0k overwrites/sec, 100k rows in **52.4 MiB peak RSS** (25% lower than C `mo`), ~4.6 ms durable commits, **2.6× faster `SIGKILL` recovery loop** (lower process startup/reopen latency), and 1.16×–1.56× of C `-O2` VM wall time — with zero memory-safety hazards and zero C compiler/runtime code.
+2. **Where the ~17×–27× gap to C SQLite actually lives:**
    - **Bytecode dispatch & Mo function-call overhead** (confirmed by PR #417's A/B: eliminating `raw.slice` copies only saves ~8–15% because tight loop instruction count and helper calls dominate).
    - Full SHA-256 over every 4 KiB page (vs. SQLite's unchecksummed default / CRC32C).
    - 2× `fsync` per commit (CoW shadow paging) vs. SQLite WAL's 1× append `fsync`.
    - 50/50 split on sequential appends (leaves ~50% page fill = 16 MiB vs. SQLite's 7.2 MiB; right-edge 90/10 splitting would halve disk footprint and page writes).
-3. **Implication for a future Rust runtime:** A clean safe-Rust bytecode VM (plus `rustls`) would give memory safety at roughly the same ~10–20×-of-C performance profile; closing the remaining gap to ~2–4× of C requires reducing bytecode dispatch/call overhead (inlining + a JIT/native backend such as Cranelift) rather than micro-tuning individual stdlib primitives.
+3. **Implication for future Phase 4 optimization (Cranelift JIT/AOT):** The pure-Rust VM already holds its own against the deleted C `-O2` VM (1.2×–1.5×) while cutting RSS by 25%. Closing the remaining order-of-magnitude gap to C SQLite requires reducing bytecode dispatch/call overhead (e.g., Cranelift JIT/AOT over `.bc` plus compact `Value` representation), which should wait until Milestone 2's real `api`/service workloads show where end-to-end latency actually goes.
