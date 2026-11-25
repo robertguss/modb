@@ -49,6 +49,7 @@ use Modb.Errors{ModbError}
 use Modb.Grants
 use Modb.Ledger{Db, LedgerError, Schema, WriteMeta}
 use Modb.Pager{BlockStore}
+use Modb.Replay
 use Modb.Table{Table, TableError}
 use Modb.Tree{KeyDiff}
 
@@ -560,6 +561,8 @@ fn replay_world_in_tx(
   sc: Schema,
   cat: Catalog,
   world: WorldRecord,
+  schema_ver: Int,
+  audit_seq: Int,
   commit_txid: Int,
   now: Time,
   opts: LandOptions
@@ -588,7 +591,7 @@ fn replay_world_in_tx(
           end
           reads_verified += 1
         end
-      CallStep(action: act_name, args: act_args, reason: _):
+      CallStep(action: act_name, args: act_args, reason: step_reason):
         (tx_auth, granted) = try Grants.tx_authorize(cur_tx, world.grant_id, act_name, now)
           .map_error(fn(e) GrantFailure(e) end)
         final_chain = granted.chain
@@ -599,7 +602,23 @@ fn replay_world_in_tx(
         if opts.check_invariants_per_call
           try check_invariants_world(sc, tx_after)
         end
-        cur_tx = tx_after
+        (tx_rec, _crec) = try wrap_table(
+          Replay.tx_record_call(
+            tx_after,
+            schema_ver,
+            Some(audit_seq),
+            world.principal,
+            Some(world.grant_id),
+            granted.chain,
+            Some(world.id),
+            act_name,
+            act_args,
+            step_reason,
+            now,
+            Replay.OrigOk(reply: reply)
+          )
+        )
+        cur_tx = tx_rec
         replies = replies.append(reply)
         calls_replayed += 1
     end
@@ -664,6 +683,8 @@ fn land_world_with_options(
   end
 
   sc = db.schema
+  schema_ver = db.state.version
+  audit_seq = db.state.next_audit_seq
   expected_txid = Ledger.txid(db) + 1
   meta = WriteMeta(principal: world.principal, action: "land_world", reason: reason, at: now)
   payload = LandAuditPayload(
@@ -682,7 +703,7 @@ fn land_world_with_options(
     summary,
     payload,
     map_ledger_err_world,
-    fn(tx) replay_world_in_tx(tx, sc, cat, world, expected_txid, now, opts) end
+    fn(tx) replay_world_in_tx(tx, sc, cat, world, schema_ver, audit_seq, expected_txid, now, opts) end
   )
     Ok((next_db, res)): Ok((next_db, res))
     Error(err):
@@ -713,6 +734,8 @@ fn land_world_and_crash(
 ) : Result(BlockStore, WorldError)
   world = try load_open_world(Ledger.store(db), world_id, now)
   sc = db.schema
+  schema_ver = db.state.version
+  audit_seq = db.state.next_audit_seq
   expected_txid = Ledger.txid(db) + 1
   meta = WriteMeta(principal: world.principal, action: "land_world", reason: reason, at: now)
   payload = LandAuditPayload(
@@ -732,6 +755,8 @@ fn land_world_and_crash(
     sc,
     cat,
     world,
+    schema_ver,
+    audit_seq,
     expected_txid,
     now,
     strict_land_options()
@@ -745,7 +770,17 @@ fn land_world_and_crash(
     phase,
     rng,
     fn(tx)
-      case replay_world_in_tx(tx, sc, cat, world, expected_txid, now, strict_land_options())
+      case replay_world_in_tx(
+        tx,
+        sc,
+        cat,
+        world,
+        schema_ver,
+        audit_seq,
+        expected_txid,
+        now,
+        strict_land_options()
+      )
         Ok((t1, _r)): Ok(t1)
         Error(e): Error(Table.Storage(TxAborted(reason: e.to_text)))
       end
