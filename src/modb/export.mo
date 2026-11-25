@@ -10,6 +10,7 @@ PortableBucket(..),
 PortableSnapshot(..),
 to_text,
 compute_snapshot_digest,
+encode_snapshot_json,
 export_at_root,
 export_store,
 export_db,
@@ -82,15 +83,46 @@ fn len_prefixed(b: Bytes) : Bytes
 end
 
 fn hash_bucket(bucket: PortableBucket) : Bytes
+  bname = bucket.name.bytes
   var parts = [
     "MODB-EXPORT-BUCKET-V1".bytes,
-    len_prefixed(bucket.name.bytes),
+    Bytes.from_u32_be(bname.size),
+    bname,
     Bytes.from_i64_be(bucket.entries.size)
   ]
   for e in bucket.entries
-    parts = parts.append(len_prefixed(e.key_hex.bytes)).append(len_prefixed(e.value_hex.bytes))
+    kb = e.key_hex.bytes
+    vb = e.value_hex.bytes
+    parts = parts.append(Bytes.from_u32_be(kb.size)).append(kb).append(Bytes.from_u32_be(vb.size))
+      .append(vb)
   end
   Crypto.sha256(Bytes.join(parts))
+end
+
+## Fast canonical JSON encoder for `PortableSnapshot`.
+## Avoids per-character JSON string escaping over large lowercase-hex payloads (`key_hex`,
+## `value_hex`, `sha256`), preventing Mo's pure-Mo `Json.quoted` loop from exhausting HTTP
+## per-request instruction budgets on multi-hundred-KiB exports.
+fn encode_snapshot_json(snap: PortableSnapshot) : Text
+  var bucket_strs = []
+  for b in snap.buckets
+    var entry_strs = []
+    for e in b.entries
+      entry_strs = entry_strs.append(
+        "{\"key_hex\":\"#{e.key_hex}\",\"value_hex\":\"#{e.value_hex}\"}"
+      )
+    end
+    bname_json = Json.encode(b.name)
+    bucket_strs = bucket_strs.append(
+      "{\"name\":#{bname_json},\"entries\":[#{entry_strs.join(",")}]}"
+    )
+  end
+  inc_str = if snap.include_internal: "true" else: "false"
+  exp_json = Json.encode(snap.exported_at)
+  "{\"format_version\":#{snap.format_version},\"source_txid\":#{snap.source_txid},\"schema_version\":#{snap
+    .schema_version},\"include_internal\":#{inc_str},\"exported_at\":#{exp_json},\"bucket_count\":#{snap
+    .bucket_count},\"entry_count\":#{snap.entry_count},\"buckets\":[#{bucket_strs.join(",")}],\"sha256\":\"#{snap
+    .sha256}\"}"
 end
 
 ## Computes the canonical SHA-256 digest covering every field, bucket, and entry of `snap`
@@ -369,9 +401,11 @@ test "Modb.Export unit: portable round-trip, compaction, tamper detection, and p
     assert b.name != pins_bucket
   end
 
-  ## JSON round-trip + tamper detection
+  ## JSON round-trip (both generic `Json.encode` and fast `encode_snapshot_json`) + tamper detection
   encoded = Json.encode(snap)
   assert Json.decode_strict[PortableSnapshot](encoded) == Ok(snap)
+  fast_encoded = encode_snapshot_json(snap)
+  assert Json.decode_strict[PortableSnapshot](fast_encoded) == Ok(snap)
   var tampered = snap
   tampered.source_txid += 1
   assert verify_snapshot(tampered) is Error(ChecksumMismatch(expected: _, actual: _))

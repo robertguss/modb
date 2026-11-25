@@ -1482,11 +1482,20 @@ end
 
 ## Exports a layout-independent SHA-256 verified portable JSON snapshot (`ReadFiles` + shared `flock`).
 fn get_admin_export(rf: ReadFiles, clock: Clock, include_internal: Option(Bool)) : Result(
-  Export.PortableSnapshot,
+  Api.Response,
   ShopApiError
 )
   inc = include_internal or true
-  Export.export_locked(rf, db_path(), shop_schema(), inc, clock.now).map_error(map_export_error)
+  snap = try Export.export_locked(rf, db_path(), shop_schema(), inc, clock.now).map_error(
+    map_export_error
+  )
+  Ok(
+    Api.response(
+      200,
+      [("content-type", "application/json")],
+      Export.encode_snapshot_json(snap).bytes
+    )
+  )
 end
 
 ## Lists all recorded replayable calls (`ReadFiles` + shared `flock`).
