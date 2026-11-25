@@ -129,7 +129,7 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 30, len(tools)
+            assert len(tools) >= 35, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_list_grants",
@@ -140,23 +140,91 @@ def main() -> int:
                 "modb_replay_accept",
                 "modb_export_snapshot",
                 "modb_verify",
+                "modb_describe",
+                "modb_read_program",
+                "modb_release",
+                "modb_read_log",
             ):
                 assert req in tool_names, f"missing MCP tool {req}"
 
-            # 3. Seed demo & drive Grants / Claims / Worlds / CoW Diff / Replay via MCP!
+            # 3. Seed demo & drive Grants / Claims / Worlds / CoW Diff / Views / Releases / Replay via MCP!
             is_err, seeded = call_tool(proc, 10, "modb_seed_demo", {"reason": "e2e MCP demo"})
             assert not is_err and seeded["ok"] is True, (is_err, seeded)
+
+            # Milestone 8: Stateless agent onboarding (`modb_describe`), View field hiding, & k-anonymous Release
+            is_err, desc_rogue = call_tool(proc, 101, "modb_describe", {"grant_id": "g-rogue-sub"})
+            assert not is_err, desc_rogue
+            rogue_views = [v["name"] for v in desc_rogue["allowed_views"]]
+            assert rogue_views == ["tasks_public"], rogue_views
+            rogue_fields = {f["name"] for f in desc_rogue["allowed_views"][0]["fields"]}
+            assert "billed_cents" not in rogue_fields and "title" in rogue_fields, rogue_fields
+
+            # Negative control: querying hidden field `billed_cents` on `tasks_public` fails statically
+            is_err, bad_read = call_tool(
+                proc,
+                102,
+                "modb_read_program",
+                {
+                    "grant_id": "g-rogue-sub",
+                    "program": {
+                        "view": "tasks_public",
+                        "where_clause": {"gt": {"field": "billed_cents", "value": 0}},
+                    },
+                },
+            )
+            assert is_err and "view_field_blocked" in json.dumps(bad_read), (is_err, bad_read)
+
+            # Valid ad-hoc ReadProgram on `tasks_public` succeeds and records read provenance
+            is_err, good_read = call_tool(
+                proc,
+                103,
+                "modb_read_program",
+                {
+                    "grant_id": "g-rogue-sub",
+                    "program": {
+                        "view": "tasks_public",
+                        "where_clause": {"eq": {"field": "project_id", "value": "infra"}},
+                        "order_by": {"field": "id", "desc": False},
+                    },
+                },
+            )
+            assert not is_err and good_read["result_count"] == 4, (is_err, good_read)
+
+            # Approved k-anonymous Release: 3 projects >= 2 passes; high min_budget (1 project < 2) blocked!
+            is_err, rel_ok = call_tool(
+                proc,
+                104,
+                "modb_release",
+                {"grant_id": "g-sre", "release": "project_budget_summary", "args": {}},
+            )
+            assert not is_err and rel_ok["cohort_size"] == 3, (is_err, rel_ok)
+            is_err, rel_blocked = call_tool(
+                proc,
+                105,
+                "modb_release",
+                {
+                    "grant_id": "g-sre",
+                    "release": "project_budget_summary",
+                    "args": {"min_budget_cents": 90000},
+                },
+            )
+            assert is_err and "release_blocked" in json.dumps(rel_blocked), (is_err, rel_blocked)
+
+            is_err, rlog = call_tool(proc, 106, "modb_read_log", {"limit": 10})
+            assert not is_err and len(rlog) == 2, (is_err, rlog)
 
             is_err, diff = call_tool(proc, 11, "modb_world_diff", {"world_id": "w-demo-payments-401"})
             assert not is_err and isinstance(diff, list) and len(diff) >= 2, (is_err, diff)
 
+            # Note: even after 2 `_modb_read_log` writes above, zero data buckets changed since w-demo-payments-401
+            # opened, so Layer 1 CoW O(diff) skips re-executing `get_task` (`reads_skipped == 1`)!
             is_err, landed = call_tool(
                 proc,
                 12,
                 "modb_world_land",
                 {"world_id": "w-demo-payments-401", "reason": "land reconciliation via MCP"},
             )
-            assert not is_err and landed["commit_txid"] > 0, (is_err, landed)
+            assert not is_err and landed["commit_txid"] > 0 and landed["reads_skipped"] == 1, (is_err, landed)
 
             is_err, rev = call_tool(
                 proc, 13, "modb_revoke_grant", {"id": "g-team-b", "reason": "contain rogue parent"}
@@ -238,6 +306,7 @@ def main() -> int:
                 "/claims",
                 "/worlds",
                 "/worlds/metrics",
+                "/reads",
                 "/audit",
                 "/admin/replay/calls",
                 "/admin/replay/proposals",
@@ -247,8 +316,9 @@ def main() -> int:
                 json.loads(body)
 
             print(
-                f"PASS: Milestone 7 stdio MCP + Live Inspector UI verified "
-                f"(tools={len(tools)}, ui={base_url}/, infra_spent=20000c, payments_spent=8000c, "
+                f"PASS: Milestone 7+8 stdio MCP + Live Inspector UI verified "
+                f"(tools={len(tools)}, ui={base_url}/, reads_skipped={landed['reads_skipped']}, "
+                f"infra_spent=20000c, payments_spent=8000c, "
                 f"export_entries={snap['entry_count']}, txid={ver['txid']}, hash={ver['last_audit_hash'][:16]}...)"
             )
             return 0

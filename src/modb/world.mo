@@ -20,6 +20,7 @@ world_metrics_bucket,
 to_text,
 catalog,
 with_query,
+with_scoped_query,
 with_action,
 strict_land_options,
 empty_metrics,
@@ -94,8 +95,11 @@ end
 
 ## Application-registered read query executed on either a World's speculative `WriteTx`
 ## or the main-line replay `WriteTx` during landing.
+## When `read_buckets` is non-empty, landing uses Layer 1 CoW root equality to skip
+## re-executing this query whenever none of `read_buckets` changed on the main line.
 struct QueryDef
   name: Text
+  read_buckets: List(Text)
   run: fn(WriteTx, Json) : Result(Json, Text)
 end
 
@@ -147,6 +151,8 @@ struct LandingMetrics
   action_rejections: Int
   grant_rejections: Int
   needless_send_backs: Int
+  total_reads_verified: Int
+  total_reads_skipped: Int
 end
 
 ## Stashed call-list hash from a principal's last stale-read send-back to detect needless retries.
@@ -167,6 +173,7 @@ struct LandResult
   commit_txid: Int
   calls_replayed: Int
   reads_verified: Int
+  reads_skipped: Int
   replies: List(Json)
   grant_chain: List(Text)
 end
@@ -193,10 +200,24 @@ fn catalog() : Catalog
   Catalog(queries: {}, actions: {})
 end
 
-## Registers a named read query in `cat`.
+## Registers a named read query in `cat` (conservatively depends on all data buckets).
 fn with_query(cat: Catalog, name: Text, run: fn(WriteTx, Json) : Result(Json, Text)) : Catalog
   var next = cat
-  next.queries = next.queries.set(name, QueryDef(name: name, run: run))
+  next.queries = next.queries.set(name, QueryDef(name: name, read_buckets: [], run: run))
+  next
+end
+
+## Registers a named read query in `cat` with its exact `read_buckets` dependency set,
+## enabling O(1) CoW-diff read-validation skipping during World landing when none of
+## `read_buckets` changed on the main line (`design.md` §6: "Asking again costs what changed").
+fn with_scoped_query(
+  cat: Catalog,
+  name: Text,
+  read_buckets: List(Text),
+  run: fn(WriteTx, Json) : Result(Json, Text)
+) : Catalog
+  var next = cat
+  next.queries = next.queries.set(name, QueryDef(name: name, read_buckets: read_buckets, run: run))
   next
 end
 
@@ -220,7 +241,9 @@ fn empty_metrics() : LandingMetrics
     invariant_rejections: 0,
     action_rejections: 0,
     grant_rejections: 0,
-    needless_send_backs: 0
+    needless_send_backs: 0,
+    total_reads_verified: 0,
+    total_reads_skipped: 0
   )
 end
 
@@ -556,11 +579,65 @@ fn record_rejection_and_unpin(db: Db, world: WorldRecord, err: WorldError) : Db
   end
 end
 
+fn is_world_bookkeeping_bucket?(bucket: Text) : Bool
+  bucket == worlds_bucket or
+    bucket == world_metrics_bucket or
+    bucket == sendback_bucket or
+    bucket == Modb.pins_bucket or
+    bucket == "_modb_read_log" or
+    bucket == "_modb_read_meta"
+end
+
+## Computes the set of non-world-bookkeeping buckets whose B+Tree root page IDs changed on the
+## main line between `world.base_pin_id` and `store`'s current `catalog_root` (O(catalog diff)).
+fn compute_ext_changed_buckets(store: Store, world: WorldRecord) : Result(Set(Text), WorldError)
+  pin_opt = try wrap_modb(Modb.get_pin(store, world.base_pin_id))
+  pin = try pin_opt.or_fail(
+    LedgerFailure(
+      Ledger.AuditCorrupt(reason: "missing base pin '#{world.base_pin_id}' for world '#{world.id}'")
+    )
+  )
+  all_changed = try wrap_modb(
+    Modb.changed_buckets_between_roots(store, pin.catalog_root, Modb.catalog_root(store))
+  )
+  var ext = Set.empty
+  for b in all_changed
+    if not is_world_bookkeeping_bucket?(b)
+      ext = ext.add(b)
+    end
+  end
+  Ok(ext)
+end
+
+## Sound O(1) CoW-diff read-skip check:
+## - If `ext_changed` is empty (zero external data drift since `open_world`), every deterministic
+##   query yields the identical answer on `cur_tx` as on `spec_tx`.
+## - Otherwise, a scoped query (`not qdef.read_buckets.empty?`) may skip re-execution iff none of
+##   its declared `read_buckets` changed externally AND (if prior `CallStep`s ran in this World)
+##   none of `read_buckets` was dirtied inside `cur_tx`.
+fn can_skip_read_validation?(
+  qdef: QueryDef,
+  ext_changed: Set(Text),
+  cur_tx: WriteTx,
+  calls_replayed: Int
+) : Bool
+  return true if ext_changed.empty?
+  return false if qdef.read_buckets.empty?
+  for b in qdef.read_buckets
+    return false if ext_changed.has?(b)
+    if calls_replayed > 0 and Modb.tx_bucket_dirty?(cur_tx, b)
+      return false
+    end
+  end
+  true
+end
+
 fn replay_world_in_tx(
   tx0: WriteTx,
   sc: Schema,
   cat: Catalog,
   world: WorldRecord,
+  ext_changed: Set(Text),
   schema_ver: Int,
   audit_seq: Int,
   commit_txid: Int,
@@ -574,6 +651,7 @@ fn replay_world_in_tx(
   var replies = []
   var calls_replayed = 0
   var reads_verified = 0
+  var reads_skipped = 0
   var final_chain = grant0.chain
 
   for step in world.steps
@@ -581,15 +659,20 @@ fn replay_world_in_tx(
       ReadStep(query: qname, args: qargs, answer_hash: expected_hash, answer: expected_answer):
         if opts.validate_reads
           qdef = try cat.queries.get(qname).or_fail(UnknownQuery(name: qname))
-          actual = try qdef.run(cur_tx, qargs).map_error(fn(d)
-            QueryFailed(query: qname, detail: d)
-          end)
-          if hash_json(actual) != expected_hash
-            return Error(
-              StaleRead(query: qname, args: qargs, expected: expected_answer, actual: actual)
-            )
+          if can_skip_read_validation?(qdef, ext_changed, cur_tx, calls_replayed)
+            reads_verified += 1
+            reads_skipped += 1
+          else
+            actual = try qdef.run(cur_tx, qargs).map_error(fn(d)
+              QueryFailed(query: qname, detail: d)
+            end)
+            if hash_json(actual) != expected_hash
+              return Error(
+                StaleRead(query: qname, args: qargs, expected: expected_answer, actual: actual)
+              )
+            end
+            reads_verified += 1
           end
-          reads_verified += 1
         end
       CallStep(action: act_name, args: act_args, reason: step_reason):
         (tx_auth, granted) = try Grants.tx_authorize(cur_tx, world.grant_id, act_name, now)
@@ -628,6 +711,8 @@ fn replay_world_in_tx(
   cur_m = (try wrap_table(Table.tx_get(cur_tx, metrics_table(), "global"))) or empty_metrics()
   var next_m = cur_m
   next_m.total_landed += 1
+  next_m.total_reads_verified += reads_verified
+  next_m.total_reads_skipped += reads_skipped
   this_calls_hash = hash_call_steps(world.steps)
   case try wrap_table(Table.tx_get(cur_tx, sendback_table(), world.principal))
     Some(mem):
@@ -652,6 +737,7 @@ fn replay_world_in_tx(
       commit_txid: commit_txid,
       calls_replayed: calls_replayed,
       reads_verified: reads_verified,
+      reads_skipped: reads_skipped,
       replies: replies,
       grant_chain: final_chain
     )
@@ -681,6 +767,10 @@ fn land_world_with_options(
     Ok(w): w
     Error(e): return Error((db, e))
   end
+  ext_changed = case compute_ext_changed_buckets(Ledger.store(db), world)
+    Ok(s): s
+    Error(e): return Error((db, e))
+  end
 
   sc = db.schema
   schema_ver = db.state.version
@@ -703,7 +793,20 @@ fn land_world_with_options(
     summary,
     payload,
     map_ledger_err_world,
-    fn(tx) replay_world_in_tx(tx, sc, cat, world, schema_ver, audit_seq, expected_txid, now, opts) end
+    fn(tx)
+      replay_world_in_tx(
+        tx,
+        sc,
+        cat,
+        world,
+        ext_changed,
+        schema_ver,
+        audit_seq,
+        expected_txid,
+        now,
+        opts
+      )
+    end
   )
     Ok((next_db, res)): Ok((next_db, res))
     Error(err):
@@ -733,6 +836,7 @@ fn land_world_and_crash(
   rng: Random
 ) : Result(BlockStore, WorldError)
   world = try load_open_world(Ledger.store(db), world_id, now)
+  ext_changed = try compute_ext_changed_buckets(Ledger.store(db), world)
   sc = db.schema
   schema_ver = db.state.version
   audit_seq = db.state.next_audit_seq
@@ -755,6 +859,7 @@ fn land_world_and_crash(
     sc,
     cat,
     world,
+    ext_changed,
     schema_ver,
     audit_seq,
     expected_txid,
@@ -775,6 +880,7 @@ fn land_world_and_crash(
         sc,
         cat,
         world,
+        ext_changed,
         schema_ver,
         audit_seq,
         expected_txid,

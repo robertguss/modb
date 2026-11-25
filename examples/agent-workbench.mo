@@ -20,6 +20,7 @@ use Modb.Grants
 use Modb.Ledger
 use Modb.Replay
 use Modb.Table
+use Modb.Views
 use Modb.World
 use WorkbenchUi
 
@@ -136,8 +137,20 @@ struct GrantInput
   id: Text
   principal: Text
   allowed_actions: List(Text)
+  allowed_views: Option(List(Text))
+  allowed_releases: Option(List(Text))
   max_calls: Int
   ttl_seconds: Int
+end
+
+struct ReadProgramRequest
+  grant_id: Option(Text)
+  program: Views.ReadProgram
+end
+
+struct ReleaseRequest
+  grant_id: Option(Text)
+  args: Option(Json)
 end
 
 struct ClaimInput
@@ -207,6 +220,10 @@ enum WorkbenchError
   WorldConflict(detail: Text)
   ProposalMissing(id: Text)
   ProposalConflict(detail: Text)
+  ViewMissing(name: Text)
+  ViewFieldBlocked(detail: Text)
+  ReleaseBlocked(detail: Text)
+  WorkBudgetBlocked(detail: Text)
   StorageFailed(message: Text)
 end
 
@@ -218,6 +235,10 @@ api
   get "/" get_ui
   get "/ui" get_ui
   get "/health" get_health
+  get "/describe" get_describe
+  post "/views/query" post_view_query
+  post "/releases/:name" post_release
+  get "/reads" get_reads
   post "/mcp" post_mcp
 
   scope "/projects"
@@ -293,6 +314,10 @@ api
   status WorldConflict(_) = 409
   status ProposalMissing(_) = 404
   status ProposalConflict(_) = 409
+  status ViewMissing(_) = 404
+  status ViewFieldBlocked(_) = 403
+  status ReleaseBlocked(_) = 403
+  status WorkBudgetBlocked(_) = 429
   status StorageFailed(_) = 500
 end
 
@@ -530,7 +555,28 @@ fn map_grant_error(err: Grants.GrantError) : WorkbenchError
     Grants.InvalidGrant(reason: r): InvalidInput(reason: r)
     Grants.WideningDenied(field: _, detail: _) | Grants.Revoked(id: _, revoked_ancestor: _) | Grants
       .Expired(id: _, expired_ancestor: _) | Grants.ActionDenied(id: _, action: _) | Grants
-      .BudgetExhausted(id: _, ancestor_id: _, max_calls: _): GrantDenied(detail: err.to_text)
+      .ViewDenied(id: _, view: _) | Grants.ReleaseDenied(id: _, release: _) | Grants.BudgetExhausted(
+        id: _,
+        ancestor_id: _,
+        max_calls: _
+      ): GrantDenied(detail: err.to_text)
+  end
+end
+
+fn map_views_error(err: Views.ViewsError) : WorkbenchError
+  case err
+    Views.LedgerFailure(le): map_ledger_error(le)
+    Views.GrantFailure(ge): map_grant_error(ge)
+    Views.UnknownView(name: n) | Views.UnknownRelease(name: n): ViewMissing(name: n)
+    Views.FieldNotInView(view: _, field: _, allowed: _): ViewFieldBlocked(detail: err.to_text)
+    Views.InvalidProgram(reason: r): InvalidInput(reason: r)
+    Views.WorkBudgetExceeded(metric: _, limit: _): WorkBudgetBlocked(detail: err.to_text)
+    Views.ViewLoadFailed(view: _, detail: _) | Views.ReleaseFailed(release: _, detail: _): StorageFailed(
+      message: err.to_text
+    )
+    Views.ReleaseThresholdBlocked(release: _, min_group_size: _, actual_count: _): ReleaseBlocked(
+      detail: err.to_text
+    )
   end
 end
 
@@ -706,24 +752,27 @@ fn workbench_catalog() : World.Catalog
   projs = projects_table()
   tasks = tasks_table()
   p_idx = tasks_by_project_index()
-  World.catalog().with_query(
+  World.catalog().with_scoped_query(
     "get_project",
+    ["projects"],
     fn(tx, args)
       pid = try Json.decode[Text](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
       p_opt = try Table.tx_get(tx, projs, pid).map_error(fn(e) e.to_text end)
       proj = try p_opt.or_fail("project '#{pid}' not found")
       Ok(project_to_row(pid, proj).to_json)
     end
-  ).with_query(
+  ).with_scoped_query(
     "get_task",
+    ["tasks"],
     fn(tx, args)
       tid = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
       t_opt = try Table.tx_get(tx, tasks, tid).map_error(fn(e) e.to_text end)
       t = try t_opt.or_fail("task ##{tid} not found")
       Ok(task_to_row(tid, t).to_json)
     end
-  ).with_query(
+  ).with_scoped_query(
     "list_project_tasks",
+    ["tasks", "tasks_by_project"],
     fn(tx, args)
       pid = try Json.decode[Text](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
       rows = try Table.tx_lookup(tx, tasks, p_idx, pid).map_error(fn(e) e.to_text end)
@@ -733,6 +782,260 @@ fn workbench_catalog() : World.Catalog
     "create_task",
     action_create_task()
   ).with_action("complete_task", action_complete_task(default_overhead_pct()))
+end
+
+## Milestone 8 View, k-Anonymous Release, and Stateless Agent Onboarding Catalog.
+fn workbench_view_catalog() : Views.ViewCatalog
+  projs = projects_table()
+  tasks = tasks_table()
+  Views.catalog().with_view(
+    Views.ViewDef(
+      name: "projects_finance",
+      description: "Full project records including budget, spent, and remaining cents",
+      source_buckets: ["projects"],
+      fields: [
+        Views.ViewField(name: "id", field_type: "text", description: "Project identifier"),
+        Views.ViewField(name: "name", field_type: "text", description: "Display name"),
+        Views.ViewField(
+          name: "budget_cents",
+          field_type: "int",
+          description: "Total budget in cents"
+        ),
+        Views.ViewField(
+          name: "spent_cents",
+          field_type: "int",
+          description: "Spent amount in cents"
+        ),
+        Views.ViewField(
+          name: "remaining_cents",
+          field_type: "int",
+          description: "Remaining budget in cents"
+        ),
+        Views.ViewField(
+          name: "active",
+          field_type: "bool",
+          description: "Whether project is active"
+        )
+      ],
+      narrows: None,
+      load: fn(store)
+        rows = try Table.all(store, projs).map_error(fn(e) e.to_text end)
+        Ok(
+          rows.map(fn(p)
+            pr = project_to_row(p.0, p.1)
+            {
+              "id": Json.String(pr.id),
+              "name": Json.String(pr.name),
+              "budget_cents": Json.int(pr.budget_cents),
+              "spent_cents": Json.int(pr.spent_cents),
+              "remaining_cents": Json.int(pr.remaining_cents),
+              "active": Json.Boolean(pr.active)
+            }
+          end)
+        )
+      end
+    )
+  ).with_view(
+    Views.ViewDef(
+      name: "projects_public",
+      description: "Public project directory (operational fields only)",
+      source_buckets: ["projects"],
+      fields: [
+        Views.ViewField(name: "id", field_type: "text", description: "Project identifier"),
+        Views.ViewField(name: "name", field_type: "text", description: "Display name"),
+        Views.ViewField(
+          name: "active",
+          field_type: "bool",
+          description: "Whether project is active"
+        )
+      ],
+      narrows: Some("projects_finance"),
+      load: fn(store)
+        rows = try Table.all(store, projs).map_error(fn(e) e.to_text end)
+        Ok(
+          rows.map(fn(p)
+            pr = p.1
+            {
+              "id": Json.String(p.0),
+              "name": Json.String(pr.name),
+              "active": Json.Boolean(pr.active)
+            }
+          end)
+        )
+      end
+    )
+  ).with_view(
+    Views.ViewDef(
+      name: "tasks_finance",
+      description: "Full tasks including assignee, base_cost_cents, and billed_cents",
+      source_buckets: ["tasks"],
+      fields: [
+        Views.ViewField(name: "id", field_type: "int", description: "Task ID"),
+        Views.ViewField(name: "project_id", field_type: "text", description: "Owning project ID"),
+        Views.ViewField(name: "title", field_type: "text", description: "Task title"),
+        Views.ViewField(name: "assignee", field_type: "text", description: "Assigned principal"),
+        Views.ViewField(
+          name: "base_cost_cents",
+          field_type: "int",
+          description: "Base cost in cents"
+        ),
+        Views.ViewField(
+          name: "billed_cents",
+          field_type: "int",
+          description: "Final billed cost in cents"
+        ),
+        Views.ViewField(
+          name: "status",
+          field_type: "text",
+          description: "Status: open | in_progress | done | cancelled"
+        )
+      ],
+      narrows: None,
+      load: fn(store)
+        rows = try Table.all(store, tasks).map_error(fn(e) e.to_text end)
+        Ok(
+          rows.map(fn(p)
+            t = p.1
+            asg = case t.assignee
+              Some(a): Json.String(a)
+              None: Json.Null
+            end
+            {
+              "id": Json.int(p.0),
+              "project_id": Json.String(t.project_id),
+              "title": Json.String(t.title),
+              "assignee": asg,
+              "base_cost_cents": Json.int(t.base_cost_cents),
+              "billed_cents": Json.int(t.billed_cents),
+              "status": Json.String(task_status_label(t.status))
+            }
+          end)
+        )
+      end
+    )
+  ).with_view(
+    Views.ViewDef(
+      name: "tasks_public",
+      description: "Public task queue (operational fields only)",
+      source_buckets: ["tasks"],
+      fields: [
+        Views.ViewField(name: "id", field_type: "int", description: "Task ID"),
+        Views.ViewField(name: "project_id", field_type: "text", description: "Owning project ID"),
+        Views.ViewField(name: "title", field_type: "text", description: "Task title"),
+        Views.ViewField(
+          name: "status",
+          field_type: "text",
+          description: "Status: open | in_progress | done | cancelled"
+        )
+      ],
+      narrows: Some("tasks_finance"),
+      load: fn(store)
+        rows = try Table.all(store, tasks).map_error(fn(e) e.to_text end)
+        Ok(
+          rows.map(fn(p)
+            t = p.1
+            {
+              "id": Json.int(p.0),
+              "project_id": Json.String(t.project_id),
+              "title": Json.String(t.title),
+              "status": Json.String(task_status_label(t.status))
+            }
+          end)
+        )
+      end
+    )
+  ).with_release(
+    Views.ReleaseDef(
+      name: "project_budget_summary",
+      description: "Aggregate budget, spend, and remaining cents across matching projects (k-anonymous min_group_size=2)",
+      source_buckets: ["projects"],
+      min_group_size: 2,
+      args_description: "{\"min_budget_cents\": 0} (optional filter)",
+      run: fn(store, args)
+        min_b = args.int_at("min_budget_cents") or 0
+        rows = try Table.all(store, projs).map_error(fn(e) e.to_text end)
+        var cnt = 0
+        var total_budget = 0
+        var total_spent = 0
+        for (_pid, p) in rows
+          if p.budget_cents >= min_b
+            cnt += 1
+            total_budget += p.budget_cents
+            total_spent += p.spent_cents
+          end
+        end
+        Ok((
+          cnt,
+          Json.Object({
+            "project_count": Json.int(cnt),
+            "total_budget_cents": Json.int(total_budget),
+            "total_spent_cents": Json.int(total_spent),
+            "total_remaining_cents": Json.int(total_budget - total_spent)
+          })
+        ))
+      end
+    )
+  ).with_release(
+    Views.ReleaseDef(
+      name: "task_cost_by_status",
+      description: "Aggregate task count and mean base/billed cost for a task status (k-anonymous min_group_size=2)",
+      source_buckets: ["tasks"],
+      min_group_size: 2,
+      args_description: "{\"status\": \"done\", \"project_id\": \"infra\" (optional)}",
+      run: fn(store, args)
+        target_st = try args.text_at("status").or_fail("missing string argument 'status'")
+        proj_filter = args.text_at("project_id")
+        rows = try Table.all(store, tasks).map_error(fn(e) e.to_text end)
+        var cnt = 0
+        var sum_base = 0
+        var sum_billed = 0
+        for (_tid, t) in rows
+          proj_ok = case proj_filter
+            Some(pid): t.project_id == pid
+            None: true
+          end
+          if proj_ok and task_status_label(t.status) == target_st
+            cnt += 1
+            sum_base += t.base_cost_cents
+            sum_billed += t.billed_cents
+          end
+        end
+        avg_base = if cnt == 0: 0 else: sum_base / cnt
+        avg_billed = if cnt == 0: 0 else: sum_billed / cnt
+        Ok((
+          cnt,
+          Json.Object({
+            "status": Json.String(target_st),
+            "task_count": Json.int(cnt),
+            "total_billed_cents": Json.int(sum_billed),
+            "avg_base_cost_cents": Json.int(avg_base),
+            "avg_billed_cents": Json.int(avg_billed)
+          })
+        ))
+      end
+    )
+  ).with_action_doc(
+    "create_project",
+    "Create or update a project and its budget ceiling (admin)",
+    "{\"id\": \"ml-ops\", \"name\": \"ML Ops\", \"budget_cents\": 50000}"
+  ).with_action_doc(
+    "create_task",
+    "Create a new open task inside an existing project (planner/admin)",
+    "{\"id\": 501, \"project_id\": \"infra\", \"title\": \"...\", \"base_cost_cents\": 5000}"
+  ).with_action_doc(
+    "complete_task",
+    "Complete an open task, billing base_cost + overhead against project budget and optionally attaching an artifact",
+    "{\"task_id\": 303, \"assignee\": \"agent:sre\", \"artifact_id\": \"...\"}"
+  ).with_invariant_doc(
+    "budget_bounds",
+    "Every project obeys 0 <= spent_cents <= budget_cents (checked incrementally on touched rows)"
+  ).with_invariant_doc(
+    "task_valid",
+    "Every task has non-empty title and base_cost_cents >= 0, billed_cents >= 0"
+  ).with_invariant_doc(
+    "referential_integrity",
+    "Every task references an existing project and every artifact references an existing task"
+  )
 end
 
 fn workbench_replay_catalog(overhead_override: Option(Int)) : Replay.ReplayCatalog
@@ -1166,9 +1469,15 @@ fn post_grant(caller: Caller, files: Files, clock: Clock, body: GrantInput) : Re
     max_calls: body.max_calls,
     expires_at: clock.now + 1.second * body.ttl_seconds
   )
-  Grants.issue_root_locked(files, db_path(), workbench_schema(), meta, spec).map_error(
-    map_grant_error
-  )
+  Grants.issue_root_scoped_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    meta,
+    spec,
+    body.allowed_views,
+    body.allowed_releases
+  ).map_error(map_grant_error)
 end
 
 fn list_grants(rf: ReadFiles) : Result(List(Grants.Grant), WorkbenchError)
@@ -1207,9 +1516,17 @@ fn post_delegate_grant(caller: Caller, files: Files, clock: Clock, id: Text, bod
     max_calls: body.max_calls,
     expires_at: clock.now + 1.second * body.ttl_seconds
   )
-  Grants.delegate_locked(files, db_path(), workbench_schema(), meta, id, spec).map_error(
-    map_grant_error
-  )
+  Grants.delegate_scoped_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    meta,
+    id,
+    spec,
+    body.allowed_views,
+    body.allowed_releases,
+    Views.view_narrows_map(workbench_view_catalog())
+  ).map_error(map_grant_error)
 end
 
 fn post_revoke_grant(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
@@ -1649,6 +1966,8 @@ fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       id: "g-team-b",
       principal: "agent:team-b-lead",
       allowed_actions: ["create_task", "complete_task"],
+      allowed_views: Some(["projects_public", "tasks_public"]),
+      allowed_releases: Some(["task_cost_by_status"]),
       max_calls: 25,
       ttl_seconds: 7200
     )
@@ -1662,6 +1981,8 @@ fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       id: "g-rogue-sub",
       principal: "agent:rogue-bot",
       allowed_actions: ["complete_task"],
+      allowed_views: Some(["tasks_public"]),
+      allowed_releases: None,
       max_calls: 10,
       ttl_seconds: 3600
     )
@@ -1674,6 +1995,8 @@ fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       id: "g-sre",
       principal: "agent:sre",
       allowed_actions: ["complete_task"],
+      allowed_views: Some(["projects_finance", "tasks_finance"]),
+      allowed_releases: Some(["project_budget_summary", "task_cost_by_status"]),
       max_calls: 25,
       ttl_seconds: 7200
     )
@@ -1777,6 +2100,99 @@ fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       summary: "2 projects, 6 tasks, rogue drain on infra (2 SRE OrigRefused ready for Replay), open World w-demo-payments-401",
       txid: h.txid
     )
+  )
+end
+
+fn role_label(role: Role) : Text
+  case role
+    Admin: "admin"
+    Planner: "planner"
+    Worker: "worker"
+  end
+end
+
+fn direct_actions_for_role(role: Role) : List(Text)
+  case role
+    Admin: ["create_project", "create_task", "complete_task"]
+    Planner: ["create_task", "complete_task"]
+    Worker: ["complete_task"]
+  end
+end
+
+fn get_describe(caller: Caller, rf: ReadFiles, clock: Clock, grant_id: Option(Text)) : Result(
+  Views.OnboardingManifest,
+  WorkbenchError
+)
+  now = clock.now
+  is_admin? = caller.role is Admin
+  vcat = workbench_view_catalog()
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      Views.describe_for_caller(
+        db,
+        vcat,
+        caller.principal,
+        role_label(caller.role),
+        is_admin?,
+        direct_actions_for_role(caller.role),
+        grant_id,
+        Views.default_limits(),
+        now
+      ).map_error(map_views_error)
+    end
+  )
+end
+
+fn post_view_query(caller: Caller, files: Files, clock: Clock, body: ReadProgramRequest) : Result(
+  Views.ReadResult,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  Views.execute_read_program_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_view_catalog(),
+    body.program,
+    caller.principal,
+    body.grant_id,
+    is_admin?,
+    Views.default_limits(),
+    clock.now
+  ).map_error(map_views_error)
+end
+
+fn post_release(caller: Caller, files: Files, clock: Clock, name: Text, body: ReleaseRequest) : Result(
+  Views.ReleaseResult,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  Views.execute_release_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_view_catalog(),
+    name,
+    body.args or Json.Object({}),
+    caller.principal,
+    body.grant_id,
+    is_admin?,
+    clock.now
+  ).map_error(map_views_error)
+end
+
+fn get_reads(rf: ReadFiles, limit: Option(Int)) : Result(List(Views.ReadLogEntry), WorkbenchError)
+  lim = limit or 50
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Views.list_read_log(Ledger.store(db), lim).map_error(map_views_error) end
   )
 end
 
@@ -1923,12 +2339,20 @@ fn mcp_tools_list() : Json
       ),
       mcp_tool_def(
         "modb_issue_grant",
-        "Issue a new root Grant with bounded actions, call budget, and TTL (admin).",
+        "Issue a new root Grant with bounded actions, optional Views/Releases, call budget, and TTL (admin).",
         mcp_schema(
           {
             "id": mcp_prop("string", "Grant ID"),
             "principal": mcp_prop("string", "Recipient agent principal"),
             "allowed_actions": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "allowed_views": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "allowed_releases": Json.Object({
               "type": Json.String("array"),
               "items": Json.Object({"type": Json.String("string")})
             }),
@@ -1941,13 +2365,21 @@ fn mcp_tools_list() : Json
       ),
       mcp_tool_def(
         "modb_delegate_grant",
-        "Delegate a strictly attenuated child Grant from a parent Grant.",
+        "Delegate a strictly attenuated child Grant from a parent Grant (narrowing actions, views, releases, budget, TTL).",
         mcp_schema(
           {
             "parent_id": mcp_prop("string", "Parent Grant ID"),
             "id": mcp_prop("string", "Child Grant ID"),
             "principal": mcp_prop("string", "Child agent principal"),
             "allowed_actions": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "allowed_views": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "allowed_releases": Json.Object({
               "type": Json.String("array"),
               "items": Json.Object({"type": Json.String("string")})
             }),
@@ -2123,6 +2555,53 @@ fn mcp_tools_list() : Json
           {"proposal_id": mcp_prop("string", "Pending proposal ID"), "reason": reason_p},
           ["proposal_id"]
         )
+      ),
+      mcp_tool_def(
+        "modb_describe",
+        "Self-onboarding manifest for stateless agents: permitted actions, narrowed Views (visible fields only), Releases, active Claims, open Worlds, invariants, and ReadLimits.",
+        mcp_schema(
+          {"grant_id": mcp_prop("string", "Optional Grant ID to inspect scoped permissions for")},
+          []
+        )
+      ),
+      mcp_tool_def(
+        "modb_read_program",
+        "Execute a zero-approval sandboxed ad-hoc ReadProgram over an authorized View (static field check + work budget + read provenance log).",
+        mcp_schema(
+          {
+            "grant_id": mcp_prop("string", "Optional Grant ID authorizing the View read"),
+            "program": Json.Object({
+              "type": Json.String("object"),
+              "description": Json.String(
+                "ReadProgram object: {view, where_clause?, select?, group_by?, aggregates?, order_by?, limit?}"
+              )
+            })
+          },
+          ["program"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_release",
+        "Invoke an approved statistical/k-anonymous Release function (project_budget_summary, task_cost_by_status).",
+        mcp_schema(
+          {
+            "release": mcp_prop(
+              "string",
+              "Release name: project_budget_summary | task_cost_by_status"
+            ),
+            "grant_id": mcp_prop("string", "Optional Grant ID authorizing the Release"),
+            "args": Json.Object({
+              "type": Json.String("object"),
+              "description": Json.String("Release JSON arguments")
+            })
+          },
+          ["release"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_read_log",
+        "List persisted Read Provenance entries from _modb_read_log (ad-hoc ReadPrograms and Releases).",
+        mcp_schema({"limit": mcp_prop("integer", "Max entries to return (default 50)")}, [])
       )
     ])
   })
@@ -2281,6 +2760,34 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Ok(pid): mcp_encode_result(delete_replay_proposal(eff, files, clock, pid))
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
+    "modb_describe": mcp_encode_result(get_describe(eff, rf, clock, args.text_at("grant_id")))
+    "modb_read_program":
+      prog_json = args.get("program") or args
+      case Json.from_json[Views.ReadProgram](prog_json)
+        Ok(prog): mcp_encode_result(
+          post_view_query(
+            eff,
+            files,
+            clock,
+            ReadProgramRequest(grant_id: args.text_at("grant_id"), program: prog)
+          )
+        )
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_release":
+      case mcp_req_text(args, "release")
+        Ok(rname): mcp_encode_result(
+          post_release(
+            eff,
+            files,
+            clock,
+            rname,
+            ReleaseRequest(grant_id: args.text_at("grant_id"), args: args.get("args"))
+          )
+        )
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_read_log": mcp_encode_result(get_reads(rf, args.int_at("limit")))
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -2388,6 +2895,8 @@ test "AgentWorkbench end-to-end via ApiTest.send: Grants, Claims, Worlds, Rogue 
         id: "g-team",
         principal: "agent:lead",
         allowed_actions: ["create_task", "complete_task"],
+        allowed_views: None,
+        allowed_releases: None,
         max_calls: 20,
         ttl_seconds: 3600
       )
@@ -2406,6 +2915,8 @@ test "AgentWorkbench end-to-end via ApiTest.send: Grants, Claims, Worlds, Rogue 
           id: "g-rogue-sub",
           principal: "agent:rogue",
           allowed_actions: ["complete_task"],
+          allowed_views: None,
+          allowed_releases: None,
           max_calls: 5,
           ttl_seconds: 1800
         )
@@ -2761,4 +3272,105 @@ test "AgentWorkbench Milestone 7: Inspector UI, list endpoints, demo seeder, and
   assert ver_r.status == 200 and
     ver_r.text.contains?("\"isError\":false") and
     ver_r.text.contains?("ok\\\":true")
+
+  ## Milestone 8: Stateless agent onboarding (`modb_describe`), View field hiding, k-anonymous Release, & Read Log
+  desc_rogue = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/describe?grant_id=g-rogue-sub").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert desc_rogue.status == 200
+  assert Json.decode_strict[Views.OnboardingManifest](desc_rogue.text) is Ok(dm)
+  assert dm.allowed_views.size == 1 and dm.allowed_releases.empty?
+  dm_v0 = dm.allowed_views.first or stop "dm_v0"
+  assert dm_v0.name == "tasks_public" and dm_v0.fields.size == 4
+
+  ## Negative control: querying hidden field `billed_cents` on `tasks_public` via `g-rogue-sub` -> 403!
+  bad_read = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/query").with_bearer("tok-work").with_json(
+      ReadProgramRequest(
+        grant_id: Some("g-rogue-sub"),
+        program: Views.ReadProgram(
+          view: "tasks_public",
+          where_clause: Some(Views.Gt(field: "billed_cents", value: Json.int(0))),
+          select: None,
+          group_by: None,
+          aggregates: None,
+          order_by: None,
+          limit: None
+        )
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert bad_read.status == 403
+
+  ## Valid ad-hoc ReadProgram via MCP (`modb_read_program`) on `tasks_public` succeeds
+  good_read = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(9),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_read_program"),
+          "arguments": Json.Object({
+            "grant_id": Json.String("g-rogue-sub"),
+            "program": Views.ReadProgram(
+              view: "tasks_public",
+              where_clause: Some(Views.Eq(field: "project_id", value: Json.String("infra"))),
+              select: Some(["id", "status"]),
+              group_by: None,
+              aggregates: None,
+              order_by: Some(Views.SortSpec(field: "id", desc: false)),
+              limit: Some(10)
+            ).to_json
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert good_read.status == 200 and good_read.text.contains?("\"isError\":false")
+
+  ## Approved k-anonymous Release via MCP (`modb_release`)
+  rel_ok = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(10),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_release"),
+          "arguments": Json.Object({
+            "grant_id": Json.String("g-sre"),
+            "release": Json.String("project_budget_summary"),
+            "args": Json.Object({})
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert rel_ok.status == 200 and
+    rel_ok.text.contains?("\"isError\":false") and
+    rel_ok.text.contains?("project_count\\\":3")
+
+  reads_r = ApiTest.send(AgentWorkbench, Api.get("/reads"), files, ro, clock, env)
+  assert reads_r.status == 200 and reads_r.text.contains?("tasks_public")
 end

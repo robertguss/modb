@@ -217,6 +217,8 @@ fn page_html() : Text
         font-family: var(--mono);
         font-size: 12px;
         overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
         max-height: 360px;
       }
       #toast {
@@ -280,6 +282,7 @@ fn page_html() : Text
         <button class="tab active" data-tab="projects">Projects &amp; Tasks</button>
         <button class="tab" data-tab="grants">Grants &amp; Claims</button>
         <button class="tab" data-tab="worlds">Speculative Worlds &amp; Diffs</button>
+        <button class="tab" data-tab="views">Views, Reads &amp; Onboarding</button>
         <button class="tab" data-tab="replay">Replay Studio</button>
         <button class="tab" data-tab="audit">Audit Ledger</button>
       </nav>
@@ -366,6 +369,56 @@ fn page_html() : Text
           <div class="card">
             <h2>Structural CoW O(diff) Inspector <span id="diff-world-label" class="pill">none</span></h2>
             <pre id="world-diff-out">Click "Diff" on any open World to inspect its exact CoW bucket changes before landing.</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-views" class="tab-panel hidden">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Stateless Agent Onboarding <span class="pill info">GET /describe</span></h2>
+            <div class="form-row">
+              <input id="v-desc-grant" placeholder="grant_id (blank=caller role, e.g. g-rogue-sub)" />
+              <button class="primary" onclick="loadDescribe()">Inspect Manifest</button>
+              <button onclick="loadDescribePreset('g-sre')">g-sre</button>
+              <button onclick="loadDescribePreset('g-rogue-sub')">g-rogue-sub</button>
+            </div>
+            <pre id="describe-out">Click "Inspect Manifest" or a Grant preset to see the exact Views, visible fields, Releases, Claims, and Invariants exposed to a stateless agent.</pre>
+          </div>
+          <div class="card">
+            <h2>Sandboxed Ad-Hoc Read Program <span class="pill ok">POST /views/query</span></h2>
+            <div class="form-row">
+              <select id="v-q-view">
+                <option value="tasks_public">tasks_public (narrowed)</option>
+                <option value="tasks_finance">tasks_finance (full)</option>
+                <option value="projects_public">projects_public (narrowed)</option>
+                <option value="projects_finance">projects_finance (full)</option>
+              </select>
+              <input id="v-q-grant" placeholder="grant_id (blank=admin, e.g. g-rogue-sub)" />
+              <button class="primary" onclick="runReadProgram()">Run Read Program</button>
+              <button class="danger" onclick="testHiddenFieldGate()">Test Hidden Field</button>
+            </div>
+            <textarea id="v-q-json" rows="4" style="width:100%;font-family:var(--mono);font-size:12px;background:#090d12;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px">{"view":"tasks_public","where_clause":{"eq":{"field":"project_id","value":"infra"}},"order_by":{"field":"id","desc":false},"limit":20}</textarea>
+            <pre id="read-program-out">Results and work telemetry (rows_scanned, ops_used, answer_hash) appear here.</pre>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Approved k-Anonymous Releases <span class="pill purple">min_group_size=2</span></h2>
+            <div class="form-row">
+              <select id="v-rel-name">
+                <option value="project_budget_summary">project_budget_summary</option>
+                <option value="task_cost_by_status">task_cost_by_status</option>
+              </select>
+              <input id="v-rel-grant" placeholder="grant_id (blank=admin, e.g. g-sre)" />
+              <input id="v-rel-args" value="{}" placeholder="args JSON" />
+              <button class="primary" onclick="runRelease()">Run Release</button>
+            </div>
+            <pre id="release-out">Select a Release above and click "Run Release" to verify cohort threshold gating.</pre>
+          </div>
+          <div class="card">
+            <h2>Read Provenance Log <span id="reads-count" class="pill">0</span></h2>
+            <div id="reads-list" class="muted" style="max-height:360px;overflow:auto">No ad-hoc reads or releases recorded yet.</div>
           </div>
         </div>
       </section>
@@ -680,6 +733,82 @@ fn page_html() : Text
         } catch (e) { toast(e.message, 'err'); }
       }
 
+      async function loadDescribe() {
+        try {
+          const gid = $('v-desc-grant').value.trim();
+          const path = gid ? ('/describe?grant_id=' + encodeURIComponent(gid)) : '/describe';
+          const out = await api('GET', path, null, true);
+          $('describe-out').textContent = JSON.stringify(out, null, 2);
+          toast('Loaded OnboardingManifest (' + out.allowed_views.length + ' views, ' + out.allowed_releases.length + ' releases)', 'ok');
+        } catch (e) {
+          $('describe-out').textContent = 'Error: ' + e.message;
+          toast(e.message, 'err');
+        }
+      }
+
+      async function loadDescribePreset(gid) {
+        $('v-desc-grant').value = gid;
+        await loadDescribe();
+      }
+
+      async function runReadProgram() {
+        try {
+          const prog = JSON.parse($('v-q-json').value);
+          prog.view = $('v-q-view').value;
+          const gid = $('v-q-grant').value.trim() || null;
+          const out = await api('POST', '/views/query', { grant_id: gid, program: prog }, true);
+          $('read-program-out').textContent = JSON.stringify(out, null, 2);
+          toast('ReadProgram OK: ' + out.result_count + ' rows (' + out.rows_scanned + ' scanned, ' + out.ops_used + ' ops)', 'ok');
+          await refreshAll(true);
+        } catch (e) {
+          $('read-program-out').textContent = 'Blocked: ' + e.message;
+          toast('ReadProgram blocked: ' + e.message, 'err');
+        }
+      }
+
+      async function testHiddenFieldGate() {
+        $('v-q-view').value = 'tasks_public';
+        $('v-q-grant').value = 'g-rogue-sub';
+        $('v-q-json').value = JSON.stringify({
+          view: 'tasks_public',
+          where_clause: { gt: { field: 'billed_cents', value: 0 } }
+        });
+        await runReadProgram();
+      }
+
+      async function runRelease() {
+        try {
+          const name = $('v-rel-name').value;
+          const gid = $('v-rel-grant').value.trim() || null;
+          const args = JSON.parse($('v-rel-args').value || '{}');
+          const out = await api('POST', '/releases/' + encodeURIComponent(name), { grant_id: gid, args }, true);
+          $('release-out').textContent = JSON.stringify(out, null, 2);
+          toast('Release ' + name + ' OK (cohort=' + out.cohort_size + ' >= ' + out.min_group_size + ')', 'ok');
+          await refreshAll(true);
+        } catch (e) {
+          $('release-out').textContent = 'Blocked: ' + e.message;
+          toast('Release blocked: ' + e.message, 'err');
+        }
+      }
+
+      function renderReads(entries) {
+        $('reads-count').textContent = String(entries.length);
+        if (!entries.length) {
+          $('reads-list').innerHTML = '<div class="muted">No ad-hoc reads or releases recorded yet.</div>';
+          return;
+        }
+        $('reads-list').innerHTML = '<table><thead><tr><th>Seq</th><th>TX</th><th>Principal / Grant</th><th>Kind</th><th>Target</th><th>Scanned / Out</th></tr></thead><tbody>'
+          + entries.slice().reverse().map((r) => {
+            const kind = enumTag(r.kind);
+            const cls = kind === 'approved_release' ? 'purple' : 'info';
+            return '<tr><td class="mono">#' + r.seq + '</td><td class="mono">' + r.txid + '</td>'
+              + '<td class="mono">' + esc(r.principal) + ' <span class="muted">' + esc(r.grant_id || '') + '</span></td>'
+              + '<td><span class="pill ' + cls + '">' + esc(kind) + '</span></td>'
+              + '<td class="mono">' + esc(r.target) + '</td>'
+              + '<td class="mono">' + r.rows_scanned + ' / ' + r.result_count + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+
       async function simulateReplay() {
         try {
           const ov = $('r-overhead').value.trim();
@@ -785,11 +914,13 @@ fn page_html() : Text
           const badge = rev ? '<span class="pill err">revoked</span>' : '<span class="pill ok">active</span>';
           const btn = rev ? '' : '<button class="small danger" data-action="revoke-grant" data-id="' + esc(g.id) + '">Revoke</button>';
           const kids = (byParent.get(g.id) || []).map((c) => renderNode(c, depth + 1)).join('');
+          const viewsInfo = (g.allowed_views && g.allowed_views.length) ? (' views=[' + esc(g.allowed_views.join(', ')) + ']') : '';
+          const relInfo = (g.allowed_releases && g.allowed_releases.length) ? (' releases=[' + esc(g.allowed_releases.join(', ')) + ']') : '';
           return '<div class="' + (depth > 0 ? 'tree-indent' : '') + '" style="margin-bottom:8px">'
             + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 9px;background:var(--panel-2);border:1px solid var(--border);border-radius:7px">'
             + '<div><span class="mono"><strong>' + esc(g.id) + '</strong></span> ' + badge
             + ' <span class="mono muted">' + esc(g.principal) + '</span>'
-            + '<div class="mono muted">actions=[' + esc((g.allowed_actions || []).join(', ')) + '] calls=' + g.used_calls + '/' + g.max_calls + '</div></div>'
+            + '<div class="mono muted">actions=[' + esc((g.allowed_actions || []).join(', ')) + '] calls=' + g.used_calls + '/' + g.max_calls + viewsInfo + relInfo + '</div></div>'
             + btn + '</div>' + kids + '</div>';
         }
         const roots = byParent.get('__root__') || grants;
@@ -819,8 +950,11 @@ fn page_html() : Text
 
       function renderWorlds(worlds, metrics) {
         const openCount = worlds.filter((w) => enumTag(w.status) === 'open').length;
+        const skipped = metrics.total_reads_skipped || 0;
+        const verified = metrics.total_reads_verified || 0;
         $('st-worlds').textContent = String(metrics.total_landed || 0);
-        $('st-open-worlds').textContent = openCount + ' open / ' + worlds.length + ' total';
+        $('st-open-worlds').textContent = openCount + ' open · ' + skipped + '/' + verified + ' skipped';
+        $('st-open-worlds').title = skipped + ' of ' + verified + ' World reads skipped via CoW O(diff)';
         $('st-retries').textContent = String(metrics.stale_read_rejections || 0);
         $('st-needless').textContent = (metrics.needless_send_backs || 0) + ' needless';
         if (!worlds.length) {
@@ -972,7 +1106,7 @@ fn page_html() : Text
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
 
-          const [projects, grants, claims, worlds, metrics, calls, proposals, audit] = await Promise.all([
+          const [projects, grants, claims, worlds, metrics, calls, proposals, audit, reads] = await Promise.all([
             api('GET', '/projects'),
             api('GET', '/grants'),
             api('GET', '/claims'),
@@ -981,6 +1115,7 @@ fn page_html() : Text
             api('GET', '/admin/replay/calls'),
             api('GET', '/admin/replay/proposals'),
             api('GET', auditPath),
+            api('GET', '/reads?limit=50'),
           ]);
           renderProjects(projects);
           await refreshTasks();
@@ -990,6 +1125,7 @@ fn page_html() : Text
           renderCalls(calls);
           renderProposals(proposals);
           renderAudit(audit);
+          renderReads(reads);
         } catch (e) {
           if (explicit) toast('Refresh error: ' + e.message, 'err');
         }

@@ -453,7 +453,11 @@ fn map_grant_error(err: Grants.GrantError) : ShopApiError
     Grants.InvalidGrant(reason: r): InvalidInput(reason: r)
     Grants.WideningDenied(field: _, detail: _) | Grants.Revoked(id: _, revoked_ancestor: _) | Grants
       .Expired(id: _, expired_ancestor: _) | Grants.ActionDenied(id: _, action: _) | Grants
-      .BudgetExhausted(id: _, ancestor_id: _, max_calls: _): GrantDenied(detail: err.to_text)
+      .ViewDenied(id: _, view: _) | Grants.ReleaseDenied(id: _, release: _) | Grants.BudgetExhausted(
+        id: _,
+        ancestor_id: _,
+        max_calls: _
+      ): GrantDenied(detail: err.to_text)
   end
 end
 
