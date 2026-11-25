@@ -188,3 +188,23 @@ Measured end-to-end against `examples/agent-workbench.mo` (`AgentWorkbench`, an 
 | **Phase 3** — Retroactive 10%→0% overhead bug-fix Replay (`82` calls) | `sim = 690.9 ms`, `accept = 456.3 ms` | **`36` `ReplyChanged`** across all completed tasks + `2` `NowAccepted`; all 3 project budgets updated accurately |
 | **Phase 3** — Portable SHA-256 `GET /admin/export` (`19` buckets, `916` entries) | **46.7 ms** (cured `1,321.7 ms` 500 budget exhaustion via `Export.encode_snapshot_json`) | Canonical RFC 8259 JSON snapshot verified (`format_version = 1`, 64-char SHA-256 digest) |
 | **Post-`SIGKILL` recovery** (`GET /admin/verify` after hard OS kill + 8-worker restart) | **296.7 ms** | `ok = true`, `txid = 451`, `pages = 305`, `audit_entries = 137`; zero lost or corrupted state |
+
+---
+
+## 9. Post-`robertguss/mo#437` Native Rust JSON Speedups (2026-11-25)
+
+Measured after installing `mo` with native RFC 8259 `Json.quote_raw` and `Json.parse_raw` (`robertguss/mo#437`, commit `893e9638`) into `~/.local/bin/mo`:
+
+| Benchmark (`mo serve --workers 8` / `mo run`) | Before (`7d5186d1`) | After (`893e9638`) | Speedup |
+| --- | ---: | ---: | --- |
+| 422 KiB JSON render (`doc.to_text`, 200 entries + escapes + UTF-8) | `1,176 ms` | **`4 ms`** | **294× faster** |
+| 422 KiB JSON parse (`Json.parse`) | `65 ms` | **`4 ms`** | **16× faster** |
+| `ShopApi` Mixed 6R + 2W (`bench/bench_shop_api.py`) | `323.1 req/s` (`write p50 = 38.3 ms`) | **`333.6 req/s`** (`write p50 = 34.3 ms`) | **+3.3% req/s, -10% write p50** |
+| `ShopApi` 111-call Replay Simulate (`bench/bench_shop_api.py`) | `716.3 ms` | **`259.7 ms`** | **2.8× faster** |
+| `ShopApi` Full `/admin/verify` (`113` audit entries, `64` pages) | `141.8 ms` | **`71.3 ms`** | **2.0× faster** |
+| `AgentWorkbench` Phase 1A Coarse Swarm (`18` tasks + `55` retries) | `9.51 s` (`p95 = 344.7 ms`) | **`4.59 s`** (`p95 = 178.0 ms`) | **2.1× faster** |
+| `AgentWorkbench` Phase 1B Fine Swarm + Claims (`18` tasks, `0` retries) | `2.25 s` (`p95 = 223.4 ms`) | **`1.38 s`** (`p95 = 162.9 ms`) | **1.6× faster** |
+| `AgentWorkbench` Phase 2 Rogue-Undo Replay (`82` calls) | `sim 589.4 ms`, `accept 330.0 ms` | **`sim 132.6 ms`, `accept 64.3 ms`** | **4.4× / 5.1× faster** |
+| `AgentWorkbench` Phase 3 Bug-Fix Replay (`82` calls) | `sim 690.9 ms`, `accept 456.3 ms` | **`sim 183.2 ms`, `accept 116.1 ms`** | **3.8× / 3.9× faster** |
+| `AgentWorkbench` Portable Export (`19` buckets, `922` entries) | `46.7 ms` (was `1,321.7 ms` 500) | **`31.6 ms`** | **1.5× faster** (**>41×** vs pre-fix) |
+| `AgentWorkbench` Post-`SIGKILL` `/admin/verify` (`475` tx, `312` pages) | `296.7 ms` | **`157.3 ms`** | **1.9× faster** |

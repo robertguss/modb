@@ -21,6 +21,7 @@ use Modb.Ledger
 use Modb.Replay
 use Modb.Table
 use Modb.World
+use WorkbenchUi
 
 enum Role
   Admin
@@ -181,6 +182,12 @@ struct OkStatus
   ok: Bool
 end
 
+struct DemoResponse
+  ok: Bool
+  summary: Text
+  txid: Int
+end
+
 enum WorkbenchError
   Unauthenticated
   Forbidden(required: Text)
@@ -208,7 +215,10 @@ api
   cors "*"
   auth Caller via authenticate
 
+  get "/" get_ui
+  get "/ui" get_ui
   get "/health" get_health
+  post "/mcp" post_mcp
 
   scope "/projects"
     post "" post_project
@@ -226,6 +236,7 @@ api
 
   scope "/grants"
     post "" post_grant
+    get "" list_grants
     get "/:id" get_grant
     post "/:id/delegate" post_delegate_grant
     post "/:id/revoke" post_revoke_grant
@@ -240,6 +251,7 @@ api
 
   scope "/worlds"
     post "" post_world
+    get "" list_worlds
     get "/metrics" get_world_metrics
     post "/:id/query" post_world_query
     post "/:id/call" post_world_call
@@ -250,6 +262,7 @@ api
 
   get "/audit" get_audit
   post "/admin/init" post_admin_init
+  post "/admin/demo" post_admin_demo
   get "/admin/verify" get_admin_verify
   get "/admin/export" get_admin_export
 
@@ -774,6 +787,10 @@ fn require_planner_or_admin(caller: Caller) : Result(Unit, WorkbenchError)
   end
 end
 
+fn get_ui() : Api.Response
+  Api.html_response(200, WorkbenchUi.page_html())
+end
+
 fn get_health(rf: ReadFiles) : Result(HealthResponse, WorkbenchError)
   if not rf.exists?(db_path())
     return Ok(
@@ -1154,6 +1171,16 @@ fn post_grant(caller: Caller, files: Files, clock: Clock, body: GrantInput) : Re
   )
 end
 
+fn list_grants(rf: ReadFiles) : Result(List(Grants.Grant), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Grants.list_all(Ledger.store(db)).map_error(map_grant_error) end
+  )
+end
+
 fn get_grant(rf: ReadFiles, id: Text) : Result(Grants.Grant, WorkbenchError)
   Ledger.read_locked(
     rf,
@@ -1260,6 +1287,16 @@ fn post_world(caller: Caller, files: Files, clock: Clock, body: WorldOpenInput) 
   exp = now + 1.second * body.ttl_seconds
   World.open_world_locked(files, db_path(), workbench_schema(), body.id, body.grant_id, now, exp)
     .map_error(map_world_error)
+end
+
+fn list_worlds(rf: ReadFiles) : Result(List(World.WorldRecord), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) World.list_worlds(Ledger.store(db)).map_error(map_world_error) end
+  )
 end
 
 fn get_world_metrics(rf: ReadFiles) : Result(World.LandingMetrics, WorkbenchError)
@@ -1499,6 +1536,801 @@ fn delete_replay_proposal(caller: Caller, files: Files, clock: Clock, id: Text) 
   ).map_error(map_replay_error)
 end
 
+## Idempotent interactive demo seeder for the live Workbench Inspector & MCP walkthrough.
+## Sets up a rogue delegated sub-agent budget drain, two refused SRE tasks (`OrigRefused`),
+## an active Claim, and an open speculative World with staged CoW changes ready to inspect/land.
+fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
+  DemoResponse,
+  WorkbenchError
+)
+  try require_admin(caller)
+  _ = try Ledger.init_locked(files, db_path(), workbench_schema(), clock.now).map_error(
+    map_ledger_error
+  )
+  rf = files.read_only
+  already = case get_project(rf, "payments")
+    Ok(_): true
+    Error(_): false
+  end
+  if already
+    h = try get_health(rf)
+    return Ok(
+      DemoResponse(
+        ok: true,
+        summary: "demo already seeded (projects=infra,payments | open world=w-demo-payments-401)",
+        txid: h.txid
+      )
+    )
+  end
+
+  admin = Caller(principal: caller.principal, role: Admin, reason: Some("seed interactive demo"))
+  planner = Caller(principal: "agent:planner", role: Planner, reason: Some("seed interactive demo"))
+  rogue = Caller(principal: "agent:rogue-bot", role: Worker, reason: Some("run unauthorized job"))
+  sre = Caller(principal: "agent:sre", role: Worker, reason: Some("critical SRE runbook"))
+
+  _ = try post_project(
+    admin,
+    files,
+    clock,
+    ProjectInput(id: "payments", name: "Payments Core", budget_cents: 40000)
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 301,
+      project_id: "infra",
+      title: "Rogue crypto-miner job 1",
+      base_cost_cents: 20000
+    )
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 302,
+      project_id: "infra",
+      title: "Rogue crypto-miner job 2",
+      base_cost_cents: 20000
+    )
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 303,
+      project_id: "infra",
+      title: "SRE database failover drill",
+      base_cost_cents: 10000
+    )
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 304,
+      project_id: "infra",
+      title: "SRE TLS certificate rotation",
+      base_cost_cents: 10000
+    )
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 401,
+      project_id: "payments",
+      title: "Ledger reconciliation audit",
+      base_cost_cents: 8000
+    )
+  )
+  _ = try post_task(
+    planner,
+    files,
+    clock,
+    CreateTaskInput(
+      id: 402,
+      project_id: "payments",
+      title: "Webhook retry hardening",
+      base_cost_cents: 6000
+    )
+  )
+
+  _ = try post_grant(
+    admin,
+    files,
+    clock,
+    GrantInput(
+      id: "g-team-b",
+      principal: "agent:team-b-lead",
+      allowed_actions: ["create_task", "complete_task"],
+      max_calls: 25,
+      ttl_seconds: 7200
+    )
+  )
+  _ = try post_delegate_grant(
+    planner,
+    files,
+    clock,
+    "g-team-b",
+    GrantInput(
+      id: "g-rogue-sub",
+      principal: "agent:rogue-bot",
+      allowed_actions: ["complete_task"],
+      max_calls: 10,
+      ttl_seconds: 3600
+    )
+  )
+  _ = try post_grant(
+    admin,
+    files,
+    clock,
+    GrantInput(
+      id: "g-sre",
+      principal: "agent:sre",
+      allowed_actions: ["complete_task"],
+      max_calls: 25,
+      ttl_seconds: 7200
+    )
+  )
+
+  ## Rogue sub-agent completes #301 and #302 via Worlds -> burns 44,000c of 50,000c infra budget!
+  for tid in [301, 302]
+    wid = "w-demo-rogue-#{tid}"
+    _ = try post_world(
+      rogue,
+      files,
+      clock,
+      WorldOpenInput(id: wid, grant_id: "g-rogue-sub", ttl_seconds: 600)
+    )
+    _ = try post_world_call(
+      rogue,
+      files,
+      clock,
+      wid,
+      WorldCallInput(
+        action: "complete_task",
+        args: CompleteTaskInput(
+          task_id: tid,
+          assignee: "agent:rogue-bot",
+          artifact_id: Some("art-rogue-#{tid}"),
+          artifact_summary: Some("Unauthorized workload output"),
+          artifact_sha256: Some("deadbeef000#{tid}")
+        ).to_json
+      )
+    )
+    _ = try post_world_land(rogue, files, clock, wid)
+  end
+
+  ## Legitimate SRE attempts #303 and #304 -> both refused (`409 BudgetExceeded`) and recorded as OrigRefused!
+  for tid in [303, 304]
+    case post_complete_task(
+      sre,
+      files,
+      clock,
+      tid,
+      CompleteTaskInput(
+        task_id: tid,
+        assignee: "agent:sre",
+        artifact_id: Some("art-sre-#{tid}"),
+        artifact_summary: Some("Critical SRE runbook artifact ##{tid}"),
+        artifact_sha256: Some("cafebabe000#{tid}")
+      )
+    )
+      Ok(_): Unit
+      Error(BudgetExceeded(project_id: _, needed: _, remaining: _)): Unit
+      Error(other): return Error(other)
+    end
+  end
+
+  ## Leave a live Claim + open speculative World on payments/#401 so user/agent can inspect its O(diff) and Land!
+  _ = try post_claim(
+    sre,
+    files,
+    clock,
+    ClaimInput(
+      resource: "task:401",
+      grant_id: "g-sre",
+      world_id: Some("w-demo-payments-401"),
+      ttl_seconds: 3600
+    )
+  )
+  _ = try post_world(
+    sre,
+    files,
+    clock,
+    WorldOpenInput(id: "w-demo-payments-401", grant_id: "g-sre", ttl_seconds: 3600)
+  )
+  _ = try post_world_query(
+    sre,
+    files,
+    clock,
+    "w-demo-payments-401",
+    WorldQueryInput(query: "get_task", args: Json.int(401))
+  )
+  _ = try post_world_call(
+    sre,
+    files,
+    clock,
+    "w-demo-payments-401",
+    WorldCallInput(
+      action: "complete_task",
+      args: CompleteTaskInput(
+        task_id: 401,
+        assignee: "agent:sre",
+        artifact_id: Some("art-pay-401"),
+        artifact_summary: Some("Reconciliation passed with zero drift"),
+        artifact_sha256: Some("feedface0401")
+      ).to_json
+    )
+  )
+
+  h = try get_health(rf)
+  Ok(
+    DemoResponse(
+      ok: true,
+      summary: "2 projects, 6 tasks, rogue drain on infra (2 SRE OrigRefused ready for Replay), open World w-demo-payments-401",
+      txid: h.txid
+    )
+  )
+end
+
+## ---------------------------------------------------------------------------
+## Native Streamable HTTP MCP JSON-RPC 2.0 Server (`POST /mcp`)
+## ---------------------------------------------------------------------------
+fn mcp_json_response(payload: Json) : Api.Response
+  Api.response(200, [("content-type", "application/json")], Json.encode(payload).bytes)
+end
+
+fn mcp_rpc_ok(id_val: Json, result_val: Json) : Json
+  Json.Object({"jsonrpc": Json.String("2.0"), "id": id_val, "result": result_val})
+end
+
+fn mcp_rpc_error(id_val: Json, code: Int, message: Text) : Json
+  Json.Object({
+    "jsonrpc": Json.String("2.0"),
+    "id": id_val,
+    "error": Json.Object({"code": Json.int(code), "message": Json.String(message)})
+  })
+end
+
+fn mcp_tool_result(text: Text, is_error?: Bool) : Json
+  Json.Object({
+    "content": Json.Array([Json.Object({"type": Json.String("text"), "text": Json.String(text)})]),
+    "isError": Json.Boolean(is_error?)
+  })
+end
+
+fn mcp_schema(props: Map(Text, Json), required: List(Text)) : Json
+  Json.Object({
+    "type": Json.String("object"),
+    "properties": Json.Object(props),
+    "required": Json.Array(required.map(fn(r) Json.String(r) end))
+  })
+end
+
+fn mcp_prop(ty: Text, desc: Text) : Json
+  Json.Object({"type": Json.String(ty), "description": Json.String(desc)})
+end
+
+fn mcp_tool_def(name: Text, description: Text, input_schema: Json) : Json
+  Json.Object({
+    "name": Json.String(name),
+    "description": Json.String(description),
+    "inputSchema": input_schema
+  })
+end
+
+fn mcp_tools_list() : Json
+  empty_schema = mcp_schema({}, [])
+  reason_p = mcp_prop("string", "Accountable audit reason for this write (overrides X-Reason)")
+  Json.Object({
+    "tools": Json.Array([
+      mcp_tool_def(
+        "modb_health",
+        "Check MoDB Workbench health, txid, audit count, and replay call count.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_init",
+        "Initialize the MoDB Workbench database (admin).",
+        mcp_schema({"reason": reason_p}, [])
+      ),
+      mcp_tool_def(
+        "modb_seed_demo",
+        "Idempotently seed the interactive multi-agent demo (rogue drain, OrigRefused SRE tasks, open World, active Claim).",
+        mcp_schema({"reason": reason_p}, [])
+      ),
+      mcp_tool_def(
+        "modb_verify",
+        "Run full Layer 1-3 cryptographic verification: SHA-256 pages, audit hash chain, and all invariants.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_export_snapshot",
+        "Export a layout-independent SHA-256 PortableSnapshot JSON.",
+        mcp_schema(
+          {
+            "include_internal": mcp_prop(
+              "boolean",
+              "Include internal _modb_* buckets (default true)"
+            )
+          },
+          []
+        )
+      ),
+      mcp_tool_def(
+        "modb_list_projects",
+        "List all projects with budget, spent, and remaining cents.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_create_project",
+        "Create or update a project and its budget (admin).",
+        mcp_schema(
+          {
+            "id": mcp_prop("string", "Project ID"),
+            "name": mcp_prop("string", "Project display name"),
+            "budget_cents": mcp_prop("integer", "Budget in cents"),
+            "reason": reason_p
+          },
+          ["id", "name", "budget_cents"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_get_project_tasks",
+        "List all tasks belonging to a project via secondary index.",
+        mcp_schema({"project_id": mcp_prop("string", "Project ID")}, ["project_id"])
+      ),
+      mcp_tool_def(
+        "modb_create_task",
+        "Create a new open task in a project (planner/admin).",
+        mcp_schema(
+          {
+            "id": mcp_prop("integer", "Unique integer task ID"),
+            "project_id": mcp_prop("string", "Target project ID"),
+            "title": mcp_prop("string", "Task title"),
+            "base_cost_cents": mcp_prop("integer", "Base task cost in cents"),
+            "reason": reason_p
+          },
+          ["id", "project_id", "title", "base_cost_cents"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_complete_task",
+        "Complete a task directly (charges project budget; BudgetExceeded refusals are captured for Replay).",
+        mcp_schema(
+          {
+            "task_id": mcp_prop("integer", "Task ID to complete"),
+            "assignee": mcp_prop("string", "Agent/principal completing the task"),
+            "artifact_id": mcp_prop("string", "Optional artifact ID"),
+            "artifact_summary": mcp_prop("string", "Optional artifact summary"),
+            "artifact_sha256": mcp_prop("string", "Optional artifact SHA-256"),
+            "reason": reason_p
+          },
+          ["task_id", "assignee"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_list_grants",
+        "List all attenuated capability Grants (root and delegated children).",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_issue_grant",
+        "Issue a new root Grant with bounded actions, call budget, and TTL (admin).",
+        mcp_schema(
+          {
+            "id": mcp_prop("string", "Grant ID"),
+            "principal": mcp_prop("string", "Recipient agent principal"),
+            "allowed_actions": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "max_calls": mcp_prop("integer", "Maximum calls permitted"),
+            "ttl_seconds": mcp_prop("integer", "Grant lifetime in seconds"),
+            "reason": reason_p
+          },
+          ["id", "principal", "allowed_actions", "max_calls", "ttl_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_delegate_grant",
+        "Delegate a strictly attenuated child Grant from a parent Grant.",
+        mcp_schema(
+          {
+            "parent_id": mcp_prop("string", "Parent Grant ID"),
+            "id": mcp_prop("string", "Child Grant ID"),
+            "principal": mcp_prop("string", "Child agent principal"),
+            "allowed_actions": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "max_calls": mcp_prop("integer", "Child call cap (<= parent remaining)"),
+            "ttl_seconds": mcp_prop("integer", "Child TTL in seconds (<= parent expiry)"),
+            "reason": reason_p
+          },
+          ["parent_id", "id", "principal", "allowed_actions", "max_calls", "ttl_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_revoke_grant",
+        "Revoke a Grant (cascades automatically to every delegated descendant; admin).",
+        mcp_schema({"id": mcp_prop("string", "Grant ID to revoke"), "reason": reason_p}, ["id"])
+      ),
+      mcp_tool_def(
+        "modb_list_claims",
+        "List currently active advisory Claims (leases).",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_acquire_claim",
+        "Acquire an exclusive advisory Claim lease on a resource (e.g. task:401).",
+        mcp_schema(
+          {
+            "resource": mcp_prop("string", "Resource key to claim"),
+            "grant_id": mcp_prop("string", "Active Grant ID backing the claim"),
+            "world_id": mcp_prop("string", "Optional associated World ID"),
+            "ttl_seconds": mcp_prop("integer", "Lease TTL in seconds"),
+            "reason": reason_p
+          },
+          ["resource", "grant_id", "ttl_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_release_claim",
+        "Release a held advisory Claim.",
+        mcp_schema(
+          {"resource": mcp_prop("string", "Resource key to release"), "reason": reason_p},
+          ["resource"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_list_worlds",
+        "List all speculative Worlds and their statuses.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_world_metrics",
+        "Read World landing, StaleRead rejection, and needless_send_backs telemetry.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_world_open",
+        "Open a pinned CoW speculative World under a Grant.",
+        mcp_schema(
+          {
+            "id": mcp_prop("string", "World ID"),
+            "grant_id": mcp_prop("string", "Active Grant ID"),
+            "ttl_seconds": mcp_prop("integer", "World TTL in seconds")
+          },
+          ["id", "grant_id", "ttl_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_query",
+        "Execute and record a snapshot query inside an open World (get_task, get_project, list_project_tasks).",
+        mcp_schema(
+          {
+            "world_id": mcp_prop("string", "Open World ID"),
+            "query": mcp_prop("string", "Query name: get_task | get_project | list_project_tasks"),
+            "args": Json.Object({
+              "description": Json.String("Query argument (task int ID or project string ID)")
+            })
+          },
+          ["world_id", "query", "args"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_call",
+        "Stage a replayable action call inside an open World without touching main state.",
+        mcp_schema(
+          {
+            "world_id": mcp_prop("string", "Open World ID"),
+            "action": mcp_prop(
+              "string",
+              "Action name: create_project | create_task | complete_task"
+            ),
+            "args": Json.Object({
+              "type": Json.String("object"),
+              "description": Json.String("Action JSON arguments")
+            }),
+            "reason": reason_p
+          },
+          ["world_id", "action", "args"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_diff",
+        "Inspect the exact structural CoW O(diff) of an open World against its pinned base.",
+        mcp_schema({"world_id": mcp_prop("string", "Open World ID")}, ["world_id"])
+      ),
+      mcp_tool_def(
+        "modb_world_land",
+        "Re-verify recorded query checks and atomically land an open World into main state.",
+        mcp_schema(
+          {"world_id": mcp_prop("string", "Open World ID"), "reason": reason_p},
+          ["world_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_abort",
+        "Abort an open speculative World and release its pinned CoW root.",
+        mcp_schema({"world_id": mcp_prop("string", "Open World ID")}, ["world_id"])
+      ),
+      mcp_tool_def(
+        "modb_audit_log",
+        "Query the hash-chained Audit Ledger (optionally filtered by principal or action).",
+        mcp_schema(
+          {
+            "principal": mcp_prop("string", "Optional principal filter"),
+            "action": mcp_prop("string", "Optional action filter"),
+            "limit": mcp_prop("integer", "Max entries to return (default 50)")
+          },
+          []
+        )
+      ),
+      mcp_tool_def(
+        "modb_replay_calls",
+        "List all persisted calls in the Replay Call Log (including OrigRefused calls).",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_replay_simulate",
+        "Simulate an offline selective-undo or bug-fix Replay proposal without modifying live state (admin).",
+        mcp_schema(
+          {
+            "proposal_id": mcp_prop("string", "Unique proposal ID"),
+            "description": mcp_prop("string", "Human description of the replay"),
+            "exclude_principal": mcp_prop("string", "Optional principal to excise"),
+            "exclude_grant": mcp_prop(
+              "string",
+              "Optional grant ID to excise (auto-expands subtree)"
+            ),
+            "exclude_world": mcp_prop("string", "Optional world ID to excise"),
+            "stop_before_seq": mcp_prop("integer", "Optional sequence cutoff"),
+            "overhead_pct_override": mcp_prop(
+              "integer",
+              "Optional billing overhead % override (0..100)"
+            ),
+            "reason": reason_p
+          },
+          ["proposal_id", "description"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_list_proposals",
+        "List all Replay Proposals with their outcome summaries.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_replay_accept",
+        "Atomically adopt a pending Replay Proposal (staleness-guarded; admin).",
+        mcp_schema(
+          {"proposal_id": mcp_prop("string", "Pending proposal ID"), "reason": reason_p},
+          ["proposal_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_replay_discard",
+        "Discard a pending Replay Proposal without modifying live state (admin).",
+        mcp_schema(
+          {"proposal_id": mcp_prop("string", "Pending proposal ID"), "reason": reason_p},
+          ["proposal_id"]
+        )
+      )
+    ])
+  })
+end
+
+fn caller_for_mcp(base: Caller, args: Json) : Caller
+  arg_reason = args.text_at("reason")
+  effective_reason = case arg_reason
+    Some(r) if not r.trim.empty?: Some(r)
+    Some(_) | None: base.reason
+  end
+  effective_principal = case base.role
+    Admin: base.principal
+    Planner | Worker:
+      case args.text_at("agent_id")
+        Some(a) if not a.trim.empty?: a.trim
+        Some(_) | None: base.principal
+      end
+  end
+  Caller(principal: effective_principal, role: base.role, reason: effective_reason)
+end
+
+fn mcp_encode_result(res: Result(T, WorkbenchError)) : Json where T: Json
+  case res
+    Ok(val): mcp_tool_result(Json.encode(val), false)
+    Error(err): mcp_tool_result(Json.encode(err), true)
+  end
+end
+
+fn mcp_req_text(args: Json, key: Text) : Result(Text, WorkbenchError)
+  args.text_at(key).or_fail(InvalidInput(reason: "missing string argument '#{key}'"))
+end
+
+fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: Json) : Json
+  rf = files.read_only
+  eff = caller_for_mcp(caller, args)
+  case name
+    "modb_health": mcp_encode_result(get_health(rf))
+    "modb_init": mcp_encode_result(post_admin_init(eff, files, clock))
+    "modb_seed_demo": mcp_encode_result(post_admin_demo(eff, files, clock))
+    "modb_verify": mcp_encode_result(get_admin_verify(rf))
+    "modb_export_snapshot":
+      inc = args.bool_at("include_internal") or true
+      case Export.export_locked(rf, db_path(), workbench_schema(), inc, clock.now).map_error(
+        map_export_error
+      )
+        Ok(snap): mcp_tool_result(Export.encode_snapshot_json(snap), false)
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_list_projects": mcp_encode_result(list_projects(rf))
+    "modb_create_project":
+      case Json.from_json[ProjectInput](args)
+        Ok(inp): mcp_encode_result(post_project(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_get_project_tasks":
+      case mcp_req_text(args, "project_id")
+        Ok(pid): mcp_encode_result(get_project_tasks(rf, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_create_task":
+      case Json.from_json[CreateTaskInput](args)
+        Ok(inp): mcp_encode_result(post_task(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_complete_task":
+      case Json.from_json[CompleteTaskInput](args)
+        Ok(inp): mcp_encode_result(post_complete_task(eff, files, clock, inp.task_id, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_list_grants": mcp_encode_result(list_grants(rf))
+    "modb_issue_grant":
+      case Json.from_json[GrantInput](args)
+        Ok(inp): mcp_encode_result(post_grant(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_delegate_grant":
+      case (mcp_req_text(args, "parent_id"), Json.from_json[GrantInput](args))
+        (Ok(pid), Ok(inp)): mcp_encode_result(post_delegate_grant(eff, files, clock, pid, inp))
+        (Error(e), _): mcp_tool_result(Json.encode(e), true)
+        (_, Error(e)): mcp_tool_result(e.to_text, true)
+      end
+    "modb_revoke_grant":
+      case mcp_req_text(args, "id")
+        Ok(gid): mcp_encode_result(post_revoke_grant(eff, files, clock, gid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_list_claims": mcp_encode_result(list_claims(rf, clock))
+    "modb_acquire_claim":
+      case Json.from_json[ClaimInput](args)
+        Ok(inp): mcp_encode_result(post_claim(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_release_claim":
+      case mcp_req_text(args, "resource")
+        Ok(res): mcp_encode_result(delete_claim(eff, files, clock, res))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_list_worlds": mcp_encode_result(list_worlds(rf))
+    "modb_world_metrics": mcp_encode_result(get_world_metrics(rf))
+    "modb_world_open":
+      case Json.from_json[WorldOpenInput](args)
+        Ok(inp): mcp_encode_result(post_world(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_world_query":
+      case (mcp_req_text(args, "world_id"), mcp_req_text(args, "query"), args.get("args"))
+        (Ok(wid), Ok(qname), Some(qargs)): mcp_encode_result(
+          post_world_query(eff, files, clock, wid, WorldQueryInput(query: qname, args: qargs))
+        )
+        (Error(e), _, _): mcp_tool_result(Json.encode(e), true)
+        (_, Error(e), _): mcp_tool_result(Json.encode(e), true)
+        (_, _, None): mcp_tool_result("missing argument 'args'", true)
+      end
+    "modb_world_call":
+      case (mcp_req_text(args, "world_id"), mcp_req_text(args, "action"), args.get("args"))
+        (Ok(wid), Ok(aname), Some(aargs)): mcp_encode_result(
+          post_world_call(eff, files, clock, wid, WorldCallInput(action: aname, args: aargs))
+        )
+        (Error(e), _, _): mcp_tool_result(Json.encode(e), true)
+        (_, Error(e), _): mcp_tool_result(Json.encode(e), true)
+        (_, _, None): mcp_tool_result("missing argument 'args'", true)
+      end
+    "modb_world_diff":
+      case mcp_req_text(args, "world_id")
+        Ok(wid): mcp_encode_result(get_world_diff(rf, wid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_world_land":
+      case mcp_req_text(args, "world_id")
+        Ok(wid): mcp_encode_result(post_world_land(eff, files, clock, wid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_world_abort":
+      case mcp_req_text(args, "world_id")
+        Ok(wid): mcp_encode_result(delete_world(eff, files, clock, wid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_audit_log": mcp_encode_result(
+      get_audit(rf, args.text_at("principal"), args.text_at("action"), None, args.int_at("limit"))
+    )
+    "modb_replay_calls": mcp_encode_result(get_replay_calls(rf))
+    "modb_replay_simulate":
+      case Json.from_json[ReplaySimulateInput](args)
+        Ok(inp): mcp_encode_result(post_replay_simulate(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_list_proposals": mcp_encode_result(list_replay_proposals(rf))
+    "modb_replay_accept":
+      case mcp_req_text(args, "proposal_id")
+        Ok(pid): mcp_encode_result(post_replay_accept(eff, files, clock, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_replay_discard":
+      case mcp_req_text(args, "proposal_id")
+        Ok(pid): mcp_encode_result(delete_replay_proposal(eff, files, clock, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    _: mcp_tool_result("unknown MCP tool '#{name}'", true)
+  end
+end
+
+fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  id_val = body.get("id") or Json.Null
+  method = case body.text_at("method")
+    Some(m): m
+    None: return Ok(mcp_json_response(mcp_rpc_error(id_val, -32600, "missing JSON-RPC method")))
+  end
+  params = body.get("params") or Json.Object({})
+
+  case method
+    "initialize": Ok(
+      mcp_json_response(
+        mcp_rpc_ok(
+          id_val,
+          Json.Object({
+            "protocolVersion": Json.String("2025-03-26"),
+            "capabilities": Json.Object({"tools": Json.Object({})}),
+            "serverInfo": Json.Object({
+              "name": Json.String("modb-agent-workbench"),
+              "version": Json.String("0.7.0")
+            })
+          })
+        )
+      )
+    )
+    "notifications/initialized": Ok(
+      Api.response(200, [("content-type", "application/json")], "{}".bytes)
+    )
+    "ping": Ok(mcp_json_response(mcp_rpc_ok(id_val, Json.Object({}))))
+    "tools/list": Ok(mcp_json_response(mcp_rpc_ok(id_val, mcp_tools_list())))
+    "tools/call":
+      case params.text_at("name")
+        None: Ok(
+          mcp_json_response(mcp_rpc_error(id_val, -32602, "tools/call requires params.name"))
+        )
+        Some(tname):
+          targs = params.get("arguments") or Json.Object({})
+          res = mcp_call_tool(caller, files, clock, tname, targs)
+          Ok(mcp_json_response(mcp_rpc_ok(id_val, res)))
+      end
+    _: Ok(mcp_json_response(mcp_rpc_error(id_val, -32601, "method not found: #{method}")))
+  end
+end
+
 test "AgentWorkbench end-to-end via ApiTest.send: Grants, Claims, Worlds, Rogue undo replay & overhead fix"
   files = Files.in_memory({})
   ro = files.read_only
@@ -1731,4 +2563,202 @@ test "AgentWorkbench end-to-end via ApiTest.send: Grants, Claims, Worlds, Rogue 
   exp = ApiTest.send(AgentWorkbench, Api.get("/admin/export"), files, ro, clock, env)
   assert exp.status == 200 and Json.decode_strict[Export.PortableSnapshot](exp.text) is Ok(snap)
   assert Export.verify_snapshot(snap) is Ok(_)
+end
+
+test "AgentWorkbench Milestone 7: Inspector UI, list endpoints, demo seeder, and native MCP JSON-RPC"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-25T19:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "WB_ADMIN_TOKEN": "tok-admin",
+    "WB_PLANNER_TOKEN": "tok-plan",
+    "WB_WORKER_TOKEN": "tok-work"
+  })
+
+  ## 1. Live Web Inspector HTML served cleanly at GET / and GET /ui
+  ui = ApiTest.send(AgentWorkbench, Api.get("/"), files, ro, clock, env)
+  assert ui.status == 200
+  assert ui.text.contains?("MoDB AgentWorkbench")
+  assert ui.text.contains?("Replay Studio")
+
+  ## 2. MCP initialize & tools/list over POST /mcp
+  init_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(1),
+        "method": Json.String("initialize")
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert init_r.status == 200
+  assert init_r.text.contains?("modb-agent-workbench")
+
+  list_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(2),
+        "method": Json.String("tools/list")
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert list_r.status == 200
+  assert list_r.text.contains?("modb_replay_simulate")
+  assert list_r.text.contains?("modb_world_diff")
+
+  ## 3. Seed demo via MCP tool -> inspect Grants, Worlds, O(diff), Land, and Selective-Undo Replay!
+  seed_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(3),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_seed_demo"),
+          "arguments": Json.Object({"reason": Json.String("mcp demo seed")})
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert seed_r.status == 200
+  assert seed_r.text.contains?("w-demo-payments-401")
+
+  ## List Grants & Worlds via HTTP inspector endpoints
+  gs = ApiTest.send(AgentWorkbench, Api.get("/grants"), files, ro, clock, env)
+  assert gs.status == 200 and gs.text.contains?("g-rogue-sub")
+  ws = ApiTest.send(AgentWorkbench, Api.get("/worlds"), files, ro, clock, env)
+  assert ws.status == 200 and ws.text.contains?("w-demo-payments-401")
+
+  ## Inspect CoW O(diff) and Land the open demo World via MCP
+  diff_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(4),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_world_diff"),
+          "arguments": Json.Object({"world_id": Json.String("w-demo-payments-401")})
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert diff_r.status == 200 and
+    diff_r.text.contains?("\"isError\":false") and
+    diff_r.text.contains?("projects")
+
+  land_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(5),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_world_land"),
+          "arguments": Json.Object({
+            "world_id": Json.String("w-demo-payments-401"),
+            "reason": Json.String("land audited reconciliation")
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert land_r.status == 200 and land_r.text.contains?("\"isError\":false")
+
+  ## Simulate & Accept rogue subtree excision Replay via MCP -> unblocks 2 SRE tasks (NowAccepted)!
+  sim_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(6),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_replay_simulate"),
+          "arguments": Json.Object({
+            "proposal_id": Json.String("mcp-undo-rogue"),
+            "description": Json.String("Excise rogue grant subtree via MCP"),
+            "exclude_grant": Json.String("g-team-b")
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sim_r.status == 200 and
+    sim_r.text.contains?("\"isError\":false") and
+    sim_r.text.contains?("now_accepted\\\":2")
+
+  acc_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(7),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_replay_accept"),
+          "arguments": Json.Object({
+            "proposal_id": Json.String("mcp-undo-rogue"),
+            "reason": Json.String("adopt rogue excision via MCP")
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert acc_r.status == 200 and acc_r.text.contains?("\"isError\":false")
+
+  ## Verify integrity via MCP
+  ver_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(8),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({"name": Json.String("modb_verify"), "arguments": Json.Object({})})
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert ver_r.status == 200 and
+    ver_r.text.contains?("\"isError\":false") and
+    ver_r.text.contains?("ok\\\":true")
 end
