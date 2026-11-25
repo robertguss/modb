@@ -1,13 +1,23 @@
 # AGENTS.md
 
-MoDB is the research and the decisions toward a database for many AI agents, to be built in Mo
-(`~/code/mo`). It holds no database code yet. `design.md` is the design as it stands. `map.md` is
-the map that led to it, which Robert stopped on 2026-11-14.
+MoDB is an embedded, crash-safe database built in pure Mo (`~/code/mo`, now a pure-Rust compiler
+and runtime as of `robertguss/mo#433`), alongside the research, formal models, and design
+decisions toward a database for many AI agents. Milestone 1 (Layer 1 CoW B+Tree storage engine +
+Layer 2 typed tables and atomic secondary indexes) lives in `src/`, verified in `tests/` and
+`bench/` and demonstrated in `examples/shop.mo`. `specs/` holds active build specs, `design.md`
+holds the broader long-term design, and `map.md` is the earlier wayfinder map that Robert stopped
+on 2026-11-14.
 
 ## Layout
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
+| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`) and Layer 2 typed tables & secondary indexes (`table.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, and typed-table tests (`mo test`) | Active build sessions |
+| `examples/` | End-to-end MoDB example programs (`shop.mo`) | Active build sessions |
+| `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`) plus real OS `SIGKILL` crash loop (`kill_loop.py`) | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
 | `raw/` | Primary sources saved word for word (papers, pages); created when first needed | Never edited |
@@ -22,6 +32,20 @@ the map that led to it, which Robert stopped on 2026-11-14.
 
 `research/` and `raw/` are sources. `wiki/` is what gets read. A correction to a source goes in the
 wiki, never in the source.
+
+## Verification commands
+
+Using the pure-Rust `mo` release binary (`~/code/mo/target/release/mo` or `mo` on `PATH`):
+
+```sh
+mo test src/modb.mo
+mo test src/modb/table.mo
+mo test tests/test-modb.mo
+mo test tests/test-table.mo
+mo test examples/shop.mo
+python3 bench/kill_loop.py "$(command -v mo || echo ~/code/mo/target/release/mo)" 100
+TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-modb.mo 100000 && rm -rf "$TMP"
+```
 
 ## The map
 
