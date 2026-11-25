@@ -1,0 +1,813 @@
+## MoDB Layer 3: Accountable tamper-evident audit log, commit-time invariant checks,
+## and atomic schema migrations built in pure Mo on top of `Modb` and `Modb.Table`.
+module Modb.Ledger
+expose LedgerError(..),
+WriteMeta(..),
+AuditEntry(..),
+SchemaState(..),
+Migration(..),
+Invariant(..),
+Schema(..),
+AuditReport(..),
+FullReport(..),
+Db(..),
+to_text,
+genesis_hash,
+meta_bucket,
+audit_bucket,
+audit_by_principal_bucket,
+audit_by_action_bucket,
+schema,
+with_migration,
+with_invariant,
+with_require_reason,
+migration,
+invariant,
+row_invariant,
+open,
+open_file,
+open_disk,
+store,
+schema_version,
+txid,
+audit_count,
+write,
+transact,
+write_and_crash,
+snapshot,
+release_snapshot,
+audit_get,
+audit_since,
+audit_tail,
+audit_range,
+audit_by_principal,
+audit_by_action,
+snapshot_audit_tail,
+verify_audit,
+verify_invariants,
+verify_all
+use Crypto
+use Json
+use Modb{Snapshot, Store, VerifyReport, WriteTx}
+use Modb.Errors{ModbError}
+use Modb.Pager{BlockStore}
+use Modb.Table{Index, Table, TableError}
+
+## Initial `prev_hash` for audit sequence #1 (64 hex zeros).
+genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+## Reserved internal MoDB Layer 3 bucket names.
+meta_bucket = "_modb_meta"
+audit_bucket = "_modb_audit"
+audit_by_principal_bucket = "_modb_audit_by_principal"
+audit_by_action_bucket = "_modb_audit_by_action"
+
+## Every failure returned by `Modb.Ledger` operations.
+enum LedgerError
+  TableFailure(TableError)
+  InvalidMeta(reason: Text)
+  InvariantViolation(name: Text, detail: Text)
+  SchemaTooNew(found: Int, supported: Int)
+  InvalidMigration(reason: Text)
+  AuditCorrupt(reason: Text)
+end
+
+## Formats a `LedgerError` as a human-readable message.
+fn to_text(err: LedgerError) : Text
+  case err
+    TableFailure(e): e.to_text
+    InvalidMeta(reason: r): "invalid write metadata: #{r}"
+    InvariantViolation(name: n, detail: d): "invariant '#{n}' violated: #{d}"
+    SchemaTooNew(found: f, supported: s): "database schema v#{f} is newer than supported v#{s}"
+    InvalidMigration(reason: r): "invalid schema migration: #{r}"
+    AuditCorrupt(reason: r): "audit ledger corrupt: #{r}"
+  end
+end
+
+## Caller-supplied accountability metadata attached to every ledger write.
+struct WriteMeta
+  principal: Text
+  action: Text
+  reason: Text
+  at: Time
+end
+
+## Immutable tamper-evident audit entry committed atomically alongside each write.
+struct AuditEntry
+  seq: Int
+  txid: Int
+  schema_version: Int
+  principal: Text
+  action: Text
+  reason: Text
+  at: Time
+  summary: Text
+  payload: Json
+  prev_hash: Text
+  entry_hash: Text
+end
+
+## Persisted schema and audit-chain head state stored in `_modb_meta`.
+struct SchemaState
+  version: Int
+  next_audit_seq: Int
+  last_audit_hash: Text
+end
+
+## Structured payload written into `_modb_audit` when a schema migration executes.
+struct MigrationAuditPayload
+  from_version: Int
+  to_version: Int
+  description: Text
+end
+
+## One versioned, atomic schema upgrade step from `version - 1` to `version`.
+struct Migration
+  version: Int
+  description: Text
+  apply: fn(WriteTx) : Result(WriteTx, TableError)
+end
+
+## Commit-time invariant checked over uncommitted `WriteTx` state before `Modb.commit`.
+## Returning `Ok(None)` passes; `Ok(Some(detail))` aborts and rolls back the transaction.
+struct Invariant
+  name: Text
+  check: fn(WriteTx) : Result(Option(Text), TableError)
+end
+
+## Declarative database schema: target version, ordered migrations, invariants, and policy.
+struct Schema
+  target_version: Int
+  migrations: List(Migration)
+  invariants: List(Invariant)
+  require_reason: Bool
+end
+
+## Result of `verify_audit`.
+struct AuditReport
+  entry_count: Int
+  schema_version: Int
+  last_seq: Int
+  last_hash: Text
+end
+
+## Combined structural + audit-chain + invariant verification summary.
+struct FullReport
+  storage: VerifyReport
+  audit: AuditReport
+  invariants_checked: Int
+end
+
+## Open ledger-backed MoDB handle combining the CoW B+Tree store with schema & audit state.
+struct Db
+  store: Store
+  schema: Schema
+  state: SchemaState
+end
+
+fn wrap_modb(res: Result(T, ModbError)) : Result(T, LedgerError)
+  res.map_error(fn(e) TableFailure(Table.Storage(e)) end)
+end
+
+fn meta_table() : Table(Text, SchemaState)
+  Table.text_key[SchemaState]("_modb_meta")
+end
+
+fn audit_by_principal_index() : Index(Int, AuditEntry, Text)
+  Table.text_index[Int, AuditEntry]("_modb_audit_by_principal", fn(e) e.principal end)
+end
+
+fn audit_by_action_index() : Index(Int, AuditEntry, Text)
+  Table.text_index[Int, AuditEntry]("_modb_audit_by_action", fn(e) e.action end)
+end
+
+fn audit_table() : Table(Int, AuditEntry)
+  Table.int_key[AuditEntry]("_modb_audit").with_index(audit_by_principal_index()).with_index(
+    audit_by_action_index()
+  )
+end
+
+fn initial_schema_state() : SchemaState
+  SchemaState(version: 0, next_audit_seq: 1, last_audit_hash: genesis_hash)
+end
+
+fn len_prefixed(b: Bytes) : Bytes
+  Bytes.join([Bytes.from_u32_be(b.size), b])
+end
+
+## Canonical SHA-256 hash over every field of an `AuditEntry` (excluding `entry_hash` itself).
+fn compute_entry_hash(
+  seq: Int,
+  commit_txid: Int,
+  ver: Int,
+  principal: Text,
+  action: Text,
+  reason: Text,
+  at: Time,
+  summary: Text,
+  payload: Json,
+  prev_hash: Text
+) : Text
+  parts = [
+    "MODB-AUDIT-V1".bytes,
+    Bytes.from_i64_be(seq),
+    Bytes.from_i64_be(commit_txid),
+    Bytes.from_i64_be(ver),
+    len_prefixed(principal.bytes),
+    len_prefixed(action.bytes),
+    len_prefixed(reason.bytes),
+    len_prefixed(Json.encode(at).bytes),
+    len_prefixed(summary.bytes),
+    len_prefixed(Json.encode(payload).bytes),
+    len_prefixed(prev_hash.bytes)
+  ]
+  Crypto.sha256(Bytes.join(parts)).to_hex
+end
+
+## Starts a new `Schema` targeting `target_version` (`>= 0`).
+fn schema(target_version: Int) : Schema
+  Schema(target_version: target_version, migrations: [], invariants: [], require_reason: false)
+end
+
+## Configures whether every write must supply a non-empty `WriteMeta.reason`.
+fn with_require_reason(sc: Schema, required?: Bool) : Schema
+  var next = sc
+  next.require_reason = required?
+  next
+end
+
+## Declares one atomic migration step targeting `version`.
+fn migration(version: Int, description: Text, apply: fn(WriteTx) : Result(WriteTx, TableError)) : Migration
+  Migration(version: version, description: description, apply: apply)
+end
+
+## Attaches a migration step to `sc`.
+fn with_migration(sc: Schema, m: Migration) : Schema
+  var next = sc
+  next.migrations = next.migrations.append(m)
+  next
+end
+
+## Declares a general commit-time invariant checked over uncommitted `WriteTx` state.
+fn invariant(name: Text, check: fn(WriteTx) : Result(Option(Text), TableError)) : Invariant
+  Invariant(name: name, check: check)
+end
+
+## Declares a per-row commit-time invariant over all rows of `tbl`.
+## `predicate(key, val)` returns `None` if valid, or `Some(detail)` describing the violation.
+fn row_invariant(name: Text, tbl: Table(K, V), predicate: fn(K, V) : Option(Text)) : Invariant
+  Invariant(
+    name: name,
+    check: fn(tx)
+      rows = try Table.tx_scan(tx, tbl, None, None, 0)
+      for (k, v) in rows
+        case predicate(k, v)
+          Some(detail): return Ok(Some(detail))
+          None: Unit
+        end
+      end
+      Ok(None)
+    end
+  )
+end
+
+## Attaches a commit-time invariant to `sc`.
+fn with_invariant(sc: Schema, inv: Invariant) : Schema
+  var next = sc
+  next.invariants = next.invariants.append(inv)
+  next
+end
+
+fn validate_schema_definition(sc: Schema) : Result(Unit, LedgerError)
+  if sc.target_version < 0
+    return Error(InvalidMigration(reason: "target_version must be >= 0, got #{sc.target_version}"))
+  end
+  var seen = Set.empty
+  for m in sc.migrations
+    if m.version < 1 or m.version > sc.target_version
+      return Error(
+        InvalidMigration(reason: "migration version #{m.version} outside 1..#{sc.target_version}")
+      )
+    end
+    if seen.has?(m.version)
+      return Error(InvalidMigration(reason: "duplicate migration for version #{m.version}"))
+    end
+    seen = seen.add(m.version)
+  end
+  for inv in sc.invariants
+    if inv.name.trim.empty?
+      return Error(InvalidMigration(reason: "invariant name cannot be empty"))
+    end
+  end
+  Ok(Unit)
+end
+
+fn find_migration(sc: Schema, version: Int) : Result(Migration, LedgerError)
+  for m in sc.migrations
+    return Ok(m) if m.version == version
+  end
+  Error(InvalidMigration(reason: "missing migration for version #{version}"))
+end
+
+fn check_all_invariants(invariants: List(Invariant), tx: WriteTx) : Result(Unit, LedgerError)
+  for inv in invariants
+    case try inv.check(tx)
+      Some(detail): return Error(InvariantViolation(name: inv.name, detail: detail))
+      None: Unit
+    end
+  end
+  Ok(Unit)
+end
+
+fn append_audit_entry(
+  tx: WriteTx,
+  state: SchemaState,
+  commit_txid: Int,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json
+) : Result((WriteTx, SchemaState), LedgerError)
+  seq = state.next_audit_seq
+  prev = state.last_audit_hash
+  hash = compute_entry_hash(
+    seq,
+    commit_txid,
+    state.version,
+    meta.principal,
+    meta.action,
+    meta.reason,
+    meta.at,
+    summary,
+    payload,
+    prev
+  )
+  entry = AuditEntry(
+    seq: seq,
+    txid: commit_txid,
+    schema_version: state.version,
+    principal: meta.principal,
+    action: meta.action,
+    reason: meta.reason,
+    at: meta.at,
+    summary: summary,
+    payload: payload,
+    prev_hash: prev,
+    entry_hash: hash
+  )
+  next_state = SchemaState(version: state.version, next_audit_seq: seq + 1, last_audit_hash: hash)
+  t1 = try Table.put(tx, audit_table(), seq, entry)
+  t2 = try Table.put(t1, meta_table(), "state", next_state)
+  Ok((t2, next_state))
+end
+
+fn validate_write_meta(sc: Schema, meta: WriteMeta) : Result(Unit, LedgerError)
+  if meta.principal.trim.empty?
+    return Error(InvalidMeta(reason: "principal cannot be empty"))
+  end
+  if meta.action.trim.empty?
+    return Error(InvalidMeta(reason: "action cannot be empty"))
+  end
+  if sc.require_reason and meta.reason.trim.empty?
+    return Error(InvalidMeta(reason: "reason is required by schema policy"))
+  end
+  Ok(Unit)
+end
+
+fn open_store_with_schema(base_store: Store, sc: Schema, now: Time) : Result(Db, LedgerError)
+  try validate_schema_definition(sc)
+  stored = (try Table.get(base_store, meta_table(), "state")) or initial_schema_state()
+  if stored.version > sc.target_version
+    return Error(SchemaTooNew(found: stored.version, supported: sc.target_version))
+  end
+  if stored.version == sc.target_version
+    return Ok(Db(store: base_store, schema: sc, state: stored))
+  end
+
+  ## Collect all required migrations before starting the transaction.
+  var pending = []
+  var v = stored.version + 1
+  while v <= sc.target_version
+    m = try find_migration(sc, v)
+    pending = pending.append(m)
+    v += 1
+  end
+
+  expected_txid = Modb.txid(base_store) + 1
+  var cur_tx = Modb.begin_write(base_store)
+  var cur_state = stored
+  for m in pending
+    cur_tx = try m.apply(cur_tx)
+    var stepped = cur_state
+    stepped.version = m.version
+    mig_meta = WriteMeta(
+      principal: "system:migration",
+      action: "migrate",
+      reason: "schema upgrade to v#{m.version}",
+      at: now
+    )
+    mig_summary = "v#{m.version - 1} -> v#{m.version}: #{m.description}"
+    mig_payload = MigrationAuditPayload(
+      from_version: m.version - 1,
+      to_version: m.version,
+      description: m.description
+    ).to_json
+    (t_next, s_next) = try append_audit_entry(
+      cur_tx,
+      stepped,
+      expected_txid,
+      mig_meta,
+      mig_summary,
+      mig_payload
+    )
+    cur_tx = t_next
+    cur_state = s_next
+  end
+
+  try check_all_invariants(sc.invariants, cur_tx)
+  committed = try wrap_modb(Modb.commit(cur_tx))
+  if Modb.txid(committed) != expected_txid
+    return Error(
+      AuditCorrupt(
+        reason: "migration txid mismatch: expected #{expected_txid}, got #{Modb.txid(committed)}"
+      )
+    )
+  end
+  Ok(Db(store: committed, schema: sc, state: cur_state))
+end
+
+## Opens (or initializes and atomically migrates) a ledger-backed MoDB file.
+fn open(files: Files, path: Text, sc: Schema, now: Time) : Result(Db, LedgerError)
+  s = try wrap_modb(Modb.open(files, path))
+  open_store_with_schema(s, sc, now)
+end
+
+## Opens a ledger-backed MoDB database on an already-open `Files.File` handle.
+fn open_file(file: Files.File, sc: Schema, now: Time) : Result(Db, LedgerError)
+  s = try wrap_modb(Modb.open_file(file))
+  open_store_with_schema(s, sc, now)
+end
+
+## Opens a ledger-backed MoDB database on any `BlockStore` (real file or crash simulator).
+fn open_disk(disk: BlockStore, sc: Schema, now: Time) : Result(Db, LedgerError)
+  s = try wrap_modb(Modb.open_disk(disk))
+  open_store_with_schema(s, sc, now)
+end
+
+## Exposes the underlying `Modb.Store` for typed `Modb.Table` read queries.
+fn store(db: Db) : Store
+  db.store
+end
+
+## Current persisted schema version.
+fn schema_version(db: Db) : Int
+  db.state.version
+end
+
+## Current committed `Modb` transaction ID.
+fn txid(db: Db) : Int
+  Modb.txid(db.store)
+end
+
+## Total number of committed audit entries.
+fn audit_count(db: Db) : Int
+  db.state.next_audit_seq - 1
+end
+
+## Runs an accountable write transaction:
+## 1. Validates `meta` against schema policy.
+## 2. Executes `work(tx)`.
+## 3. Verifies every schema `Invariant` on uncommitted `tx` state.
+## 4. Appends a hash-chained `AuditEntry` and updates `_modb_meta` in the same `WriteTx`.
+## 5. Commits atomically via `Modb.commit` (rolling back completely on any error).
+fn write(
+  db: Db,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json,
+  work: fn(WriteTx) : Result(WriteTx, TableError)
+) : Result(Db, LedgerError)
+  try validate_write_meta(db.schema, meta)
+  expected_txid = Modb.txid(db.store) + 1
+  tx0 = Modb.begin_write(db.store)
+  tx1 = try work(tx0)
+  try check_all_invariants(db.schema.invariants, tx1)
+  (tx2, next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)
+  committed = try wrap_modb(Modb.commit(tx2))
+  if Modb.txid(committed) != expected_txid
+    return Error(
+      AuditCorrupt(
+        reason: "commit txid mismatch: expected #{expected_txid}, got #{Modb.txid(committed)}"
+      )
+    )
+  end
+  Ok(Db(store: committed, schema: db.schema, state: next_state))
+end
+
+## Accountable write transaction returning domain result `R` and lifting `LedgerError` into `E`.
+fn transact(
+  db: Db,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json,
+  wrap_error: fn(LedgerError) : E,
+  work: fn(WriteTx) : Result((WriteTx, R), E)
+) : Result((Db, R), E)
+  try validate_write_meta(db.schema, meta).map_error(wrap_error)
+  expected_txid = Modb.txid(db.store) + 1
+  tx0 = Modb.begin_write(db.store)
+  (tx1, out) = try work(tx0)
+  try check_all_invariants(db.schema.invariants, tx1).map_error(wrap_error)
+  (tx2, next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)
+    .map_error(wrap_error)
+  committed = try wrap_modb(Modb.commit(tx2)).map_error(wrap_error)
+  if Modb.txid(committed) != expected_txid
+    return Error(
+      wrap_error(
+        AuditCorrupt(
+          reason: "commit txid mismatch: expected #{expected_txid}, got #{Modb.txid(committed)}"
+        )
+      )
+    )
+  end
+  Ok((Db(store: committed, schema: db.schema, state: next_state), out))
+end
+
+## Runs an accountable write up to a simulated power-cut boundary (`phase == 1` before data sync,
+## `phase == 2` after data sync & meta write, before meta sync) for deterministic crash testing.
+fn write_and_crash(
+  db: Db,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json,
+  phase: Int,
+  rng: Random,
+  work: fn(WriteTx) : Result(WriteTx, TableError)
+) : Result(BlockStore, LedgerError)
+  try validate_write_meta(db.schema, meta)
+  expected_txid = Modb.txid(db.store) + 1
+  tx0 = Modb.begin_write(db.store)
+  tx1 = try work(tx0)
+  try check_all_invariants(db.schema.invariants, tx1)
+  (tx2, _next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)
+  wrap_modb(Modb.commit_and_crash(tx2, phase, rng))
+end
+
+## Pins an O(1) immutable read snapshot of both business tables and the audit ledger.
+fn snapshot(db: Db) : (Db, Snapshot)
+  (next_store, snap) = Modb.snapshot(db.store)
+  (Db(store: next_store, schema: db.schema, state: db.state), snap)
+end
+
+## Releases a previously pinned snapshot.
+fn release_snapshot(db: Db, snap: Snapshot) : Result(Db, LedgerError)
+  next_store = try wrap_modb(Modb.release_snapshot(db.store, snap))
+  Ok(Db(store: next_store, schema: db.schema, state: db.state))
+end
+
+## Looks up a single audit entry by exact sequence number (`1`-based).
+fn audit_get(db: Db, seq: Int) : Result(Option(AuditEntry), LedgerError)
+  Ok(try Table.get(db.store, audit_table(), seq))
+end
+
+## Returns audit entries with `seq > after_seq` in ascending sequence order (`limit <= 0` = all).
+fn audit_since(db: Db, after_seq: Int, limit: Int) : Result(List(AuditEntry), LedgerError)
+  start_seq = if after_seq < 0: 1 else: after_seq + 1
+  rows = try Table.scan(db.store, audit_table(), Some(start_seq), None, limit)
+  Ok(rows.map(fn(p) p.1 end))
+end
+
+## Returns audit entries in half-open sequence range `[start_seq, end_seq)`.
+fn audit_range(db: Db, start_seq: Int, end_seq: Int) : Result(List(AuditEntry), LedgerError)
+  rows = try Table.range(db.store, audit_table(), start_seq, end_seq)
+  Ok(rows.map(fn(p) p.1 end))
+end
+
+## Returns the most recent `limit` audit entries in ascending sequence order (`limit <= 0` = all).
+fn audit_tail(db: Db, limit: Int) : Result(List(AuditEntry), LedgerError)
+  total = audit_count(db)
+  return Ok([]) if total <= 0
+  if limit <= 0 or limit >= total
+    audit_since(db, 0, 0)
+  else
+    start_seq = total - limit + 1
+    rows = try Table.scan(db.store, audit_table(), Some(start_seq), None, limit)
+    Ok(rows.map(fn(p) p.1 end))
+  end
+end
+
+## Indexed lookup of all audit entries written by `principal` (in sequence order).
+fn audit_by_principal(db: Db, principal: Text) : Result(List(AuditEntry), LedgerError)
+  rows = try Table.lookup(db.store, audit_table(), audit_by_principal_index(), principal)
+  Ok(rows.map(fn(p) p.1 end))
+end
+
+## Indexed lookup of all audit entries matching `action` (in sequence order).
+fn audit_by_action(db: Db, action: Text) : Result(List(AuditEntry), LedgerError)
+  rows = try Table.lookup(db.store, audit_table(), audit_by_action_index(), action)
+  Ok(rows.map(fn(p) p.1 end))
+end
+
+## Reads the most recent `limit` audit entries visible in pinned `snap`.
+fn snapshot_audit_tail(db: Db, snap: Snapshot, limit: Int) : Result(List(AuditEntry), LedgerError)
+  rows = try Table.snapshot_all(db.store, snap, audit_table())
+  entries = rows.map(fn(p) p.1 end)
+  if limit <= 0 or limit >= entries.size
+    Ok(entries)
+  else
+    Ok(entries.drop(entries.size - limit))
+  end
+end
+
+## Verifies complete tamper-evidence of `_modb_audit`, `_modb_meta`, and secondary audit indexes:
+## - contiguous 1..N sequence numbering with zero gaps or duplicate keys
+## - non-decreasing commit `txid` bounded by `Modb.txid(db.store)`
+## - unbroken SHA-256 `prev_hash` -> `entry_hash` chain from `genesis_hash`
+## - exact agreement with `_modb_meta["state"]` and secondary index row counts
+fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
+  stored_opt = try Table.get(db.store, meta_table(), "state")
+  rows = try Table.all(db.store, audit_table())
+  principal_idx_rows = try wrap_modb(Modb.scan(db.store, audit_by_principal_bucket, None, None, 0))
+  action_idx_rows = try wrap_modb(Modb.scan(db.store, audit_by_action_bucket, None, None, 0))
+
+  if principal_idx_rows.size != rows.size
+    return Error(
+      AuditCorrupt(
+        reason: "principal audit index count #{principal_idx_rows.size} != audit entry count #{rows
+          .size}"
+      )
+    )
+  end
+  if action_idx_rows.size != rows.size
+    return Error(
+      AuditCorrupt(
+        reason: "action audit index count #{action_idx_rows.size} != audit entry count #{rows.size}"
+      )
+    )
+  end
+
+  stored = case stored_opt
+    Some(st): st
+    None:
+      if not rows.empty?
+        return Error(AuditCorrupt(reason: "audit entries exist without _modb_meta state"))
+      end
+      return Ok(
+        AuditReport(entry_count: 0, schema_version: 0, last_seq: 0, last_hash: genesis_hash)
+      )
+  end
+
+  var expected_seq = 1
+  var prev = genesis_hash
+  var last_txid = 0
+  store_txid = Modb.txid(db.store)
+
+  for (key_seq, entry) in rows
+    if key_seq != expected_seq or entry.seq != expected_seq
+      return Error(
+        AuditCorrupt(
+          reason: "sequence gap/mismatch at key=#{key_seq}, entry.seq=#{entry.seq} (expected #{expected_seq})"
+        )
+      )
+    end
+    if entry.txid < 2 or entry.txid < last_txid or entry.txid > store_txid
+      return Error(
+        AuditCorrupt(
+          reason: "invalid txid #{entry.txid} at seq #{entry.seq} (last=#{last_txid}, store=#{store_txid})"
+        )
+      )
+    end
+    if entry.prev_hash != prev
+      return Error(
+        AuditCorrupt(reason: "hash chain broken at seq #{entry.seq}: prev_hash mismatch")
+      )
+    end
+    recomputed = compute_entry_hash(
+      entry.seq,
+      entry.txid,
+      entry.schema_version,
+      entry.principal,
+      entry.action,
+      entry.reason,
+      entry.at,
+      entry.summary,
+      entry.payload,
+      entry.prev_hash
+    )
+    if entry.entry_hash != recomputed
+      return Error(
+        AuditCorrupt(reason: "tampered audit entry at seq #{entry.seq}: entry_hash mismatch")
+      )
+    end
+    prev = entry.entry_hash
+    last_txid = entry.txid
+    expected_seq += 1
+  end
+
+  if stored.next_audit_seq != expected_seq
+    return Error(
+      AuditCorrupt(
+        reason: "meta next_audit_seq=#{stored.next_audit_seq} != expected #{expected_seq}"
+      )
+    )
+  end
+  if stored.last_audit_hash != prev
+    return Error(AuditCorrupt(reason: "meta last_audit_hash disagrees with audit chain head"))
+  end
+
+  Ok(
+    AuditReport(
+      entry_count: rows.size,
+      schema_version: stored.version,
+      last_seq: rows.size,
+      last_hash: prev
+    )
+  )
+end
+
+## Evaluates every invariant declared in `db.schema` against committed state (read-only).
+fn verify_invariants(db: Db) : Result(Unit, LedgerError)
+  tx = Modb.begin_write(db.store)
+  check_all_invariants(db.schema.invariants, tx)
+end
+
+## Runs full end-to-end verification: B+Tree storage integrity, tamper-evident audit chain,
+## and all commit-time schema invariants.
+fn verify_all(db: Db) : Result(FullReport, LedgerError)
+  storage_rep = try wrap_modb(Modb.verify(db.store))
+  audit_rep = try verify_audit(db)
+  try verify_invariants(db)
+  Ok(
+    FullReport(
+      storage: storage_rep,
+      audit: audit_rep,
+      invariants_checked: db.schema.invariants.size
+    )
+  )
+end
+
+struct CounterRow
+  value: Int
+end
+
+test "Modb.Ledger unit: migrations, accountable writes, invariants, and hash-chain verification"
+  files = Files.in_memory({})
+  t0 = Time.parse("2026-11-25T03:00:00Z") or stop "t0"
+  counters = Table.text_key[CounterRow]("counters")
+
+  sc = schema(1).with_require_reason(true).with_migration(
+    migration(
+      1,
+      "seed initial counter",
+      fn(tx) Table.put(tx, counters, "main", CounterRow(value: 10)) end
+    )
+  ).with_invariant(
+    row_invariant(
+      "counter_non_negative",
+      counters,
+      fn(k, row) if row.value < 0: Some("counter '#{k}' < 0") else: None end
+    )
+  )
+
+  assert open(files, "ledger-unit.modb", sc, t0) is Ok(db0)
+  assert schema_version(db0) == 1
+  assert audit_count(db0) == 1
+  assert Table.get(store(db0), counters, "main") == Ok(Some(CounterRow(value: 10)))
+
+  ## Missing reason is rejected cleanly without touching state or audit log
+  bad_meta = WriteMeta(principal: "ada", action: "set_counter", reason: "   ", at: t0)
+  assert write(
+    db0,
+    bad_meta,
+    "set main=5",
+    Json.Null,
+    fn(tx) Table.put(tx, counters, "main", CounterRow(value: 5)) end
+  ) is
+    Error(InvalidMeta(reason: _))
+
+  ## Violating invariant rolls back both data and audit entry
+  good_meta = WriteMeta(principal: "ada", action: "set_counter", reason: "ticket #42", at: t0)
+  assert write(
+    db0,
+    good_meta,
+    "set main=-1",
+    Json.Null,
+    fn(tx) Table.put(tx, counters, "main", CounterRow(value: -1)) end
+  ) is
+    Error(InvariantViolation(name: "counter_non_negative", detail: _))
+  assert audit_count(db0) == 1
+  assert Table.get(store(db0), counters, "main") == Ok(Some(CounterRow(value: 10)))
+
+  ## Valid write commits atomically with hash-chained audit entry
+  assert write(
+    db0,
+    good_meta,
+    "set main=25",
+    CounterRow(value: 25).to_json,
+    fn(tx) Table.put(tx, counters, "main", CounterRow(value: 25)) end
+  ) is
+    Ok(db1)
+  assert audit_count(db1) == 2
+  assert verify_all(db1) is Ok(rep)
+  assert rep.audit.entry_count == 2
+  assert rep.invariants_checked == 1
+end
