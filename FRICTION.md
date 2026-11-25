@@ -91,12 +91,14 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** `mo serve` defaults to 8 concurrent HTTP worker threads, each receiving an isolated `Files` capability per request. Without advisory file locking (`Files.File.lock_shared` / `lock_exclusive` / `unlock`) or read-only random-access handles (`ReadFiles.open`), Phase 2A had to run `mo serve --workers 1`.
 - **Resolution:** PR #436 added safe BSD `flock` advisory locks (`File.lock_shared`, `File.lock_exclusive`, `File.unlock` via `rustix::fs::flock` with auto-unlock on drop and `Files.in_memory` parity) plus host-attenuated `ReadFiles.open` (and `ApiTest.send` `ReadFiles` derivation from supplied `Files`). Adopted across `src/modb.mo`, `src/modb/ledger.mo`, `examples/shop-api.mo`, and verified under `mo serve --workers 8` with an 8-thread concurrent HTTP + mid-flight `SIGKILL` stress test in `tests/test_shop_api_live.py`.
 
-### 17. BSD `flock` `LOCK_SH` reader starvation of `LOCK_EX` writers under continuous heavy reads & per-request VM instruction budget
-- **Where:** `examples/shop-api.mo` under `mo serve --workers 8` (`tests/test_shop_api_live.py` Waves 3–4) and `src/modb/replay.mo` (`preview_replay`)
+### 17. ~~BSD `flock` `LOCK_SH` reader starvation of `LOCK_EX` writers under continuous heavy reads & per-request VM instruction budget~~ — Resolved in Milestone 5
+- **Where:** `src/modb.mo` (`with_shared_lock`), `src/modb/ledger.mo` (`row_invariant`), `src/modb/replay.mo` (`preview_replay`), `examples/shop-api.mo`
 - **What happened:**
-  1. Under Linux BSD `flock`, 4 tight-loop HTTP reader threads overlapping `LOCK_SH` while executing full cold-read `/admin/verify` scans can continuously renew shared ownership and starve pending `LOCK_EX` writers for >15 s.
-  2. Replaying ~100 calls inside one HTTP request initially triggered `bug: internal error: instruction budget exhausted` (~1.8 s) when `preview_replay` committed (`Modb.commit` + SHA-256 page encoding) after every single replayed call. Switching `preview_replay` to keep a single pure in-memory `WriteTx` across all replayed calls (using Perceus immutable values for O(1) rollback on refusal/invariant rejection and committing once at the end) eliminated the budget exhaustion completely and sped up replay by >20×.
-- **Implication for Milestone 5 (Performance & Scale):** Target both fast-path storage/codec optimization (right-edge 90/10 split, single-pass page packing, reduced helper dispatch) and non-starving reader concurrency (e.g. fast snapshot/verify paths and lock-fairness strategies).
+  1. Under Linux BSD `flock`, 4–6 tight-loop HTTP reader threads overlapping `LOCK_SH` continuously renewed shared ownership and starved pending `LOCK_EX` writers.
+  2. Replaying ~100 calls inside one HTTP request hit `bug: internal error: instruction budget exhausted` (~1.8 s), first from per-call `Modb.commit` page sealing and then from O(N²) full-table `row_invariant` / `order_referential_integrity` scans.
+- **Resolution:**
+  1. Upgraded `Modb.with_shared_lock` to lock-free optimistic CoW snapshot reads (verified by `start_txid == end_txid` on alternating SHA-256 meta-pages, since pages live at `txid` are immutable until commit `txid + 2`, with `lock_shared` fallback under continuous write storms). Verified with 6 tight-loop readers + 2 writers in `bench/bench_shop_api.py` (**323.1 req/s**, zero writer starvation) and unthrottled Wave 3 `/admin/verify` readers in `tests/test_shop_api_live.py`.
+  2. Switched `Replay.preview_replay` to a single pure in-memory `WriteTx` with O(1) immutable rollback, and added `Modb.begin_write_tracked` + O(touched) incremental invariant checks in `Ledger.row_invariant` and `ShopApi.order_referential_integrity`, cutting 111-call HTTP replay simulation from 1,791 ms (budget exhaustion) down to **716.3 ms**.
 
 ---
 

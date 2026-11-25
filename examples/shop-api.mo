@@ -316,7 +316,6 @@ end
 
 ## Schema v1 -> v2 with three commit-time invariants enforced on every HTTP write.
 fn shop_schema() : Ledger.Schema
-  custs = customers_table()
   prods = products_table()
   ords = orders_table()
   Ledger.schema(2).with_require_reason(true).with_migration(
@@ -361,16 +360,63 @@ fn shop_schema() : Ledger.Schema
     Ledger.invariant(
       "order_referential_integrity",
       fn(tx)
+        incremental? = Modb.tx_is_tracked?(tx) and
+          not Modb.tx_bucket_deleted?(tx, "customers") and
+          not Modb.tx_bucket_deleted?(tx, "products") and
+          not Modb.tx_bucket_deleted?(tx, "orders") and
+          Modb.tx_touched_deletes(tx, "customers").empty? and
+          Modb.tx_touched_deletes(tx, "products").empty?
+        if incremental?
+          touched_ords = Modb.tx_touched_puts(tx, "orders")
+          for kb in touched_ords
+            case try Modb.tx_get(tx, "orders", kb).map_error(fn(e) Table.Storage(e) end)
+              Some(vb):
+                oid = try Table.decode_int_key(kb)
+                o = try Json.decode[Order](vb).map_error(fn(e) Table.DecodeValue(e) end)
+                if o.quantity <= 0
+                  return Ok(Some("order ##{oid} has non-positive quantity #{o.quantity}"))
+                end
+                b_raw = try Modb.tx_get(tx, "customers", Table.encode_int_key(o.buyer_id)).map_error(
+                  fn(e) Table.Storage(e) end
+                )
+                if b_raw is None
+                  return Ok(Some("order ##{oid} references unknown buyer ##{o.buyer_id}"))
+                end
+                p_raw = try Modb.tx_get(tx, "products", o.sku.bytes).map_error(fn(e)
+                  Table.Storage(e)
+                end)
+                if p_raw is None
+                  return Ok(Some("order ##{oid} references unknown sku '#{o.sku}'"))
+                end
+              None: Unit
+            end
+          end
+          return Ok(None)
+        end
         all_orders = try Table.tx_scan(tx, ords, None, None, 0)
+        var verified_buyers = Set.empty
+        var verified_skus = Set.empty
         for (oid, o) in all_orders
           if o.quantity <= 0
             return Ok(Some("order ##{oid} has non-positive quantity #{o.quantity}"))
           end
-          if (try Table.tx_get(tx, custs, o.buyer_id)) is None
-            return Ok(Some("order ##{oid} references unknown buyer ##{o.buyer_id}"))
+          if not verified_buyers.has?(o.buyer_id)
+            b_raw = try Modb.tx_get(tx, "customers", Table.encode_int_key(o.buyer_id)).map_error(
+              fn(e) Table.Storage(e) end
+            )
+            if b_raw is None
+              return Ok(Some("order ##{oid} references unknown buyer ##{o.buyer_id}"))
+            end
+            verified_buyers = verified_buyers.add(o.buyer_id)
           end
-          if (try Table.tx_get(tx, prods, o.sku)) is None
-            return Ok(Some("order ##{oid} references unknown sku '#{o.sku}'"))
+          if not verified_skus.has?(o.sku)
+            p_raw = try Modb.tx_get(tx, "products", o.sku.bytes).map_error(
+              fn(e) Table.Storage(e) end
+            )
+            if p_raw is None
+              return Ok(Some("order ##{oid} references unknown sku '#{o.sku}'"))
+            end
+            verified_skus = verified_skus.add(o.sku)
           end
         end
         Ok(None)

@@ -61,7 +61,9 @@ def start_server(mo_bin: str, shop_api_mo: str, root_dir: str, port: int, worker
     env["SHOP_ADMIN_TOKEN"] = "live-admin"
     env["SHOP_CLERK_TOKEN"] = "live-clerk"
     env["SHOP_AGENT_TOKEN"] = "live-agent"
-    return subprocess.Popen(
+    log_path = os.path.join(root_dir, f"serve-{port}.log")
+    log_fh = open(log_path, "w", encoding="utf-8")
+    proc = subprocess.Popen(
         [
             mo_bin,
             "serve",
@@ -75,11 +77,13 @@ def start_server(mo_bin: str, shop_api_mo: str, root_dir: str, port: int, worker
             root_dir,
             shop_api_mo,
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_fh,
+        stderr=log_fh,
         text=True,
         env=env,
     )
+    log_fh.close()
+    return proc
 
 
 def main() -> int:
@@ -578,8 +582,6 @@ def main() -> int:
                 step = 0
                 while not w3_stop_readers.is_set():
                     path = routes[(idx + step) % len(routes)]
-                    if path == "/admin/verify" and (idx != 0 or step % 16 != 0):
-                        path = "/products/world-beans"
                     step += 1
                     st_r, b_r = http_json(base2, "GET", path, timeout=30.0)
                     with w3_lock:
@@ -587,7 +589,6 @@ def main() -> int:
                             w3_counts["reads"] += 1
                         else:
                             w3_errors.append(f"GET {path}: {st_r} {b_r}")
-                    time.sleep(0.005)
 
             with ThreadPoolExecutor(max_workers=8) as pool3:
                 rfuts = [pool3.submit(world_reader, r) for r in range(4)]

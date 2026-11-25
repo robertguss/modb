@@ -769,7 +769,7 @@ fn preview_replay(
   calls = try list_calls(Ledger.store(db))
   base_calls = try call_count(Ledger.store(db))
   sim_base = try wrap_modb(Modb.open_disk(sim_empty()))
-  var cur_tx = Modb.begin_write(sim_base)
+  var cur_tx = Modb.begin_write_tracked(sim_base)
   var cur_ver = 0
   var migrations_run = []
   var outcomes = []
@@ -803,7 +803,8 @@ fn preview_replay(
     else
       action_def = try resolve_action(rc, call.schema_version, call.action)
       invs = rc.version_invariants.get(cur_ver) or db.schema.invariants
-      case action_def.run(cur_tx, call.args, call.at)
+      step_tx = Modb.tx_clear_touched(cur_tx)
+      case action_def.run(step_tx, call.args, call.at)
         Ok((tx1, new_reply)):
           case try check_replay_invariants(invs, tx1)
             None:

@@ -263,11 +263,28 @@ fn invariant(name: Text, check: fn(WriteTx) : Result(Option(Text), TableError)) 
 end
 
 ## Declares a per-row commit-time invariant over all rows of `tbl`.
-## `predicate(key, val)` returns `None` if valid, or `Some(detail)` describing the violation.
+## On tracked write transactions (`Modb.begin_write_tracked`), evaluates ONLY rows written in `tx`
+## (O(touched) instead of O(N)); on untracked checks (`verify_invariants`, migrations), scans all rows.
 fn row_invariant(name: Text, tbl: Table(K, V), predicate: fn(K, V) : Option(Text)) : Invariant
   Invariant(
     name: name,
     check: fn(tx)
+      if Modb.tx_is_tracked?(tx) and not Modb.tx_bucket_deleted?(tx, tbl.bucket)
+        touched = Modb.tx_touched_puts(tx, tbl.bucket)
+        for kb in touched
+          case try Modb.tx_get(tx, tbl.bucket, kb).map_error(fn(e) Table.Storage(e) end)
+            Some(vb):
+              k = try tbl.key_codec.decode(kb)
+              v = try tbl.decode_value(vb).map_error(fn(e) Table.DecodeValue(e) end)
+              case predicate(k, v)
+                Some(detail): return Ok(Some(detail))
+                None: Unit
+              end
+            None: Unit
+          end
+        end
+        return Ok(None)
+      end
       rows = try Table.tx_scan(tx, tbl, None, None, 0)
       for (k, v) in rows
         case predicate(k, v)
@@ -645,7 +662,7 @@ fn write(
 ) : Result(Db, LedgerError)
   try validate_write_meta(db.schema, meta)
   expected_txid = Modb.txid(db.store) + 1
-  tx0 = Modb.begin_write(db.store)
+  tx0 = Modb.begin_write_tracked(db.store)
   tx1 = try work(tx0)
   try check_all_invariants(db.schema.invariants, tx1)
   (tx2, next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)
@@ -671,7 +688,7 @@ fn transact(
 ) : Result((Db, R), E)
   try validate_write_meta(db.schema, meta).map_error(wrap_error)
   expected_txid = Modb.txid(db.store) + 1
-  tx0 = Modb.begin_write(db.store)
+  tx0 = Modb.begin_write_tracked(db.store)
   (tx1, out) = try work(tx0)
   try check_all_invariants(db.schema.invariants, tx1).map_error(wrap_error)
   (tx2, next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)
@@ -702,7 +719,7 @@ fn write_and_crash(
 ) : Result(BlockStore, LedgerError)
   try validate_write_meta(db.schema, meta)
   expected_txid = Modb.txid(db.store) + 1
-  tx0 = Modb.begin_write(db.store)
+  tx0 = Modb.begin_write_tracked(db.store)
   tx1 = try work(tx0)
   try check_all_invariants(db.schema.invariants, tx1)
   (tx2, _next_state) = try append_audit_entry(tx1, db.state, expected_txid, meta, summary, payload)

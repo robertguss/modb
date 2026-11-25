@@ -33,7 +33,13 @@ unpin_root,
 tx_pin_base_root,
 tx_unpin_root,
 begin_write,
+begin_write_tracked,
 begin_write_from_root,
+tx_is_tracked?,
+tx_clear_touched,
+tx_touched_puts,
+tx_touched_deletes,
+tx_bucket_deleted?,
 tx_get,
 tx_scan,
 tx_put,
@@ -134,6 +140,10 @@ struct WriteTx
   dirty_buckets: Map(Text, Int)
   dirty: Bool
   speculative: Bool
+  track_writes: Bool
+  touched_puts: Map(Text, Set(Bytes))
+  touched_deletes: Map(Text, Set(Bytes))
+  deleted_buckets: Set(Text)
   added_pins: Map(Text, PinnedRoot)
   removed_pins: Set(Text)
 end
@@ -194,8 +204,33 @@ fn finish_locked(fh: Files.File, res: Result(R, E), wrap_error: fn(ModbError) : 
   end
 end
 
-## Opens `path` read-only via `ReadFiles`, acquires an advisory shared lock (`flock`),
-## loads a fresh committed view of the meta-pages, executes `work`, and always releases the lock.
+fn read_committed_txid_raw(file: Files.File) : Result(Int, ModbError)
+  store = from_file(file)
+  m0 = case read_page(store, 0)
+    Ok(raw0): decode_meta(raw0)
+    Error(e): Error(e)
+  end
+  m1 = case read_page(store, 1)
+    Ok(raw1): decode_meta(raw1)
+    Error(e): Error(e)
+  end
+  case (m0, m1)
+    (Ok(a), Ok(b)): Ok(if b.txid > a.txid: b.txid else: a.txid)
+    (Ok(a), Error(_)): Ok(a.txid)
+    (Error(_), Ok(b)): Ok(b.txid)
+    (Error(e0), Error(e1)): Error(
+      Corrupt(reason: "both meta-pages invalid: slot0=(#{e0.to_text}), slot1=(#{e1.to_text})")
+    )
+  end
+end
+
+## Opens `path` read-only via `ReadFiles`, executes `work` against a linearizable committed
+## snapshot, and never starves concurrent `LOCK_EX` writers under BSD `flock`:
+## - Fast path (up to 3 attempts): lock-free optimistic CoW snapshot read verified by
+##   re-checking that `meta.txid` remained identical before and after `work(s)` (since pages
+##   live at `txid` are immutable until commit `txid + 2` begins).
+## - Fallback under heavy continuous write bursts: acquires advisory `lock_shared` so readers
+##   cannot starve either.
 fn with_shared_lock(
   rf: ReadFiles,
   path: Text,
@@ -203,6 +238,21 @@ fn with_shared_lock(
   work: fn(Store) : Result(R, E)
 ) : Result(R, E)
   fh = try wrap_io(rf.open(path)).map_error(wrap_error)
+  for _attempt in 0..3
+    case open_file_read_only(fh)
+      Ok(s):
+        start_txid = s.meta.txid
+        res = work(s)
+        case read_committed_txid_raw(fh)
+          Ok(end_txid):
+            if end_txid == start_txid
+              return res
+            end
+          Error(_): Unit
+        end
+      Error(_): Unit
+    end
+  end
   try wrap_io(fh.lock_shared).map_error(wrap_error)
   res = case open_file_read_only(fh)
     Ok(s): work(s)
@@ -648,6 +698,28 @@ fn begin_write(store: Store) : WriteTx
     dirty_buckets: {},
     dirty: false,
     speculative: false,
+    track_writes: false,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
+    added_pins: {},
+    removed_pins: Set.empty
+  )
+end
+
+## Starts a write transaction with per-bucket write-set tracking for O(touched) incremental invariants.
+fn begin_write_tracked(store: Store) : WriteTx
+  WriteTx(
+    base: store,
+    alloc: empty_allocator(store.meta.page_count, store.ready_free),
+    catalog_root: store.meta.catalog_root,
+    dirty_buckets: {},
+    dirty: false,
+    speculative: false,
+    track_writes: true,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
     added_pins: {},
     removed_pins: Set.empty
   )
@@ -663,9 +735,48 @@ fn begin_write_from_root(store: Store, cat_root: Int) : WriteTx
     dirty_buckets: {},
     dirty: false,
     speculative: true,
+    track_writes: true,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
     added_pins: {},
     removed_pins: Set.empty
   )
+end
+
+## True if `tx` records touched put/delete keys for O(touched) incremental invariant evaluation.
+fn tx_is_tracked?(tx: WriteTx) : Bool
+  tx.track_writes
+end
+
+## Clears accumulated touched-key sets on `tx` (used between multi-step offline replay calls).
+fn tx_clear_touched(tx: WriteTx) : WriteTx
+  var next = tx
+  next.touched_puts = {}
+  next.touched_deletes = {}
+  next.deleted_buckets = Set.empty
+  next
+end
+
+## Returns keys written to `bucket` in `tx` (meaningful when `tx_is_tracked?(tx)` is true).
+fn tx_touched_puts(tx: WriteTx, bucket: Text) : List(Bytes)
+  case tx.touched_puts.get(bucket)
+    Some(s): s.to_list
+    None: []
+  end
+end
+
+## Returns keys deleted from `bucket` in `tx` (meaningful when `tx_is_tracked?(tx)` is true).
+fn tx_touched_deletes(tx: WriteTx, bucket: Text) : List(Bytes)
+  case tx.touched_deletes.get(bucket)
+    Some(s): s.to_list
+    None: []
+  end
+end
+
+## True if `bucket` was wholly deleted via `tx_delete_bucket` in `tx`.
+fn tx_bucket_deleted?(tx: WriteTx, bucket: Text) : Bool
+  tx.deleted_buckets.has?(bucket)
 end
 
 fn tx_bucket_root(tx: WriteTx, bucket: Text) : Result(Int, ModbError)
@@ -698,6 +809,10 @@ fn tx_put_raw(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(Writ
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, new_bucket_root)
   next.dirty = true
+  if next.track_writes
+    cur_set = next.touched_puts.get(bucket) or Set.empty
+    next.touched_puts = next.touched_puts.set(bucket, cur_set.add(key))
+  end
   Ok(next)
 end
 
@@ -710,6 +825,10 @@ fn tx_delete_raw(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbEr
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, new_bucket_root)
   next.dirty = true
+  if next.track_writes
+    cur_set = next.touched_deletes.get(bucket) or Set.empty
+    next.touched_deletes = next.touched_deletes.set(bucket, cur_set.add(key))
+  end
   Ok(next)
 end
 
@@ -741,6 +860,9 @@ fn tx_delete_bucket(tx: WriteTx, bucket: Text) : Result(WriteTx, ModbError)
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, 0)
   next.dirty = true
+  if next.track_writes
+    next.deleted_buckets = next.deleted_buckets.add(bucket)
+  end
   Ok(next)
 end
 
