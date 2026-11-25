@@ -3,8 +3,10 @@
 MoDB is an embedded, crash-safe database built in pure Mo (`~/code/mo`, now a pure-Rust compiler
 and runtime as of `robertguss/mo#433`), alongside the research, formal models, and design
 decisions toward a database for many AI agents. Milestone 1 (Layer 1 CoW B+Tree storage engine +
-Layer 2 typed tables and atomic secondary indexes) lives in `src/`, verified in `tests/` and
-`bench/` and demonstrated in `examples/shop.mo`. `specs/` holds active build specs, `design.md`
+Layer 2 typed tables and atomic secondary indexes) and Milestone 2A (Layer 3 accountable
+hash-chained audit ledger, commit-time invariants, atomic schema migrations, and a live `ShopApi`
+HTTP `api` server) live in `src/`, verified in `tests/` and `bench/` and demonstrated in
+`examples/shop.mo` and `examples/shop-api.mo`. `specs/` holds active build specs, `design.md`
 holds the broader long-term design, and `map.md` is the earlier wayfinder map that Robert stopped
 on 2026-11-14.
 
@@ -12,11 +14,11 @@ on 2026-11-14.
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`) and Layer 2 typed tables & secondary indexes (`table.mo`) | Active build sessions |
-| `tests/` | Differential tests, deterministic crash-simulation tests, and typed-table tests (`mo test`) | Active build sessions |
-| `examples/` | End-to-end MoDB example programs (`shop.mo`) | Active build sessions |
+| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables & secondary indexes (`table.mo`), and Layer 3 accountable ledger, invariants & migrations (`ledger.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, Layer 3 ledger/migration/crash tests (`mo test`), and live `mo serve` `SIGKILL` test (`test_shop_api_live.py`) | Active build sessions |
+| `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo and `shop-api.mo` HTTP `api` server) | Active build sessions |
 | `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`) plus real OS `SIGKILL` crash loop (`kill_loop.py`) | Active build sessions |
-| `specs/` | Active implementation specs (`milestone-1-storage-engine.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md`, `milestone-2-ledger-and-api.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
 | `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
@@ -40,9 +42,13 @@ Using the pure-Rust `mo` release binary (`~/code/mo/target/release/mo` or `mo` o
 ```sh
 mo test src/modb.mo
 mo test src/modb/table.mo
+mo test src/modb/ledger.mo
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
+mo test tests/test-ledger.mo
 mo test examples/shop.mo
+mo test examples/shop-api.mo
+python3 tests/test_shop_api_live.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 python3 bench/kill_loop.py "$(command -v mo || echo ~/code/mo/target/release/mo)" 100
 TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-modb.mo 100000 && rm -rf "$TMP"
 ```

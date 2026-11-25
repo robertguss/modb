@@ -71,11 +71,32 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
   2. Because `Modb.Store` wraps `Files.File` (a capability), `Result(Store, TableError)` does not implement `Equal`, so tests must match errors with `is Error(...)` rather than `== Error(...)`.
 - **Severity:** Minor stdlib / testing ergonomics notes.
 
+### 13. `actor` is a hard keyword in struct fields, parameters, and `api` query parameters (`E0013` / cascading `E0007`)
+- **Where:** `src/modb/ledger.mo` (`WriteMeta`, `AuditEntry`), `examples/shop-api.mo` (`Caller`, `get_audit`)
+- **What happened:** Naming a field or parameter `actor: Text` (a standard audit-log / RBAC domain word) fails with `E0013: expected snake_case name, found actor`. Worse, when `actor` appears inside a function parameter list, parser error recovery enters `actor` block parsing and floods dozens of cascading `E0007: an actor clause starts with state, calls, every or promise` diagnostics across the rest of the file. Renamed to `principal` across Layer 3 and `ShopApi`.
+- **Severity:** Moderate ergonomics & parser-recovery friction (good candidate for making `actor` contextual or tightening parser recovery in Phase 2B).
+
+### 14. Struct field names shadow UFCS builder functions of the same name (`E0072`)
+- **Where:** `src/modb/ledger.mo` (`Schema.require_reason` vs `fn require_reason(sc: Schema, required?: Bool)`)
+- **What happened:** Calling `schema(1).require_reason(true)` resolved `.require_reason` to the `Bool` struct field rather than the UFCS function (`E0072: expected fn, found Bool`). Resolved cleanly by naming all fluent builders `with_*` (`with_require_reason`, `with_migration`, `with_invariant`).
+- **Severity:** Minor convention note.
+
+### 15. CLI directory flag inconsistency (`--root` / `--state-dir` vs `--data`) and missing subcommand `--help`
+- **Where:** `tests/test_shop_api_live.py`, `mo serve` vs `mo run`
+- **What happened:** `mo run` accepts `--root` and `--state-dir`, whereas `mo serve` requires `--data` and rejects `--root`, `--state-dir`, and `--help` (`unknown flag: "--help"`).
+- **Severity:** Minor CLI discoverability friction (easy Phase 2B cleanup).
+
+### 16. Multi-worker `mo serve` concurrency gap for pure-Mo file-backed stores *(Phase 2B driver)*
+- **Where:** `examples/shop-api.mo` under `mo serve` (`~/code/mo/crates/mo-service/src/api_server.rs:1635-1642`, `crates/mo-def/defs/hostops.def:107-114`)
+- **What happened:** `mo serve` defaults to 8 concurrent HTTP worker threads, each receiving an isolated `Files` capability per request. Because `Files.File` has no advisory file locking (`lock_shared` / `lock_exclusive` / `unlock`), `ReadFiles` has no `open`, and `actor`s cannot hold `Files` (and force `--workers 1`), concurrent HTTP writes to a `.modb` file cannot synchronize safely yet—so Phase 2A runs `mo serve --workers 1`.
+- **Severity:** Key architectural driver for Phase 2B (minimal general-purpose `rustix::fs::flock` hostops on `Files.File` + `ReadFiles.open` with `Files.in_memory` parity).
+
 ---
 
 ## What Worked Surprisingly Well
 
-- **Zero compiler bugs or VM crashes across both Layer 1 and Layer 2.** Not a single ICE, segfault, wrong codegen, or memory corruption across ~2,700 lines of CoW B+Tree + binary codec + generic typed table/index code, 1,800+ differential ops, 500 simulated crashes, 100 real `SIGKILL` kills, and 200,000 row inserts/overwrites.
+- **Zero compiler bugs or VM crashes across Layers 1, 2, and 3 (now running on pure-Rust `mo` #433).** Not a single ICE, panic, wrong codegen, or memory corruption across ~3,500+ lines of CoW B+Tree + binary codec + generic typed tables + hash-chained audit ledger + declarative `api` server, 1,800+ differential ops, 1,000 simulated crashes (500 Layer 1 + 500 Layer 3), 100 real `SIGKILL` kills, live `mo serve` `SIGKILL` recovery, and 200,000 row inserts/overwrites.
+- **Zero-socket `ApiTest.send` ran the full `ShopApi` server identically against `Files.in_memory({})` and `Clock.fixed(...)`.** Auth, RBAC, mandatory `X-Reason` accountability, schema migrations, commit-time invariant rollbacks, secondary-index queries, hash-chained audit queries, `/admin/verify`, and `/docs` all tested in milliseconds in memory, and the exact same file served live HTTP traffic under `mo serve --workers 1` and survived a hard `SIGKILL` with zero lost state.
 - **Perceus in-place reuse actually held under heavy nested-struct mutation!** Unlike the Nov 14 v0.2 sketch (which had to pack a tree into a bare `Map` to avoid $O(N)$ struct-field copies), `Allocator` (`dirty_leaves`, `dirty_branches`, `staged`, `reusable`, `pending_free`) and `BlockStore` (`cache`) lived inside ordinary `struct`s and ran 100,000 rows + 100,000 overwrites in **69.8 MiB peak RSS** with linear scaling.
 - **PR #416 (`Files.File` + `Bytes` packing) worked flawlessly on the very first try.** Not a single bug in `read_at`, `write_at`, `size`, `sync`, `Files.in_memory`, or big-endian `u16`/`u32`/`i64` codecs—including surviving 100 real OS `SIGKILL` crashes mid-write/mid-fsync with zero lost acknowledged commits.
 - **Capability discipline forced a cleaner crash-simulator design.** Because closures cannot capture capabilities in Mo, we modeled `enum Disk { Real(file: Files.File), Sim(...) }` as an explicit value instead of hidden closure callbacks—producing a cleaner, zero-overhead deterministic torn-write simulator that runs identically under `mo test`.
