@@ -42,10 +42,10 @@ Runs cleanly alongside ongoing `~/code/mo` post-cutover hardening:
 4. **Friction Log Update (`FRICTION.md`):**
    - Record every new Mo `api`, `Json`, `Time`, `Files`, or compiler rough edge discovered during 2A so Phase 2B addresses them all in one consolidated Mo PR.
 
-### Phase 2B — Multi-Worker Concurrency PR in `~/code/mo` (Contract Ready)
-Detailed implementation contract: [mo-pr-file-locks-and-dx.md](mo-pr-file-locks-and-dx.md). Once `robertguss/mo` finishes its post-cutover hardening PR:
-- Land general-purpose advisory file locks (`File.lock_shared` / `File.lock_exclusive` / `File.unlock` via safe `rustix::fs::flock` + `Files.in_memory` parity), `ReadFiles.open` (read-only random-access handle), and Milestone 2A DX fixes (`FRICTION.md` #13 & #15) in `~/code/mo`.
-- Wire `ReadFiles` + `lock_shared` (read routes) and `Files` + `lock_exclusive` (write routes) into `Modb` / `Modb.Ledger` and `examples/shop-api.mo`, and stress-test under `mo serve --workers 8` concurrent readers and writers plus `SIGKILL` recovery.
+### Phase 2B — Multi-Worker Concurrency & `ReadFiles` Least-Privilege (Complete — [robertguss/mo#436](https://github.com/robertguss/mo/pull/436))
+Detailed implementation contract: [mo-pr-file-locks-and-dx.md](mo-pr-file-locks-and-dx.md).
+- Implemented in `robertguss/mo#436`: safe BSD `flock` advisory locks (`File.lock_shared` / `File.lock_exclusive` / `File.unlock` via `rustix::fs::flock` + `Files.in_memory` parity), read-only random-access `ReadFiles.open` (with host-enforced write/truncate/sync/exclusive-lock refusal + `ApiTest.send` `ReadFiles` auto-derivation), non-cascading reserved-keyword parser recovery (`FRICTION.md` #13), and subcommand `--help`/`-h` + `mo serve --data DIR` hint (`FRICTION.md` #15).
+- Adopted in MoDB: `Modb.open_read_only` / `with_shared_lock` / `with_exclusive_lock` (`src/modb.mo`), `Modb.Ledger.open_read_only` / `init_locked` / `read_locked` / `write_locked` / `transact_locked` (`src/modb/ledger.mo`), strict `ReadFiles`/`Files` split across all `GET`/`POST` routes in `examples/shop-api.mo`, and an 8-worker (`mo serve --workers 8`) 8-thread concurrent HTTP + mid-flight `SIGKILL` recovery stress test in `tests/test_shop_api_live.py`.
 
 ---
 

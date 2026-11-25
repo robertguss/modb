@@ -25,8 +25,14 @@ migration,
 invariant,
 row_invariant,
 open,
+open_read_only,
 open_file,
+open_file_read_only,
 open_disk,
+init_locked,
+read_locked,
+write_locked,
+transact_locked,
 store,
 schema_version,
 txid,
@@ -441,16 +447,132 @@ fn open(files: Files, path: Text, sc: Schema, now: Time) : Result(Db, LedgerErro
   open_store_with_schema(s, sc, now)
 end
 
+fn open_store_read_only(base_store: Store, sc: Schema) : Result(Db, LedgerError)
+  try validate_schema_definition(sc)
+  stored = (try Table.get(base_store, meta_table(), "state")) or initial_schema_state()
+  if stored.version > sc.target_version
+    return Error(SchemaTooNew(found: stored.version, supported: sc.target_version))
+  end
+  if stored.version < sc.target_version
+    return Error(
+      InvalidMigration(
+        reason: "database schema v#{stored.version} is older than required v#{sc.target_version}; open writable to migrate"
+      )
+    )
+  end
+  Ok(Db(store: base_store, schema: sc, state: stored))
+end
+
+## Opens an existing ledger-backed MoDB file read-only via `ReadFiles` (never writes or migrates).
+fn open_read_only(rf: ReadFiles, path: Text, sc: Schema) : Result(Db, LedgerError)
+  s = try wrap_modb(Modb.open_read_only(rf, path))
+  open_store_read_only(s, sc)
+end
+
 ## Opens a ledger-backed MoDB database on an already-open `Files.File` handle.
 fn open_file(file: Files.File, sc: Schema, now: Time) : Result(Db, LedgerError)
   s = try wrap_modb(Modb.open_file(file))
   open_store_with_schema(s, sc, now)
 end
 
+## Opens an already-open read-only `Files.File` handle as a `Modb.Ledger.Db`.
+fn open_file_read_only(file: Files.File, sc: Schema) : Result(Db, LedgerError)
+  s = try wrap_modb(Modb.open_file_read_only(file))
+  open_store_read_only(s, sc)
+end
+
 ## Opens a ledger-backed MoDB database on any `BlockStore` (real file or crash simulator).
 fn open_disk(disk: BlockStore, sc: Schema, now: Time) : Result(Db, LedgerError)
   s = try wrap_modb(Modb.open_disk(disk))
   open_store_with_schema(s, sc, now)
+end
+
+## Acquires an exclusive advisory lock on `path`, initializes and atomically migrates the
+## database to `sc.target_version` if needed, releases the lock, and returns `(txid, state)`.
+fn init_locked(files: Files, path: Text, sc: Schema, now: Time) : Result(
+  (Int, SchemaState),
+  LedgerError
+)
+  Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(me) TableFailure(Table.Storage(me)) end,
+    fn(s)
+      db = try open_store_with_schema(s, sc, now)
+      Ok((txid(db), db.state))
+    end
+  )
+end
+
+## Acquires a shared advisory lock on `path` via `ReadFiles`, opens a fresh committed read-only
+## ledger handle, executes `work(db)`, and always releases the lock.
+fn read_locked(
+  rf: ReadFiles,
+  path: Text,
+  sc: Schema,
+  wrap_error: fn(LedgerError) : E,
+  work: fn(Db) : Result(R, E)
+) : Result(R, E)
+  Modb.with_shared_lock(
+    rf,
+    path,
+    fn(me) wrap_error(TableFailure(Table.Storage(me))) end,
+    fn(s)
+      db = try open_store_read_only(s, sc).map_error(wrap_error)
+      work(db)
+    end
+  )
+end
+
+## Acquires an exclusive advisory lock on `path` via `Files`, reloads the latest committed state
+## (initializing/migrating if needed), runs an accountable write transaction, commits atomically,
+## and always releases the lock.
+fn write_locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json,
+  work: fn(WriteTx) : Result(WriteTx, TableError)
+) : Result(SchemaState, LedgerError)
+  try validate_write_meta(sc, meta)
+  Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(me) TableFailure(Table.Storage(me)) end,
+    fn(s)
+      db = try open_store_with_schema(s, sc, meta.at)
+      next = try write(db, meta, summary, payload, work)
+      Ok(next.state)
+    end
+  )
+end
+
+## Acquires an exclusive advisory lock on `path` via `Files`, reloads the latest committed state
+## (initializing/migrating if needed), runs a domain transaction returning `R`, commits atomically,
+## and always releases the lock.
+fn transact_locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  meta: WriteMeta,
+  summary: Text,
+  payload: Json,
+  wrap_error: fn(LedgerError) : E,
+  work: fn(WriteTx) : Result((WriteTx, R), E)
+) : Result(R, E)
+  try validate_write_meta(sc, meta).map_error(wrap_error)
+  Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(me) wrap_error(TableFailure(Table.Storage(me))) end,
+    fn(s)
+      db = try open_store_with_schema(s, sc, meta.at).map_error(wrap_error)
+      (_next, out) = try transact(db, meta, summary, payload, wrap_error, work)
+      Ok(out)
+    end
+  )
 end
 
 ## Exposes the underlying `Modb.Store` for typed `Modb.Table` read queries.
@@ -810,4 +932,77 @@ test "Modb.Ledger unit: migrations, accountable writes, invariants, and hash-cha
   assert verify_all(db1) is Ok(rep)
   assert rep.audit.entry_count == 2
   assert rep.invariants_checked == 1
+end
+
+test "Modb.Ledger locked read_only/write_locked/transact_locked helpers"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-25T04:00:00Z") or stop "t0"
+  counters = Table.text_key[CounterRow]("counters")
+
+  sc = schema(1).with_require_reason(true).with_migration(
+    migration(1, "seed counter", fn(tx) Table.put(tx, counters, "main", CounterRow(value: 100)) end)
+  ).with_invariant(
+    row_invariant(
+      "counter_non_negative",
+      counters,
+      fn(k, row) if row.value < 0: Some("counter '#{k}' < 0") else: None end
+    )
+  )
+
+  ## Read-only open before init fails with NotFound
+  assert read_locked(ro, "locked-ledger.modb", sc, fn(e) e end, fn(db) Ok(audit_count(db)) end) is
+    Error(TableFailure(Table.Storage(Io(NotFound(path: _)))))
+
+  ## Idempotent exclusive init + migration
+  assert init_locked(files, "locked-ledger.modb", sc, t0) is Ok((tx1, st1))
+  assert tx1 == 2 and st1.version == 1 and st1.next_audit_seq == 2
+  assert init_locked(files, "locked-ledger.modb", sc, t0) is Ok((tx2, st2))
+  assert tx2 == 2 and st2.next_audit_seq == 2
+
+  ## Exclusive locked write + rollback on invariant violation releases lock cleanly
+  meta = WriteMeta(principal: "agent:bot", action: "dec", reason: "step-1", at: t0)
+  assert write_locked(
+    files,
+    "locked-ledger.modb",
+    sc,
+    meta,
+    "invalid -5",
+    Json.Null,
+    fn(tx) Table.put(tx, counters, "main", CounterRow(value: -5)) end
+  ) is
+    Error(InvariantViolation(name: "counter_non_negative", detail: _))
+
+  ## Subsequent transact_locked succeeds cleanly after rolled-back write released lock
+  assert transact_locked(
+    files,
+    "locked-ledger.modb",
+    sc,
+    meta,
+    "decrement by 15",
+    Json.Null,
+    fn(e) e end,
+    fn(tx)
+      cur = (try Table.tx_get(tx, counters, "main").map_error(fn(e) TableFailure(e) end)) or
+        CounterRow(value: 0)
+      next = CounterRow(value: cur.value - 15)
+      t1 = try Table.put(tx, counters, "main", next).map_error(fn(e) TableFailure(e) end)
+      Ok((t1, next.value))
+    end
+  ) ==
+    Ok(85)
+
+  ## Concurrent-safe read_locked over ReadFiles sees committed value and passes verify_all
+  assert read_locked(
+    ro,
+    "locked-ledger.modb",
+    sc,
+    fn(e) e end,
+    fn(db)
+      rep = try verify_all(db)
+      row = try Table.get(store(db), counters, "main")
+      Ok((rep.audit.entry_count, row))
+    end
+  ) ==
+    Ok((2, Some(CounterRow(value: 85))))
 end
