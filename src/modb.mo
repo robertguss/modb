@@ -5,8 +5,12 @@ WriteTx(..),
 Snapshot(..),
 VerifyReport(..),
 open,
+open_read_only,
 open_file,
+open_file_read_only,
 open_disk,
+with_shared_lock,
+with_exclusive_lock,
 txid,
 page_count,
 free_page_count,
@@ -109,9 +113,72 @@ fn open(files: Files, path: Text) : Result(Store, ModbError)
   open_file(fh)
 end
 
+## Opens an existing MoDB database file read-only via Mo's `ReadFiles` capability.
+## Never creates or writes to the file; returns an error if missing or uninitialized.
+fn open_read_only(rf: ReadFiles, path: Text) : Result(Store, ModbError)
+  fh = try wrap_io(rf.open(path))
+  open_file_read_only(fh)
+end
+
 ## Opens or initializes a MoDB database on an already-open `Files.File` handle.
 fn open_file(file: Files.File) : Result(Store, ModbError)
   open_disk(from_file(file))
+end
+
+## Opens an already-open read-only `Files.File` handle without ever initializing or writing.
+fn open_file_read_only(file: Files.File) : Result(Store, ModbError)
+  store = from_file(file)
+  n_pages = try disk_page_count(store)
+  if n_pages < 2
+    return Error(
+      Corrupt(reason: "read-only open requires an initialized database (found #{n_pages} pages)")
+    )
+  end
+  recover_existing(store)
+end
+
+fn finish_locked(fh: Files.File, res: Result(R, E), wrap_error: fn(ModbError) : E) : Result(R, E)
+  unlock_res = wrap_io(fh.unlock)
+  case (res, unlock_res)
+    (Ok(val), Ok(_)): Ok(val)
+    (Ok(_), Error(e)): Error(wrap_error(e))
+    (Error(e), _): Error(e)
+  end
+end
+
+## Opens `path` read-only via `ReadFiles`, acquires an advisory shared lock (`flock`),
+## loads a fresh committed view of the meta-pages, executes `work`, and always releases the lock.
+fn with_shared_lock(
+  rf: ReadFiles,
+  path: Text,
+  wrap_error: fn(ModbError) : E,
+  work: fn(Store) : Result(R, E)
+) : Result(R, E)
+  fh = try wrap_io(rf.open(path)).map_error(wrap_error)
+  try wrap_io(fh.lock_shared).map_error(wrap_error)
+  res = case open_file_read_only(fh)
+    Ok(s): work(s)
+    Error(e): Error(wrap_error(e))
+  end
+  finish_locked(fh, res, wrap_error)
+end
+
+## Opens `path` read-write via `Files`, acquires an advisory exclusive lock (`flock`),
+## reloads the latest committed meta-pages (or initializes a new file), executes `work`,
+## and always releases the lock.
+fn with_exclusive_lock(
+  files: Files,
+  path: Text,
+  wrap_error: fn(ModbError) : E,
+  work: fn(Store) : Result(R, E)
+) : Result(R, E)
+  fh = try wrap_io(files.open(path)).map_error(wrap_error)
+  try wrap_io(fh.lock_exclusive).map_error(wrap_error)
+  res = case open_file(fh)
+    Ok(s): work(s)
+    Error(e): Error(wrap_error(e))
+  end
+  finish_locked(fh, res, wrap_error)
 end
 
 ## Opens or initializes a MoDB database on any `BlockStore` (real file or crash simulator).
@@ -734,4 +801,38 @@ test "Modb basic lifecycle, snapshots, persistence and exact page accounting"
   assert get(reopened, "users", "u:1".bytes) == Ok(Some("Ada Lovelace".bytes))
   assert get(reopened, "users", "u:2".bytes) == Ok(Some("Grace".bytes))
   assert verify(reopened) is Ok(_)
+end
+
+test "Modb read-only open and advisory shared/exclusive lock helpers"
+  files = Files.in_memory({})
+  ro = files.read_only
+
+  ## Missing file returns Io(NotFound) on ReadFiles.open
+  assert open_read_only(ro, "missing.modb") is Error(Io(NotFound(path: _)))
+
+  ## Create and write under exclusive lock
+  assert with_exclusive_lock(
+    files,
+    "locked.modb",
+    fn(e) e end,
+    fn(db0)
+      db1 = try write_tx(db0, fn(tx) tx_put(tx, "kv", "k1".bytes, "v1".bytes) end)
+      Ok(txid(db1))
+    end
+  ) ==
+    Ok(2)
+
+  ## Read under shared lock via ReadFiles (never requires Files)
+  assert with_shared_lock(
+    ro,
+    "locked.modb",
+    fn(e) e end,
+    fn(db_ro) get(db_ro, "kv", "k1".bytes) end
+  ) ==
+    Ok(Some("v1".bytes))
+
+  ## Writing through a read-only Store is refused at the host boundary with Io(NotAllowed)
+  assert open_read_only(ro, "locked.modb") is Ok(ro_store)
+  assert write_tx(ro_store, fn(tx) tx_put(tx, "kv", "k2".bytes, "v2".bytes) end) is
+    Error(Io(NotAllowed(path: _)))
 end
