@@ -139,3 +139,52 @@ Measured on **2026-11-25** against the unified pure-Rust `mo` release binary (`r
    - 2× `fsync` per commit (CoW shadow paging) vs. SQLite WAL's 1× append `fsync`.
    - 50/50 split on sequential appends (leaves ~50% page fill = 16 MiB vs. SQLite's 7.2 MiB; right-edge 90/10 splitting would halve disk footprint and page writes).
 3. **Implication for future Phase 4 optimization (Cranelift JIT/AOT):** The pure-Rust VM already holds its own against the deleted C `-O2` VM (1.2×–1.5×) while cutting RSS by 25%. Closing the remaining order-of-magnitude gap to C SQLite requires reducing bytecode dispatch/call overhead (e.g., Cranelift JIT/AOT over `.bc` plus compact `Value` representation), which should wait until Milestone 2's real `api`/service workloads show where end-to-end latency actually goes.
+
+---
+
+## 7. Milestone 5 Pure-Mo Storage, Invariant & Concurrency Optimizations (2026-11-25)
+
+Measured on the same pure-Rust `mo` binary (`7d5186d1`, ext4, 64-byte values, 8-byte `i64_be` keys) before and after six pure-Mo engine optimizations (100% on-disk v1 format compatible):
+
+1. **O(1) tracked node byte sizes** (`DirtyLeaf` / `DirtyBranch`) replacing O(M²) `leaf_body_size` / `branch_body_size` scans on every `put`, `delete`, and merge.
+2. **Right-edge sequential splitting (~98% leaf / ~90% branch fill) + O(1) right-edge & sequential-overwrite hints** (`DirtyLeaf.hint`, Perceus unique-ownership pop on `dirty_leaves` for in-place `List.append`/`List.set`).
+3. **Single-pass zero-copy page sealing** (`Codec.seal_parts` with packed `u32_be` headers, eliminating per-cell `Bytes.join` and 3 redundant 4 KiB copies per encoded page).
+4. **Inlined raw binary-search reads & zero-decode range scans** (`Codec.branch_lookup_child_raw`, `leaf_lookup_entry_raw`, `branch_scan_children_raw`, `leaf_scan_raw`, `verify_leaf_raw`).
+5. **Lock-free optimistic CoW snapshot reads** in `Modb.with_shared_lock` (seqlock `start_txid == end_txid` verification with `lock_shared` fallback), eliminating BSD `flock` writer starvation under heavy concurrent HTTP readers.
+6. **O(touched) incremental commit-time invariants** (`Modb.begin_write_tracked`, `Ledger.row_invariant`, `Replay.preview_replay`, `ShopApi.order_referential_integrity`), turning O(N²) multi-call replay invariant checks into O(N).
+
+### 100,000-Row Storage Engine: Before vs. After Milestone 5 (ext4)
+
+| Metric (100,000 rows, 64B values) | Before M5 (`d73494b`) | After M5 | Improvement | SQLite (same run) |
+| --- | ---: | ---: | --- | ---: |
+| Bulk load 100k (`100 × 1k` synced) | 15,848 ms | **5,781–6,823 ms** | **2.3–2.7× faster** | 643 ms |
+| Full overwrite 100k (`100 × 1k` synced) | 15,099 ms | **8,806–8,845 ms** | **1.71× faster** | 630 ms |
+| `Modb.verify` (100k cold SHA-256) | 1,290 ms | **764–783 ms** | **1.65× faster** | — |
+| Warm point `get` (1,000×) | 138 ms | **98–111 ms** | **1.24–1.41× faster** | 8 ms |
+| 100-row range `scan` (100×) | 203 ms | **137–173 ms** | **1.17–1.48× faster** | 5 ms |
+| Disk file size (after overwrites) | 15.7 MiB (`3,933` pages) | **8.2 MiB (`2,041` pages)** | **48% smaller** | 7.2 MiB |
+| 100× real OS `SIGKILL` (`kill_loop.py`) | 496 acked / 10.7 s | **589 acked / 11.0 s** | **+19% commit throughput** | — |
+
+### Live 8-Worker HTTP Concurrency (`bench/bench_shop_api.py`, `mo serve --workers 8`)
+
+| Workload | Result | Latency |
+| --- | --- | --- |
+| Pure 8-thread reads (400× `GET /products/:sku`) | **386.0 req/s** (0 errors) | p50 = `20.1 ms`, p95 = `24.7 ms` |
+| Mixed 6 readers + 2 synced writers (`565` reads + `100` audited orders in `2.06 s`) | **323.1 req/s** (0 errors, zero writer starvation) | reads p50 = `21.9 ms` / p95 = `36.6 ms`; writes p50 = `38.3 ms` / p95 = `63.2 ms` |
+| Live offline Replay Simulate (`111` calls, 15% discount override) | **716.3 ms** (was 500 budget exhaustion at 1,791 ms) | — |
+| Full `/admin/verify` (`113` audit entries, `64` pages) | **141.8 ms** | — |
+
+---
+
+## 8. Milestone 6 Real-World Multi-Agent Workbench Simulation (2026-11-25)
+
+Measured end-to-end against `examples/agent-workbench.mo` (`AgentWorkbench`, an 8-worker `mo serve` multi-agent engineering workbench with projects, budgets, tasks, artifacts, attenuated Grants, Claims, speculative Worlds, upgrade-aware Replay, and SHA-256 Export) via `python3 bench/real_world_agent_sim.py`:
+
+| Phase / Scenario (`mo serve --workers 8`) | Wall Time / Latency | Key Empirical Result |
+| --- | --- | --- |
+| **Phase 1A** — Uncoordinated coarse-query swarm (`list_project_tasks`, 6W + 2R, 18 tasks) | **9.51 s** (`land p50 = 145.4 ms`, `p95 = 344.7 ms`; `618` reads `p50 = 28.0 ms`) | **`49` `StaleRead` retries**, **`7` `needless_send_backs`** (agents re-sent identical calls after false sibling-task conflicts) |
+| **Phase 1B** — Fine-query + Claims swarm (`get_task`, 6W + 2R, 18 tasks) | **2.25 s** (`land p50 = 165.8 ms`, `p95 = 223.4 ms`; `127` reads `p50 = 27.8 ms`) | **`0` `StaleRead` retries**, **`0` `needless_send_backs`** (**4.2× faster** end-to-end under identical concurrency) |
+| **Phase 2** — Rogue delegated sub-agent excision (`exclude_grant` Replay over `82` calls) | `sim = 589.4 ms`, `accept = 330.0 ms` | Parent revoke cascaded mid-flight (`403`); replay excised `2` rogue calls and unblocked **`2` `NowAccepted`** SRE tasks atomically |
+| **Phase 3** — Retroactive 10%→0% overhead bug-fix Replay (`82` calls) | `sim = 690.9 ms`, `accept = 456.3 ms` | **`36` `ReplyChanged`** across all completed tasks + `2` `NowAccepted`; all 3 project budgets updated accurately |
+| **Phase 3** — Portable SHA-256 `GET /admin/export` (`19` buckets, `916` entries) | **46.7 ms** (cured `1,321.7 ms` 500 budget exhaustion via `Export.encode_snapshot_json`) | Canonical RFC 8259 JSON snapshot verified (`format_version = 1`, 64-char SHA-256 digest) |
+| **Post-`SIGKILL` recovery** (`GET /admin/verify` after hard OS kill + 8-worker restart) | **296.7 ms** | `ok = true`, `txid = 451`, `pages = 305`, `audit_entries = 137`; zero lost or corrupted state |

@@ -15,6 +15,7 @@ tx_get,
 list_all,
 list_by_principal,
 list_children,
+grant_subtree_ids,
 tx_verify_active,
 tx_issue_root,
 tx_delegate,
@@ -196,6 +197,25 @@ end
 fn list_children(store: Store, parent_id: Text) : Result(List(Grant), GrantError)
   rows = try wrap_table(Table.lookup(store, grants_table(), grants_by_parent_index(), parent_id))
   Ok(rows.map(fn(p) p.1 end))
+end
+
+## Returns the set containing `root_id` and every descendant grant ID delegated beneath it.
+fn grant_subtree_ids(store: Store, root_id: Text) : Result(Set(Text), GrantError)
+  var seen = Set.empty.add(root_id)
+  var queue = [root_id]
+  var idx = 0
+  while idx < queue.size
+    cur = queue.get(idx) or stop "grant subtree queue index"
+    idx += 1
+    children = try list_children(store, cur)
+    for ch in children
+      if not seen.has?(ch.id)
+        seen = seen.add(ch.id)
+        queue = queue.append(ch.id)
+      end
+    end
+  end
+  Ok(seen)
 end
 
 ## Verifies that `grant_id` and every ancestor in its delegation chain are active (unrevoked and

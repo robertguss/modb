@@ -19,6 +19,8 @@ catalog_root,
 page_count,
 free_page_count,
 buckets,
+buckets_at_root,
+build_from_buckets,
 get,
 scan,
 prefix_scan,
@@ -31,7 +33,13 @@ unpin_root,
 tx_pin_base_root,
 tx_unpin_root,
 begin_write,
+begin_write_tracked,
 begin_write_from_root,
+tx_is_tracked?,
+tx_clear_touched,
+tx_touched_puts,
+tx_touched_deletes,
+tx_bucket_deleted?,
 tx_get,
 tx_scan,
 tx_put,
@@ -132,6 +140,10 @@ struct WriteTx
   dirty_buckets: Map(Text, Int)
   dirty: Bool
   speculative: Bool
+  track_writes: Bool
+  touched_puts: Map(Text, Set(Bytes))
+  touched_deletes: Map(Text, Set(Bytes))
+  deleted_buckets: Set(Text)
   added_pins: Map(Text, PinnedRoot)
   removed_pins: Set(Text)
 end
@@ -192,8 +204,33 @@ fn finish_locked(fh: Files.File, res: Result(R, E), wrap_error: fn(ModbError) : 
   end
 end
 
-## Opens `path` read-only via `ReadFiles`, acquires an advisory shared lock (`flock`),
-## loads a fresh committed view of the meta-pages, executes `work`, and always releases the lock.
+fn read_committed_txid_raw(file: Files.File) : Result(Int, ModbError)
+  store = from_file(file)
+  m0 = case read_page(store, 0)
+    Ok(raw0): decode_meta(raw0)
+    Error(e): Error(e)
+  end
+  m1 = case read_page(store, 1)
+    Ok(raw1): decode_meta(raw1)
+    Error(e): Error(e)
+  end
+  case (m0, m1)
+    (Ok(a), Ok(b)): Ok(if b.txid > a.txid: b.txid else: a.txid)
+    (Ok(a), Error(_)): Ok(a.txid)
+    (Error(_), Ok(b)): Ok(b.txid)
+    (Error(e0), Error(e1)): Error(
+      Corrupt(reason: "both meta-pages invalid: slot0=(#{e0.to_text}), slot1=(#{e1.to_text})")
+    )
+  end
+end
+
+## Opens `path` read-only via `ReadFiles`, executes `work` against a linearizable committed
+## snapshot, and never starves concurrent `LOCK_EX` writers under BSD `flock`:
+## - Fast path (up to 3 attempts): lock-free optimistic CoW snapshot read verified by
+##   re-checking that `meta.txid` remained identical before and after `work(s)` (since pages
+##   live at `txid` are immutable until commit `txid + 2` begins).
+## - Fallback under heavy continuous write bursts: acquires advisory `lock_shared` so readers
+##   cannot starve either.
 fn with_shared_lock(
   rf: ReadFiles,
   path: Text,
@@ -201,6 +238,21 @@ fn with_shared_lock(
   work: fn(Store) : Result(R, E)
 ) : Result(R, E)
   fh = try wrap_io(rf.open(path)).map_error(wrap_error)
+  for _attempt in 0..3
+    case open_file_read_only(fh)
+      Ok(s):
+        start_txid = s.meta.txid
+        res = work(s)
+        case read_committed_txid_raw(fh)
+          Ok(end_txid):
+            if end_txid == start_txid
+              return res
+            end
+          Error(_): Unit
+        end
+      Error(_): Unit
+    end
+  end
   try wrap_io(fh.lock_shared).map_error(wrap_error)
   res = case open_file_read_only(fh)
     Ok(s): work(s)
@@ -237,12 +289,15 @@ fn open_disk(store: BlockStore) : Result(Store, ModbError)
   end
 end
 
-fn init_empty(store: BlockStore) : Result(Store, ModbError)
-  meta = MetaPage(txid: 1, catalog_root: 0, freelist_root: 0, page_count: 2)
-  p0 = Bytes.zeroed(page_size)
-  p1 = encode_meta(meta)
-  s1 = try write_page(store, 0, p0)
-  s2 = try write_page(s1, 1, p1)
+fn init_empty_at(store: BlockStore, start_txid: Int) : Result(Store, ModbError)
+  eff_txid = if start_txid < 1: 1 else: start_txid
+  meta = MetaPage(txid: eff_txid, catalog_root: 0, freelist_root: 0, page_count: 2)
+  meta_slot = eff_txid % 2
+  other_slot = (eff_txid + 1) % 2
+  p_zero = Bytes.zeroed(page_size)
+  p_meta = encode_meta(meta)
+  s1 = try write_page(store, other_slot, p_zero)
+  s2 = try write_page(s1, meta_slot, p_meta)
   s3 = try sync(s2)
   Ok(
     Store(
@@ -257,6 +312,49 @@ fn init_empty(store: BlockStore) : Result(Store, ModbError)
       next_snapshot_id: 1
     )
   )
+end
+
+fn init_empty(store: BlockStore) : Result(Store, ModbError)
+  init_empty_at(store, 1)
+end
+
+## Builds a freshly compacted database on an empty `BlockStore` from logical `(bucket, rows)` data,
+## setting the committed `txid` watermark to at least `target_txid` (preserving audit-chain txid bounds).
+fn build_from_buckets(
+  disk: BlockStore,
+  target_txid: Int,
+  bucket_rows: List((Text, List((Bytes, Bytes))))
+) : Result(Store, ModbError)
+  existing_pages = try disk_page_count(disk)
+  if existing_pages != 0
+    return Error(
+      InvalidArgument(
+        reason: "build_from_buckets requires an empty BlockStore (found #{existing_pages} pages)"
+      )
+    )
+  end
+  var has_entries = false
+  for (bname, rows) in bucket_rows
+    if bname == pins_bucket
+      return Error(InvalidArgument(reason: "cannot import layout-dependent #{pins_bucket} bucket"))
+    end
+    if not rows.empty?
+      has_entries = true
+    end
+  end
+  eff_target = if target_txid < 1: 1 else: target_txid
+  if not has_entries
+    return init_empty_at(disk, eff_target)
+  end
+  base_txid = if eff_target > 2: eff_target - 1 else: 1
+  s0 = try init_empty_at(disk, base_txid)
+  var tx = begin_write(s0)
+  for (bname, rows) in bucket_rows
+    for (k, v) in rows
+      tx = try tx_put(tx, bname, k, v)
+    end
+  end
+  commit(tx)
 end
 
 fn encode_pinned_root(pin: PinnedRoot) : Bytes
@@ -496,9 +594,9 @@ fn lookup_bucket_root(pager: BlockStore, staged: Map(Int, Bytes), catalog_root: 
   end
 end
 
-## Lists all bucket names in sorted order.
-fn buckets(store: Store) : Result(List(Text), ModbError)
-  rows = try Tree.scan(store.pager, {}, store.meta.catalog_root, None, None, 0)
+## Lists all bucket names in sorted order at an explicit committed/pinned `cat_root`.
+fn buckets_at_root(store: Store, cat_root: Int) : Result(List(Text), ModbError)
+  rows = try Tree.scan(store.pager, {}, cat_root, None, None, 0)
   var names = []
   for (k, _v) in rows
     name = case k.decode_utf8
@@ -508,6 +606,11 @@ fn buckets(store: Store) : Result(List(Text), ModbError)
     names = names.append(name)
   end
   Ok(names)
+end
+
+## Lists all bucket names in sorted order.
+fn buckets(store: Store) : Result(List(Text), ModbError)
+  buckets_at_root(store, store.meta.catalog_root)
 end
 
 ## Point lookup in `bucket` on the current committed state.
@@ -595,6 +698,28 @@ fn begin_write(store: Store) : WriteTx
     dirty_buckets: {},
     dirty: false,
     speculative: false,
+    track_writes: false,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
+    added_pins: {},
+    removed_pins: Set.empty
+  )
+end
+
+## Starts a write transaction with per-bucket write-set tracking for O(touched) incremental invariants.
+fn begin_write_tracked(store: Store) : WriteTx
+  WriteTx(
+    base: store,
+    alloc: empty_allocator(store.meta.page_count, store.ready_free),
+    catalog_root: store.meta.catalog_root,
+    dirty_buckets: {},
+    dirty: false,
+    speculative: false,
+    track_writes: true,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
     added_pins: {},
     removed_pins: Set.empty
   )
@@ -610,9 +735,48 @@ fn begin_write_from_root(store: Store, cat_root: Int) : WriteTx
     dirty_buckets: {},
     dirty: false,
     speculative: true,
+    track_writes: true,
+    touched_puts: {},
+    touched_deletes: {},
+    deleted_buckets: Set.empty,
     added_pins: {},
     removed_pins: Set.empty
   )
+end
+
+## True if `tx` records touched put/delete keys for O(touched) incremental invariant evaluation.
+fn tx_is_tracked?(tx: WriteTx) : Bool
+  tx.track_writes
+end
+
+## Clears accumulated touched-key sets on `tx` (used between multi-step offline replay calls).
+fn tx_clear_touched(tx: WriteTx) : WriteTx
+  var next = tx
+  next.touched_puts = {}
+  next.touched_deletes = {}
+  next.deleted_buckets = Set.empty
+  next
+end
+
+## Returns keys written to `bucket` in `tx` (meaningful when `tx_is_tracked?(tx)` is true).
+fn tx_touched_puts(tx: WriteTx, bucket: Text) : List(Bytes)
+  case tx.touched_puts.get(bucket)
+    Some(s): s.to_list
+    None: []
+  end
+end
+
+## Returns keys deleted from `bucket` in `tx` (meaningful when `tx_is_tracked?(tx)` is true).
+fn tx_touched_deletes(tx: WriteTx, bucket: Text) : List(Bytes)
+  case tx.touched_deletes.get(bucket)
+    Some(s): s.to_list
+    None: []
+  end
+end
+
+## True if `bucket` was wholly deleted via `tx_delete_bucket` in `tx`.
+fn tx_bucket_deleted?(tx: WriteTx, bucket: Text) : Bool
+  tx.deleted_buckets.has?(bucket)
 end
 
 fn tx_bucket_root(tx: WriteTx, bucket: Text) : Result(Int, ModbError)
@@ -645,6 +809,10 @@ fn tx_put_raw(tx: WriteTx, bucket: Text, key: Bytes, value: Bytes) : Result(Writ
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, new_bucket_root)
   next.dirty = true
+  if next.track_writes
+    cur_set = next.touched_puts.get(bucket) or Set.empty
+    next.touched_puts = next.touched_puts.set(bucket, cur_set.add(key))
+  end
   Ok(next)
 end
 
@@ -657,6 +825,10 @@ fn tx_delete_raw(tx: WriteTx, bucket: Text, key: Bytes) : Result(WriteTx, ModbEr
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, new_bucket_root)
   next.dirty = true
+  if next.track_writes
+    cur_set = next.touched_deletes.get(bucket) or Set.empty
+    next.touched_deletes = next.touched_deletes.set(bucket, cur_set.add(key))
+  end
   Ok(next)
 end
 
@@ -688,6 +860,9 @@ fn tx_delete_bucket(tx: WriteTx, bucket: Text) : Result(WriteTx, ModbError)
   next.alloc = a1
   next.dirty_buckets = next.dirty_buckets.set(bucket, 0)
   next.dirty = true
+  if next.track_writes
+    next.deleted_buckets = next.deleted_buckets.add(bucket)
+  end
   Ok(next)
 end
 
