@@ -40,6 +40,7 @@ tx_clear_touched,
 tx_touched_puts,
 tx_touched_deletes,
 tx_bucket_deleted?,
+tx_bucket_dirty?,
 tx_get,
 tx_scan,
 tx_put,
@@ -52,6 +53,7 @@ snapshot,
 snapshot_get,
 snapshot_scan,
 release_snapshot,
+changed_buckets_between_roots,
 diff_bucket_roots,
 diff_roots,
 diff_roots_with_stats,
@@ -779,6 +781,11 @@ fn tx_bucket_deleted?(tx: WriteTx, bucket: Text) : Bool
   tx.deleted_buckets.has?(bucket)
 end
 
+## True if `bucket` has any uncommitted mutation staged in `tx`.
+fn tx_bucket_dirty?(tx: WriteTx, bucket: Text) : Bool
+  tx.dirty_buckets.has?(bucket)
+end
+
 fn tx_bucket_root(tx: WriteTx, bucket: Text) : Result(Int, ModbError)
   return Error(InvalidArgument(reason: "bucket name cannot be empty")) if bucket.empty?
   case tx.dirty_buckets.get(bucket)
@@ -1195,6 +1202,27 @@ fn release_snapshot(store: Store, snap: Snapshot) : Result(Store, ModbError)
   next.ready_free = next_ready
   next.deferred_frees = next_deferred
   Ok(next)
+end
+
+## Returns the set of bucket names whose B+Tree root page IDs differ between `root_a` and `root_b`.
+## Walks ONLY the catalog B+Tree (O(changed buckets), never descending into data pages).
+fn changed_buckets_between_roots(store: Store, root_a: Int, root_b: Int) : Result(
+  Set(Text),
+  ModbError
+)
+  return Ok(Set.empty) if root_a == root_b
+  cat_diffs = try diff_trees(store.pager, {}, {}, root_a, root_b)
+  var out = Set.empty
+  for cd in cat_diffs
+    kb = case cd
+      Added(key: k, value: _): k
+      Removed(key: k, value: _): k
+      Modified(key: k, old_value: _, new_value: _): k
+    end
+    bname = try kb.decode_utf8.or_fail(Corrupt(reason: "non-utf8 bucket name in catalog diff"))
+    out = out.add(bname)
+  end
+  Ok(out)
 end
 
 ## Structural O(diff) comparison of a single bucket between two committed/pinned catalog roots.

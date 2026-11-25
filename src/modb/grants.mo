@@ -17,15 +17,26 @@ list_by_principal,
 list_children,
 grant_subtree_ids,
 tx_verify_active,
+tx_verify_view,
+tx_verify_release,
+verify_view,
+verify_release,
+view_permitted_by?,
 tx_issue_root,
+tx_issue_root_scoped,
 tx_delegate,
+tx_delegate_scoped,
 tx_authorize,
 tx_revoke,
 issue_root,
+issue_root_scoped,
 delegate,
+delegate_scoped,
 revoke,
 issue_root_locked,
+issue_root_scoped_locked,
 delegate_locked,
+delegate_scoped_locked,
 revoke_locked
 use Json
 use Modb{Store, WriteTx}
@@ -47,6 +58,8 @@ enum GrantError
   Revoked(id: Text, revoked_ancestor: Text)
   Expired(id: Text, expired_ancestor: Text)
   ActionDenied(id: Text, action: Text)
+  ViewDenied(id: Text, view: Text)
+  ReleaseDenied(id: Text, release: Text)
   BudgetExhausted(id: Text, ancestor_id: Text, max_calls: Int)
 end
 
@@ -61,16 +74,20 @@ fn to_text(err: GrantError) : Text
     Revoked(id: id, revoked_ancestor: anc): "grant '#{id}' revoked (via '#{anc}')"
     Expired(id: id, expired_ancestor: anc): "grant '#{id}' expired (via '#{anc}')"
     ActionDenied(id: id, action: a): "grant '#{id}' does not permit action '#{a}'"
+    ViewDenied(id: id, view: v): "grant '#{id}' does not permit view '#{v}'"
+    ReleaseDenied(id: id, release: r): "grant '#{id}' does not permit release '#{r}'"
     BudgetExhausted(id: id, ancestor_id: anc, max_calls: m): "grant '#{id}' exhausted call budget #{m} (at '#{anc}')"
   end
 end
 
-## Persisted authority grant with delegation chain and remaining call budget.
+## Persisted authority grant with delegation chain, scoped views/releases, and call budget.
 struct Grant
   id: Text
   parent_id: Option(Text)
   principal: Text
   allowed_actions: List(Text)
+  allowed_views: Option(List(Text))
+  allowed_releases: Option(List(Text))
   max_calls: Int
   used_calls: Int
   expires_at: Time
@@ -233,11 +250,109 @@ fn tx_verify_active(tx: WriteTx, grant_id: Text, now: Time) : Result(Grant, Gran
   Ok(chain.first or stop "non-empty grant chain")
 end
 
-## Issues a root grant inside `tx` (typically called by an Admin principal).
-fn tx_issue_root(tx: WriteTx, issuer: Text, spec: GrantSpec, now: Time) : Result(
-  (WriteTx, Grant),
+fn normalize_opt_names(items: Option(List(Text)), label: Text) : Result(
+  Option(List(Text)),
   GrantError
 )
+  case items
+    None: Ok(None)
+    Some(xs):
+      var seen = Set.empty
+      var sorted = []
+      for raw in xs
+        a = raw.trim
+        if a.empty?
+          return Error(InvalidGrant(reason: "#{label} name cannot be empty"))
+        end
+        if not seen.has?(a)
+          seen = seen.add(a)
+          var pos = 0
+          while pos < sorted.size
+            cur = sorted.get(pos) or stop "name sort idx"
+            break if a < cur
+            pos += 1
+          end
+          sorted = sorted.take(pos).append(a).concat(sorted.drop(pos))
+        end
+      end
+      Ok(Some(sorted))
+  end
+end
+
+## True if `view_name` is permitted by `allowed` directly or via transitive narrowing in `view_narrows`
+## (where `view_narrows` maps `narrow_view -> wider_view`).
+fn view_permitted_by?(allowed: List(Text), view_name: Text, view_narrows: Map(Text, Text)) : Bool
+  var cur = view_name
+  var visited = Set.empty
+  while true
+    return true if list_has_text?(allowed, cur)
+    return false if visited.has?(cur)
+    visited = visited.add(cur)
+    case view_narrows.get(cur)
+      Some(wider): cur = wider
+      None: return false
+    end
+  end
+  false
+end
+
+## Verifies that `grant_id` (and every ancestor) is active at `now` AND permits `view_name`.
+fn tx_verify_view(
+  tx: WriteTx,
+  grant_id: Text,
+  view_name: Text,
+  view_narrows: Map(Text, Text),
+  now: Time
+) : Result(Grant, GrantError)
+  g = try tx_verify_active(tx, grant_id, now)
+  allowed = g.allowed_views or []
+  if not view_permitted_by?(allowed, view_name, view_narrows)
+    return Error(ViewDenied(id: grant_id, view: view_name))
+  end
+  Ok(g)
+end
+
+## Verifies that `grant_id` (and every ancestor) is active at `now` AND permits `release_name`.
+fn tx_verify_release(tx: WriteTx, grant_id: Text, release_name: Text, now: Time) : Result(
+  Grant,
+  GrantError
+)
+  g = try tx_verify_active(tx, grant_id, now)
+  allowed = g.allowed_releases or []
+  if not list_has_text?(allowed, release_name)
+    return Error(ReleaseDenied(id: grant_id, release: release_name))
+  end
+  Ok(g)
+end
+
+## Read-only wrapper verifying that `grant_id` is active at `now` and permits `view_name`.
+fn verify_view(
+  store: Store,
+  grant_id: Text,
+  view_name: Text,
+  view_narrows: Map(Text, Text),
+  now: Time
+) : Result(Grant, GrantError)
+  tx_verify_view(Modb.begin_write(store), grant_id, view_name, view_narrows, now)
+end
+
+## Read-only wrapper verifying that `grant_id` is active at `now` and permits `release_name`.
+fn verify_release(store: Store, grant_id: Text, release_name: Text, now: Time) : Result(
+  Grant,
+  GrantError
+)
+  tx_verify_release(Modb.begin_write(store), grant_id, release_name, now)
+end
+
+## Issues a root grant inside `tx` with optional View and Release permissions.
+fn tx_issue_root_scoped(
+  tx: WriteTx,
+  issuer: Text,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text)),
+  now: Time
+) : Result((WriteTx, Grant), GrantError)
   if issuer.trim.empty?
     return Error(InvalidGrant(reason: "issuer principal cannot be empty"))
   end
@@ -245,6 +360,8 @@ fn tx_issue_root(tx: WriteTx, issuer: Text, spec: GrantSpec, now: Time) : Result
     return Error(InvalidGrant(reason: "grant expires_at is already in the past"))
   end
   actions = try validate_spec_basic(spec)
+  views = try normalize_opt_names(allowed_views, "view")
+  releases = try normalize_opt_names(allowed_releases, "release")
   tbl = grants_table()
   if (try wrap_table(Table.tx_get(tx, tbl, spec.id))) is Some(_)
     return Error(GrantAlreadyExists(id: spec.id))
@@ -255,6 +372,8 @@ fn tx_issue_root(tx: WriteTx, issuer: Text, spec: GrantSpec, now: Time) : Result
     parent_id: None,
     principal: spec.principal,
     allowed_actions: actions,
+    allowed_views: views,
+    allowed_releases: releases,
     max_calls: spec.max_calls,
     used_calls: 0,
     expires_at: spec.expires_at,
@@ -265,14 +384,28 @@ fn tx_issue_root(tx: WriteTx, issuer: Text, spec: GrantSpec, now: Time) : Result
   Ok((t1, g))
 end
 
-## Delegates a strictly narrowed child grant from `parent_id` inside `tx`.
-## Enforces: active ancestor chain, `actions subset parent.actions`,
-## `max_calls <= parent.remaining_calls`, and `expires_at <= parent.expires_at`.
-fn tx_delegate(tx: WriteTx, parent_id: Text, spec: GrantSpec, now: Time) : Result(
+## Issues a root grant inside `tx` (typically called by an Admin principal).
+fn tx_issue_root(tx: WriteTx, issuer: Text, spec: GrantSpec, now: Time) : Result(
   (WriteTx, Grant),
   GrantError
 )
+  tx_issue_root_scoped(tx, issuer, spec, None, None, now)
+end
+
+## Delegates a strictly narrowed child grant from `parent_id` inside `tx`, enforcing
+## non-widening across actions, views (with `view_narrows`), releases, call budget, and expiry.
+fn tx_delegate_scoped(
+  tx: WriteTx,
+  parent_id: Text,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text)),
+  view_narrows: Map(Text, Text),
+  now: Time
+) : Result((WriteTx, Grant), GrantError)
   actions = try validate_spec_basic(spec)
+  views = try normalize_opt_names(allowed_views, "view")
+  releases = try normalize_opt_names(allowed_releases, "release")
   parent = try tx_verify_active(tx, parent_id, now)
   tbl = grants_table()
   if (try wrap_table(Table.tx_get(tx, tbl, spec.id))) is Some(_)
@@ -285,6 +418,30 @@ fn tx_delegate(tx: WriteTx, parent_id: Text, spec: GrantSpec, now: Time) : Resul
         WideningDenied(
           field: "allowed_actions",
           detail: "action '#{act}' is not permitted by parent grant '#{parent_id}'"
+        )
+      )
+    end
+  end
+
+  parent_views = parent.allowed_views or []
+  for v in (views or [])
+    if not view_permitted_by?(parent_views, v, view_narrows)
+      return Error(
+        WideningDenied(
+          field: "allowed_views",
+          detail: "view '#{v}' is not permitted by parent grant '#{parent_id}'"
+        )
+      )
+    end
+  end
+
+  parent_releases = parent.allowed_releases or []
+  for r in (releases or [])
+    if not list_has_text?(parent_releases, r)
+      return Error(
+        WideningDenied(
+          field: "allowed_releases",
+          detail: "release '#{r}' is not permitted by parent grant '#{parent_id}'"
         )
       )
     end
@@ -315,6 +472,8 @@ fn tx_delegate(tx: WriteTx, parent_id: Text, spec: GrantSpec, now: Time) : Resul
     parent_id: Some(parent_id),
     principal: spec.principal,
     allowed_actions: actions,
+    allowed_views: views,
+    allowed_releases: releases,
     max_calls: spec.max_calls,
     used_calls: 0,
     expires_at: spec.expires_at,
@@ -323,6 +482,14 @@ fn tx_delegate(tx: WriteTx, parent_id: Text, spec: GrantSpec, now: Time) : Resul
   )
   t1 = try wrap_table(Table.put(tx, tbl, child.id, child))
   Ok((t1, child))
+end
+
+## Delegates a strictly narrowed child grant from `parent_id` inside `tx`.
+fn tx_delegate(tx: WriteTx, parent_id: Text, spec: GrantSpec, now: Time) : Result(
+  (WriteTx, Grant),
+  GrantError
+)
+  tx_delegate_scoped(tx, parent_id, spec, None, None, {}, now)
 end
 
 ## Authorizes `action` under `grant_id` at `now` inside `tx`:
@@ -377,6 +544,128 @@ fn tx_revoke(tx: WriteTx, grant_id: Text) : Result((WriteTx, Grant), GrantError)
   updated.revoked = true
   t1 = try wrap_table(Table.put(tx, tbl, updated.id, updated))
   Ok((t1, updated))
+end
+
+## Ledger-audited root grant issuance with optional Views & Releases.
+fn issue_root_scoped(
+  db: Db,
+  meta: WriteMeta,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text))
+) : Result((Db, Grant), GrantError)
+  Ledger.transact(
+    db,
+    meta,
+    "issue root grant '#{spec.id}' for #{spec.principal}",
+    Json.Object({
+      "spec": spec.to_json,
+      "allowed_views": allowed_views.to_json,
+      "allowed_releases": allowed_releases.to_json
+    }),
+    fn(e) LedgerFailure(e) end,
+    fn(tx) tx_issue_root_scoped(tx, meta.principal, spec, allowed_views, allowed_releases, meta.at) end
+  )
+end
+
+## Ledger-audited narrowed grant delegation with optional Views & Releases.
+fn delegate_scoped(
+  db: Db,
+  meta: WriteMeta,
+  parent_id: Text,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text)),
+  view_narrows: Map(Text, Text)
+) : Result((Db, Grant), GrantError)
+  Ledger.transact(
+    db,
+    meta,
+    "delegate grant '#{spec.id}' from '#{parent_id}' to #{spec.principal}",
+    Json.Object({
+      "parent_id": parent_id.to_json,
+      "spec": spec.to_json,
+      "allowed_views": allowed_views.to_json,
+      "allowed_releases": allowed_releases.to_json
+    }),
+    fn(e) LedgerFailure(e) end,
+    fn(tx)
+      tx_delegate_scoped(
+        tx,
+        parent_id,
+        spec,
+        allowed_views,
+        allowed_releases,
+        view_narrows,
+        meta.at
+      )
+    end
+  )
+end
+
+## Lock-coordinated root grant issuance with optional Views & Releases.
+fn issue_root_scoped_locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  meta: WriteMeta,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text))
+) : Result(Grant, GrantError)
+  Ledger.transact_locked(
+    files,
+    path,
+    sc,
+    meta,
+    "issue root grant '#{spec.id}' for #{spec.principal}",
+    Json.Object({
+      "spec": spec.to_json,
+      "allowed_views": allowed_views.to_json,
+      "allowed_releases": allowed_releases.to_json
+    }),
+    fn(e) LedgerFailure(e) end,
+    fn(tx) tx_issue_root_scoped(tx, meta.principal, spec, allowed_views, allowed_releases, meta.at) end
+  )
+end
+
+## Lock-coordinated grant delegation with optional Views & Releases.
+fn delegate_scoped_locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  meta: WriteMeta,
+  parent_id: Text,
+  spec: GrantSpec,
+  allowed_views: Option(List(Text)),
+  allowed_releases: Option(List(Text)),
+  view_narrows: Map(Text, Text)
+) : Result(Grant, GrantError)
+  Ledger.transact_locked(
+    files,
+    path,
+    sc,
+    meta,
+    "delegate grant '#{spec.id}' from '#{parent_id}' to #{spec.principal}",
+    Json.Object({
+      "parent_id": parent_id.to_json,
+      "spec": spec.to_json,
+      "allowed_views": allowed_views.to_json,
+      "allowed_releases": allowed_releases.to_json
+    }),
+    fn(e) LedgerFailure(e) end,
+    fn(tx)
+      tx_delegate_scoped(
+        tx,
+        parent_id,
+        spec,
+        allowed_views,
+        allowed_releases,
+        view_narrows,
+        meta.at
+      )
+    end
+  )
 end
 
 ## Ledger-audited root grant issuance.
