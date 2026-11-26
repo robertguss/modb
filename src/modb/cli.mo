@@ -1,6 +1,6 @@
-## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `backup`,
-## `export`, `restore`, `compact`, `diff`). Works on any `.modb` database file safely using advisory
-## `flock` coordination and read-only `ReadFiles` where applicable.
+## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `fts`, `vec`,
+## `backup`, `export`, `restore`, `compact`, `diff`). Works on any `.modb` database file safely using
+## advisory `flock` coordination and read-only `ReadFiles` where applicable.
 module Modb.Cli
 expose run_cli,
 main
@@ -9,11 +9,13 @@ use Modb{Store}
 use Modb.Claims
 use Modb.Errors{wrap_io}
 use Modb.Export{PortableSnapshot}
+use Modb.Fts
 use Modb.Grants
 use Modb.Ledger{SchemaState, genesis_hash, meta_bucket}
 use Modb.Pager{from_file}
 use Modb.Table
 use Modb.Tree{KeyDiff}
+use Modb.Vec
 use Modb.World
 
 fn print_usage(console: Console) : Unit
@@ -27,6 +29,8 @@ fn print_usage(console: Console) : Unit
       "  modb dump <db.modb> <bucket> [--limit N] [--json]",
       "  modb audit <db.modb> [--limit N] [--principal P] [--action A] [--json]",
       "  modb worlds <db.modb> [--json]",
+      "  modb fts <db.modb> [prefix] [query...] [--scope S] [--prefix] [--limit N] [--json]",
+      "  modb vec <db.modb> [prefix] [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
       "  modb export <src.modb> <out.json> [--include-internal]",
       "  modb restore <in.json> <dst.modb>",
@@ -47,6 +51,8 @@ struct ParsedFlags
   principal_opt: Option(Text)
   action_opt: Option(Text)
   pin_opt: Option(Text)
+  scope_opt: Option(Text)
+  prefix?: Bool
 end
 
 fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
@@ -59,6 +65,8 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var principal_opt = None
   var action_opt = None
   var pin_opt = None
+  var scope_opt = None
+  var prefix? = false
   var i = 0
   while i < rest.size
     tok = rest.get(i) or ""
@@ -98,6 +106,13 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       val = try rest.get(i + 1).or_fail("--pin requires a value")
       pin_opt = Some(val)
       i += 2
+    else if tok == "--scope"
+      val = try rest.get(i + 1).or_fail("--scope requires a value")
+      scope_opt = Some(val)
+      i += 2
+    else if tok == "--prefix"
+      prefix? = true
+      i += 1
     else if tok.starts_with?("--")
       return Error("unknown flag: #{tok}")
     else
@@ -115,7 +130,9 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       limit_opt: limit_opt,
       principal_opt: principal_opt,
       action_opt: action_opt,
-      pin_opt: pin_opt
+      pin_opt: pin_opt,
+      scope_opt: scope_opt,
+      prefix?: prefix?
     )
   )
 end
@@ -893,6 +910,174 @@ fn cmd_diff(console: Console, files: Files, f: ParsedFlags) : Int
   0
 end
 
+struct NamedFtsStats
+  prefix: Text
+  stats: Fts.FtsStats
+end
+
+struct NamedVecStats
+  prefix: Text
+  stats: Vec.VecStats
+end
+
+fn trim_bucket_suffix(name: Text, suffix: Text) : Text
+  cs = name.chars
+  sc = suffix.chars
+  if cs.size >= sc.size: Text.from_chars(cs.take(cs.size - sc.size)) else: name
+end
+
+fn cmd_fts(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb fts <db.modb> [prefix] [query...] [--scope S] [--prefix] [--limit N] [--json]"
+    )
+  end
+  if f.positional.size <= 2
+    pfx_filter = f.positional.get(1).map(fn(s) s.trim end)
+    res = Modb.with_shared_lock(
+      files.read_only,
+      path,
+      fn(e) e.to_text end,
+      fn(store)
+        bnames = try Modb.buckets(store).map_error(fn(e) e.to_text end)
+        var out = []
+        for b in bnames
+          if b.ends_with?("_fts_meta")
+            pfx = trim_bucket_suffix(b, "_fts_meta")
+            matches? = case pfx_filter
+              Some(req): pfx == req
+              None: true
+            end
+            if matches?
+              st = try Fts.stats(store, Fts.index(pfx)).map_error(fn(e) Fts.to_text(e) end)
+              out = out.append(NamedFtsStats(prefix: pfx, stats: st))
+            end
+          end
+        end
+        case pfx_filter
+          Some(req) if out.empty?:
+            st = try Fts.stats(store, Fts.index(req)).map_error(fn(e) Fts.to_text(e) end)
+            if st.doc_count > 0
+              out = out.append(NamedFtsStats(prefix: req, stats: st))
+            end
+          Some(_) | None: Unit
+        end
+        Ok(out)
+      end
+    )
+    return case res
+      Error(msg): fail_msg(console, msg)
+      Ok(items):
+        if f.json?
+          console.print(Json.encode(items.to_json))
+        else if items.empty?
+          console.print("fts indexes=0")
+        else
+          console.print("fts indexes=#{items.size}")
+          for it in items
+            console.print(
+              "  prefix=#{it.prefix} docs=#{it.stats.doc_count} tokens=#{it.stats.total_tokens} weighted_len=#{it
+                .stats.total_weighted_len}"
+            )
+          end
+        end
+        0
+    end
+  end
+
+  pfx = (f.positional.get(1) or "").trim
+  query = f.positional.drop(2).join(" ")
+  cap = f.limit_opt or 10
+  opts = Fts.SearchOptions(limit: cap, prefix_last_term?: f.prefix?, required_scope: f.scope_opt)
+  qres = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      Fts.search(store, Fts.index(pfx), query, opts).map_error(fn(e) Fts.to_text(e) end)
+    end
+  )
+  case qres
+    Error(msg): fail_msg(console, msg)
+    Ok(hits):
+      if f.json?
+        console.print(
+          Json.encode(
+            Json.Object({
+              "prefix": Json.String(pfx),
+              "query": Json.String(query),
+              "hits": hits.to_json
+            })
+          )
+        )
+      else
+        console.print("fts prefix=#{pfx} query=\"#{query}\" hits=#{hits.size}")
+        for (i, h) in hits.enumerate
+          console.print(
+            "  [#{i + 1}] #{h.doc_id} (scope=#{h.scope}) score=#{h.score} terms=#{h.matched_terms.join(
+              ","
+            )} fields=#{h.matched_fields.join(",")}"
+          )
+        end
+      end
+      0
+  end
+end
+
+fn cmd_vec(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb vec <db.modb> [prefix] [--json]")
+  end
+  pfx_filter = f.positional.get(1).map(fn(s) s.trim end)
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      bnames = try Modb.buckets(store).map_error(fn(e) e.to_text end)
+      var out = []
+      for b in bnames
+        if b.ends_with?("_vec_meta")
+          pfx = trim_bucket_suffix(b, "_vec_meta")
+          matches? = case pfx_filter
+            Some(req): pfx == req
+            None: true
+          end
+          if matches?
+            tbl = Table.text_key[Vec.VecStats](b)
+            case try Table.get(store, tbl, "stats").map_error(fn(e) e.to_text end)
+              Some(st): out = out.append(NamedVecStats(prefix: pfx, stats: st))
+              None: Unit
+            end
+          end
+        end
+      end
+      Ok(out)
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(items):
+      if f.json?
+        console.print(Json.encode(items.to_json))
+      else if items.empty?
+        console.print("vec indexes=0")
+      else
+        console.print("vec indexes=#{items.size}")
+        for it in items
+          console.print(
+            "  prefix=#{it.prefix} docs=#{it.stats.doc_count} dims=#{it.stats.dimensions} metric=#{it
+              .stats.metric} encoding=#{it.stats.encoding} bytes=#{it.stats.total_bytes}"
+          )
+        end
+      end
+      0
+  end
+end
+
 ## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, and `Clock`.
 fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   head = (argv.first or "").trim
@@ -909,6 +1094,8 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   return cmd_dump(console, files, f) if head == "dump"
   return cmd_audit(console, files, f) if head == "audit"
   return cmd_worlds(console, files, clock, f) if head == "worlds"
+  return cmd_fts(console, files, f) if head == "fts"
+  return cmd_vec(console, files, f) if head == "vec"
   return cmd_backup(console, files, clock, f) if head == "backup"
   return cmd_export(console, files, clock, f) if head == "export"
   return cmd_restore(console, files, f) if head == "restore"
@@ -1002,4 +1189,38 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   c_diff_files = Console.fake()
   assert run_cli(["diff", "app.modb", "app-bak.modb"], c_diff_files, files, clock) == 0
   assert c_diff_files.printed.join("\n").contains?("buckets=0")
+
+  ## Index FTS + Vec and inspect/query via `modb fts` and `modb vec`
+  f_idx = Fts.index("notes")
+  v_idx = Vec.index("notes", 4)
+  assert Modb.open(files, "app.modb") is Ok(s_fts0)
+  assert Fts.index_document(
+    s_fts0,
+    f_idx,
+    Fts.DocumentInput(
+      doc_id: "n1",
+      scope: "ops",
+      fields: [Fts.FieldInput(name: "body", text: "alpha failover runbook", weight: 2)]
+    )
+  ) is
+    Ok(s_fts1)
+  assert Vec.put_vector(
+    s_fts1,
+    v_idx,
+    Vec.VectorInput(doc_id: "n1", scope: "ops", values: [1.0, 0.0, 0.0, 0.0])
+  ) is
+    Ok(_)
+
+  c_fts_ls = Console.fake()
+  assert run_cli(["fts", "app.modb"], c_fts_ls, files, clock) == 0
+  assert c_fts_ls.printed.join("\n").contains?("prefix=notes docs=1")
+
+  c_fts_q = Console.fake()
+  assert run_cli(["fts", "app.modb", "notes", "failov", "--prefix", "--scope", "ops"], c_fts_q, files, clock) ==
+    0
+  assert c_fts_q.printed.join("\n").contains?("n1")
+
+  c_vec_ls = Console.fake()
+  assert run_cli(["vec", "app.modb", "--json"], c_vec_ls, files, clock) == 0
+  assert c_vec_ls.printed.join("\n").contains?("\"dimensions\":4")
 end
