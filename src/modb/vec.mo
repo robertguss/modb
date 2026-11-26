@@ -375,10 +375,14 @@ fn euclidean_distance(a: List(Float), b: List(Float)) : Float
   if res.nan? or res.infinite?: 0.0 else: res
 end
 
+fn hash_step(h: Int, code: Int) : Int
+  h.wrapping_mul(16777619).wrapping_add(code)
+end
+
 fn fnv1a_text(seed: Int, chars: List(Char)) : Int
   var h = seed
   for c in chars
-    h = h.wrapping_mul(16777619).wrapping_add(c.code)
+    h = hash_step(h, c.code)
   end
   h
 end
@@ -400,16 +404,19 @@ fn text_sketch_embedding(text: Text, dimensions: Int) : List(Float)
   tokens = Fts.tokenize(text, 64)
   var acc = {}
   for (ti, tok) in tokens.enumerate
-    hw = fnv1a_text(2166136261 + ti.wrapping_mul(31), tok.chars)
+    cs = tok.chars
+    hw = fnv1a_text(2166136261 + ti.wrapping_mul(31), cs)
     bi = hw.floor_mod(dimensions)
     sgn = if hw.floor_div(dimensions).floor_mod(2) == 0: 1.0.to_float else: -1.0.to_float
     acc = acc.set(bi, (acc.get(bi) or 0.0.to_float) + sgn)
 
-    cs = tok.chars
     if cs.size >= 3
-      for j in 0..(cs.size - 2)
-        g = [cs.get(j) or ' ', cs.get(j + 1) or ' ', cs.get(j + 2) or ' ']
-        hg = fnv1a_text(33554467, g)
+      g_lim = if cs.size > 12: 10 else: cs.size - 2
+      for j in 0..g_lim
+        c0 = (cs.get(j) or ' ').code
+        c1 = (cs.get(j + 1) or ' ').code
+        c2 = (cs.get(j + 2) or ' ').code
+        hg = hash_step(hash_step(hash_step(33554467, c0), c1), c2)
         gi = hg.floor_mod(dimensions)
         gsgn = if hg.floor_div(dimensions).floor_mod(2) == 0: 0.5.to_float else: -0.5.to_float
         acc = acc.set(gi, (acc.get(gi) or 0.0.to_float) + gsgn)
@@ -421,6 +428,24 @@ fn text_sketch_embedding(text: Text, dimensions: Int) : List(Float)
     raw = raw.append(acc.get(i) or 0.0.to_float)
   end
   normalize(raw)
+end
+
+vec_header_size = 14
+scale_mant_unit = 1000000000000.0.to_float
+scale_exp_bias = 32768
+
+fn pow2_step(n: Int) : Float
+  var acc = 1.0.to_float
+  var base = if n >= 0: 2.0.to_float else: 0.5.to_float
+  var rem = n.abs
+  while rem > 0
+    if rem.floor_mod(2) == 1
+      acc = acc * base
+    end
+    base = base * base
+    rem = rem.floor_div(2)
+  end
+  acc
 end
 
 fn float_to_clamped_int(x: Float, lo: Int, hi: Int) : Int
@@ -435,9 +460,87 @@ fn float_to_clamped_int(x: Float, lo: Int, hi: Int) : Int
   if n < lo: lo else if n > hi: hi else: n
 end
 
+fn encode_scale(scale: Float) : (Int, Int)
+  return (0, scale_exp_bias) if scale.nan? or scale.infinite? or scale <= 0.0
+  p64 = pow2_step(64)
+  p16 = pow2_step(16)
+  p4 = pow2_step(4)
+  inv_p64 = pow2_step(-64)
+  inv_p16 = pow2_step(-16)
+  inv_p4 = pow2_step(-4)
+  var m = scale
+  var exp = 0
+  while m >= p64 and exp < 30000
+    m = m * inv_p64
+    exp += 64
+  end
+  while m >= p16 and exp < 30000
+    m = m * inv_p16
+    exp += 16
+  end
+  while m >= p4 and exp < 30000
+    m = m * inv_p4
+    exp += 4
+  end
+  while m >= 2.0 and exp < 30000
+    m = m * 0.5
+    exp += 1
+  end
+  while m < inv_p64 and exp > -30000
+    m = m * p64
+    exp -= 64
+  end
+  while m < inv_p16 and exp > -30000
+    m = m * p16
+    exp -= 16
+  end
+  while m < inv_p4 and exp > -30000
+    m = m * p4
+    exp -= 4
+  end
+  while m < 1.0 and exp > -30000
+    m = m * 2.0
+    exp -= 1
+  end
+  mant = float_to_clamped_int(m * scale_mant_unit, 1000000000000, 2000000000000)
+  (mant, exp + scale_exp_bias)
+end
+
+fn decode_scale(mant: Int, exp_biased: Int) : Float
+  examples
+    decode_scale(0, 32768) == 0.0
+    (decode_scale(1000000000000, 32768) - 1.0).abs < 0.00000000001
+    (decode_scale(encode_scale(0.0000305185).0, encode_scale(0.0000305185).1) - 0.0000305185).abs <
+      0.00000000001
+    (decode_scale(encode_scale(12345.6789).0, encode_scale(12345.6789).1) - 12345.6789).abs <
+      0.000001
+  end
+
+  return 0.0 if mant <= 0
+  (mant.to_float / scale_mant_unit) * pow2_step(exp_biased - scale_exp_bias)
+end
+
+fn encoding_code(enc: VectorEncoding) : Int
+  case enc
+    Quantized16: 1
+    Quantized8: 2
+  end
+end
+
 fn u8_byte(v: Int) : Byte
   c = if v < 0: 0 else if v > 255: 255 else: v
   c.to_byte or (0.to_byte or stop "zero byte")
+end
+
+fn pack_vector_header(dims: Int, enc: VectorEncoding, scale: Float, zero?: Bool) : Bytes
+  flags = if zero?: 1 else: 0
+  (mant, exp_b) = encode_scale(scale)
+  Bytes.join([
+    Bytes.from_list([u8_byte(flags), u8_byte(encoding_code(enc))]),
+    Bytes.from_u16_be(dims),
+    Bytes.from_i64_be(mant),
+    Bytes.from_u16_be(exp_b)
+  ])
 end
 
 fn quant_max_level(enc: VectorEncoding) : Int
@@ -483,13 +586,13 @@ fn pack_quantized_ints(ints: List(Int), enc: VectorEncoding) : Bytes
   Bytes.from_list(out)
 end
 
-fn decode_lane_signed_int(raw: Bytes, enc: VectorEncoding, lane: Int) : Int
+fn decode_lane_signed_int_at(raw: Bytes, offset: Int, enc: VectorEncoding, lane: Int) : Int
   case enc
     Quantized16:
-      u = raw.u16_be_at(lane * 2) or 32767
+      u = raw.u16_be_at(offset + lane * 2) or 32767
       u - 32767
     Quantized8:
-      b = case raw.get(lane)
+      b = case raw.get(offset + lane)
         Some(bv): bv.to_int
         None: 127
       end
@@ -497,11 +600,11 @@ fn decode_lane_signed_int(raw: Bytes, enc: VectorEncoding, lane: Int) : Int
   end
 end
 
-## Decodes raw packed quantized vector bytes back into approximate `Float` elements.
+## Decodes raw packed quantized vector payload bytes (without header) back into approximate `Float` elements.
 fn decode_vector_bytes(raw: Bytes, encoding: VectorEncoding, dims: Int, scale: Float) : List(Float)
   var out = []
   for i in 0..dims
-    q = decode_lane_signed_int(raw, encoding, i)
+    q = decode_lane_signed_int_at(raw, 0, encoding, i)
     out = out.append(q.to_float * scale)
   end
   out
@@ -529,36 +632,53 @@ end
 
 fn score_encoded_vector(
   raw: Bytes,
-  meta: VecDocMeta,
+  doc_id: Text,
   cfg: VecConfig,
   pq: PreparedQuery
 ) : Result(Float, VecError)
-  if meta.dimensions != cfg.dimensions
-    return Error(DimensionMismatch(expected: cfg.dimensions, actual: meta.dimensions))
-  end
   dims = cfg.dimensions
-  expected_bytes = case cfg.encoding
+  payload_bytes = case cfg.encoding
     Quantized16: dims * 2
     Quantized8: dims
   end
+  expected_bytes = vec_header_size + payload_bytes
   if raw.size != expected_bytes
     return Error(
       InvalidVector(
-        reason: "corrupt packed vector '#{meta.doc_id}': expected #{expected_bytes} bytes, got #{raw.size}"
+        reason: "corrupt packed vector '#{doc_id}': expected #{expected_bytes} bytes, got #{raw
+          .size}"
       )
     )
   end
+  dims_hdr = raw.u16_be_at(2) or 0
+  if dims_hdr != dims
+    return Error(DimensionMismatch(expected: dims, actual: dims_hdr))
+  end
+  enc_hdr = case raw.get(1)
+    Some(b): b.to_int
+    None: 0
+  end
+  if enc_hdr != encoding_code(cfg.encoding)
+    return Error(InvalidConfig(reason: "packed vector encoding mismatch on '#{doc_id}'"))
+  end
+  zero_doc? = case raw.get(0)
+    Some(b): b.to_int == 1
+    None: false
+  end
+  mant = raw.i64_be_at(4) or 0
+  exp_b = raw.u16_be_at(12) or scale_exp_bias
+  doc_scale = decode_scale(mant, exp_b)
 
   case cfg.metric
     Cosine:
-      return Ok(0.0) if pq.zero_norm? or meta.zero_norm? or meta.scale <= 0.0 or pq.q_scale <= 0.0
+      return Ok(0.0) if pq.zero_norm? or zero_doc? or doc_scale <= 0.0 or pq.q_scale <= 0.0
       var acc = 0
       for i in 0..dims
-        vi = decode_lane_signed_int(raw, cfg.encoding, i)
+        vi = decode_lane_signed_int_at(raw, vec_header_size, cfg.encoding, i)
         qi = pq.q_ints.get(i) or 0
         acc += vi * qi
       end
-      s = acc.to_float * meta.scale * pq.q_scale
+      s = acc.to_float * doc_scale * pq.q_scale
       if s.nan? or s.infinite?
         Ok(0.0)
       else if s > 1.0
@@ -569,19 +689,19 @@ fn score_encoded_vector(
         Ok(s)
       end
     DotProduct:
-      return Ok(0.0) if meta.scale <= 0.0 or pq.q_scale <= 0.0
+      return Ok(0.0) if doc_scale <= 0.0 or pq.q_scale <= 0.0
       var acc = 0
       for i in 0..dims
-        vi = decode_lane_signed_int(raw, cfg.encoding, i)
+        vi = decode_lane_signed_int_at(raw, vec_header_size, cfg.encoding, i)
         qi = pq.q_ints.get(i) or 0
         acc += vi * qi
       end
-      s = acc.to_float * meta.scale * pq.q_scale
+      s = acc.to_float * doc_scale * pq.q_scale
       Ok(if s.nan? or s.infinite?: 0.0 else: s)
     Euclidean:
       var sum_sq = 0.0.to_float
       for i in 0..dims
-        vi = decode_lane_signed_int(raw, cfg.encoding, i).to_float * meta.scale
+        vi = decode_lane_signed_int_at(raw, vec_header_size, cfg.encoding, i).to_float * doc_scale
         qi = pq.q_floats.get(i) or 0.0
         d = vi - qi
         sum_sq += d * d
@@ -659,10 +779,12 @@ fn tx_put_vector(tx: WriteTx, idx: VecIndex, input: VectorInput) : Result(WriteT
   var cur = try tx_remove_vector(tx, idx, input.doc_id)
   (prepared, norm, zero?) = prepare_values_for_metric(input.values, idx.config.metric)
   (q_ints, scale) = quantize_values(prepared, idx.config.encoding)
-  packed = pack_quantized_ints(q_ints, idx.config.encoding)
+  payload = pack_quantized_ints(q_ints, idx.config.encoding)
+  hdr = pack_vector_header(idx.config.dimensions, idx.config.encoding, scale, zero?)
+  record_bytes = Bytes.join([hdr, payload])
 
   dkey = Table.encode_composite_key(input.scope.bytes, input.doc_id.bytes)
-  cur = try wrap_modb(Modb.tx_put(cur, data_bucket(idx), dkey, packed))
+  cur = try wrap_modb(Modb.tx_put(cur, data_bucket(idx), dkey, record_bytes))
 
   meta = VecDocMeta(
     doc_id: input.doc_id,
@@ -680,7 +802,7 @@ fn tx_put_vector(tx: WriteTx, idx: VecIndex, input: VectorInput) : Result(WriteT
     dimensions: idx.config.dimensions,
     metric: idx.config.metric,
     encoding: idx.config.encoding,
-    total_bytes: prev_after.total_bytes + packed.size
+    total_bytes: prev_after.total_bytes + payload.size
   )
   wrap_table(Table.put(cur, meta_table(idx), "stats", next_st))
 end
@@ -731,7 +853,12 @@ fn get_vector(store: Store, idx: VecIndex, doc_id: Text) : Result(Option(List(Fl
       case try wrap_modb(Modb.get(store, data_bucket(idx), dkey))
         None: Ok(None)
         Some(raw):
-          decoded = decode_vector_bytes(raw, idx.config.encoding, meta.dimensions, meta.scale)
+          payload = if raw.size >= vec_header_size
+            raw.slice(vec_header_size, raw.size)
+          else
+            raw
+          end
+          decoded = decode_vector_bytes(payload, idx.config.encoding, meta.dimensions, meta.scale)
           restored = case idx.config.metric
             Cosine:
               if meta.zero_norm?: decoded else: decoded.map(fn(x) x * meta.norm end)
@@ -767,24 +894,19 @@ fn search_filtered(
     None: try wrap_modb(Modb.scan(store, dbucket, None, None, 0))
   end
 
-  dtbl = docs_table(idx)
   var hits = []
   for (comp_key, raw_bytes) in raw_entries
     (scope_b, doc_id_b) = try wrap_table(Table.decode_composite_key(comp_key))
     scope = try wrap_table(Table.decode_text_key(scope_b))
     doc_id = try wrap_table(Table.decode_text_key(doc_id_b))
     if allow_doc(doc_id, scope)
-      case try wrap_table(Table.get(store, dtbl, doc_id))
-        None: Unit
-        Some(meta):
-          sc = try score_encoded_vector(raw_bytes, meta, idx.config, pq)
-          passes_min? = case opts.min_score
-            Some(ms): sc >= ms
-            None: true
-          end
-          if passes_min?
-            hits = hits.append(VecHit(doc_id: doc_id, scope: meta.scope, score: sc))
-          end
+      sc = try score_encoded_vector(raw_bytes, doc_id, idx.config, pq)
+      passes_min? = case opts.min_score
+        Some(ms): sc >= ms
+        None: true
+      end
+      if passes_min?
+        hits = hits.append(VecHit(doc_id: doc_id, scope: scope, score: sc))
       end
     end
   end

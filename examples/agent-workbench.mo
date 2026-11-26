@@ -430,7 +430,10 @@ fn workbench_fts_index() : Fts.FtsIndex
 end
 
 fn workbench_vec_index() : Vec.VecIndex
-  Vec.index("workbench", 32)
+  Vec.VecIndex(
+    prefix: "workbench",
+    config: Vec.VecConfig(dimensions: 16, metric: Vec.Cosine, encoding: Vec.Quantized8)
+  )
 end
 
 fn wrap_search_table_err(e: Fts.FtsError) : Table.TableError
@@ -471,7 +474,7 @@ fn tx_index_workbench_task(tx: Modb.WriteTx, task_id: Int, task: Task) : Result(
     ]
   )
   t1 = try Fts.tx_index_document(tx, workbench_fts_index(), fdoc).map_error(wrap_search_table_err)
-  sketch = Vec.text_sketch_embedding("#{task.title} #{task.project_id} #{st_label} #{asg}", 32)
+  sketch = Vec.text_sketch_embedding("#{task.title} #{task.project_id} #{st_label} #{asg}", 16)
   Vec.tx_put_vector(
     t1,
     workbench_vec_index(),
@@ -496,7 +499,7 @@ fn tx_index_workbench_artifact(
     ]
   )
   t1 = try Fts.tx_index_document(tx, workbench_fts_index(), fdoc).map_error(wrap_search_table_err)
-  sketch = Vec.text_sketch_embedding("#{art.summary} #{art.author} #{art_id}", 32)
+  sketch = Vec.text_sketch_embedding("#{art.summary} #{art.author} #{art_id}", 16)
   Vec.tx_put_vector(
     t1,
     workbench_vec_index(),
@@ -886,15 +889,14 @@ fn action_complete_task(overhead_pct: Int) : fn(Modb.WriteTx, Json) : Result(
     next_task.status = Done
     t1 = try Table.put(tx, projs, task.project_id, next_proj).map_error(fn(e) e.to_text end)
     t2 = try Table.put(t1, tasks, body.task_id, next_task).map_error(fn(e) e.to_text end)
-    t3 = try tx_index_workbench_task(t2, body.task_id, next_task).map_error(fn(e) e.to_text end)
-    t4 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
+    t3 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
       (Some(aid), Some(sum), Some(sha)):
         art = Artifact(task_id: body.task_id, author: body.assignee, summary: sum, sha256: sha)
-        ta = try Table.put(t3, arts, aid, art).map_error(fn(e) e.to_text end)
+        ta = try Table.put(t2, arts, aid, art).map_error(fn(e) e.to_text end)
         try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(fn(e) e.to_text end)
-      _: t3
+      _: t2
     end
-    Ok((t4, task_to_row(body.task_id, next_task).to_json))
+    Ok((t3, task_to_row(body.task_id, next_task).to_json))
   end
 end
 
@@ -1559,18 +1561,17 @@ fn post_complete_task(caller: Caller, files: Files, clock: Clock, id: Int, body:
           row = task_to_row(id, next_task)
           t1 = try Table.put(tx, projs, task.project_id, next_proj).map_error(map_table_error)
           t2 = try Table.put(t1, tasks, id, next_task).map_error(map_table_error)
-          t3 = try tx_index_workbench_task(t2, id, next_task).map_error(map_table_error)
-          t4 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
+          t3 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
             (Some(aid), Some(sum), Some(sha)):
               art = Artifact(task_id: id, author: body.assignee, summary: sum, sha256: sha)
-              ta = try Table.put(t3, arts, aid, art).map_error(map_table_error)
+              ta = try Table.put(t2, arts, aid, art).map_error(map_table_error)
               try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(
                 map_table_error
               )
-            _: t3
+            _: t2
           end
-          (t5, _rec) = try Replay.tx_record_call(
-            t4,
+          (t4, _rec) = try Replay.tx_record_call(
+            t3,
             sc_ver,
             Some(aseq),
             meta.principal,
@@ -1583,7 +1584,7 @@ fn post_complete_task(caller: Caller, files: Files, clock: Clock, id: Int, body:
             meta.at,
             Replay.OrigOk(reply: row.to_json)
           ).map_error(map_table_error)
-          Ok((t5, row))
+          Ok((t4, row))
         end
       )
       case res
@@ -2083,7 +2084,7 @@ fn post_search(rf: ReadFiles, body: SearchRequest) : Result(SearchResponse, Work
       else if mode == "vec"
         qv = case body.vector
           Some(v): v
-          None: Vec.text_sketch_embedding(body.query, 32)
+          None: Vec.text_sketch_embedding(body.query, 16)
         end
         vh = try Vec.search(
           st,
@@ -2113,7 +2114,7 @@ fn post_search(rf: ReadFiles, body: SearchRequest) : Result(SearchResponse, Work
             if body.query.trim.empty?
               None
             else
-              Some(Vec.text_sketch_embedding(body.query, 32))
+              Some(Vec.text_sketch_embedding(body.query, 16))
             end
         end
         cand = if cap * 4 > 20: cap * 4 else: 20

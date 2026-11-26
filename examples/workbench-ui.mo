@@ -322,7 +322,7 @@ fn page_html() : Text
             <select id="s-mode">
               <option value="hybrid">hybrid (BM25 + Vec RRF)</option>
               <option value="fts">fts (BM25+ only)</option>
-              <option value="vec">vec (Quantized16 Cosine)</option>
+              <option value="vec">vec (Quantized8 Cosine)</option>
             </select>
             <input id="s-scope" placeholder="project_id (optional)" />
             <input id="s-limit" type="number" value="10" style="max-width:75px" />

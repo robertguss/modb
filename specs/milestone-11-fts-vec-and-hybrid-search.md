@@ -22,7 +22,7 @@ Builds directly on Milestone 10 (`v0.2.0`) while preserving 100% disk and API co
 Three ordinary Layer 1/2 buckets per `VecIndex(prefix, VecConfig(dimensions, metric, encoding))`:
 - `{prefix}_vec_meta`: `Table.text_key[VecStats]` at key `"stats"` (`doc_count`, `dimensions`, `metric`, `encoding`, `total_bytes`)
 - `{prefix}_vec_docs`: `Table.text_key[VecDocMeta]` keyed by `doc_id` (`doc_id`, `scope`, `dimensions`, `norm`, `scale`, `zero_norm?`)
-- `{prefix}_vec_data`: raw `Modb` bucket keyed by `Table.encode_composite_key(scope.bytes, doc_id.bytes)` storing packed big-endian quantized bytes directly on 4 KiB CoW pages (zero JSON float-array parsing overhead at query time).
+- `{prefix}_vec_data`: raw `Modb` bucket keyed by `Table.encode_composite_key(scope.bytes, doc_id.bytes)` storing a 14-byte binary header (`flags`, `enc`, `dims`, `scale`) + packed big-endian quantized payload directly on 4 KiB CoW pages, enabling zero-`Table.get` and zero-JSON-decode vector scans (`tx_remove_vector` still uses `_vec_docs` for $O(1)$ cross-scope cleanup and `norm` reconstruction).
   - Keying `{prefix}_vec_data` by `(scope, doc_id)` enables $O(\text{scope})$ `Modb.prefix_scan` whenever `opts.required_scope` is set, and `tx_remove_vector` deletes the old composite key cleanly even when a document moves across scopes.
 
 ### 2.2 Encodings & Distance Metrics
@@ -45,7 +45,7 @@ Three ordinary Layer 1/2 buckets per `VecIndex(prefix, VecConfig(dimensions, met
 ## 3. Product Integrations (`AgentWorkbench`, UI, MCP & Standalone `modb` CLI)
 
 1. **`examples/agent-workbench.mo` & `examples/workbench-ui.mo`:**
-   - Atomically maintain `workbench` `FtsIndex` and 32-d `VecIndex` inside `action_create_task` and `action_complete_task` (tasks + artifacts).
+   - Atomically maintain `workbench` `FtsIndex` and 16-d `Quantized8` `VecIndex` inside `action_create_task` (tasks) and `action_complete_task` (attached artifacts).
    - Expose `POST /search` (supports `"hybrid"`, `"fts"`, `"vec"` modes, optional `project_id`, `limit`, `prefix_last_term`, `vector`) and `GET /search/stats`.
    - Add `modb_search` and `modb_search_stats` to native Streamable HTTP `/mcp` (43 MCP tools total), verified through `tools/modb_mcp_server.py`.
    - Add interactive **Search (FTS / Hybrid)** tab in `examples/workbench-ui.mo`.
