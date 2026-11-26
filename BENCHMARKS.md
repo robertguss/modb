@@ -277,3 +277,21 @@ Measured on disk via pure-Rust `mo` (`4 KiB` synced CoW pages) using the 14-byte
 | `bench/bench-search.mo 1000` (`Vec` 64-d `Quantized16`) | 1,000 × 64-d `Q16` ingest (`128,000` payload bytes); 20× top-10 Cosine queries | **`2,188 ms`** put · `20× full`: **`4,374 ms`** (`218.7 ms`/q) · `20× scoped(1/10)`: **`451 ms`** (**`22.6 ms`/q**, **9.7× faster**) |
 | `bench/bench-search.mo 1000` (`Vec` 384-d `Quantized16` vs `Quantized8`) | 1,000 × 384-d `Q16` (`768 KiB`) vs `Q8` (`384 KiB`) ingest & 20× Cosine queries | `Q16`: **`6,071 ms`** put, `20× scoped = 1,607 ms` (**`80.4 ms`/q**) · `Q8`: **`4,719 ms`** put, `20× scoped = 1,834 ms` |
 | `bench/bench-search.mo 1000` (`Hybrid` BM25+ + 64-d RRF) | 20× top-10 combined BM25+ & `Q16` Cosine RRF queries over 1,000 docs | `20× full`: **`9,171 ms`** · `20× scoped(1/10)`: **`3,468 ms`** (`173.4 ms`/q) |
+
+---
+
+## 14. Milestone 12: Sensitivity Policy, Agent Proposals, Reactive Change Feeds & `v0.4.0` (2026-11-26)
+
+Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on pure-Rust `mo` (`v0.4.0`):
+
+| Suite / Benchmark | Scope / Workload | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/policy.mo` | Sensitivity lattice, cascading parent clearance attenuation, governed Views, k-anonymous declassification, FTS/Vec ACLs, governed Export | **`1.40 s`** (`62 passed, 0 failed`) |
+| `mo test src/modb/proposals.mo` | Declarative `ProposeView` / `ProposeReleasePolicy` / `ProposeClearance` / `ProposeInvariant`, `CapabilityDiff`, live materialization & commit-time dynamic invariants | **`1.74 s`** (`63 passed, 0 failed`) |
+| `mo test src/modb/feeds.mo` | Persistent CoW-pinned `txid`-cursor feeds, O(1) idle `poll_feed`, O(diff) sensitivity-skipping streaming, optimistic CAS `ack_feed`, `resync_feed`, deferred freelist reclamation | **`1.86 s`** (`63 passed, 0 failed`) |
+| `mo test src/modb/cli.mo` | Standalone schema-less `modb` CLI including `policy`, `proposals`, `feeds`, and enriched `inspect` | **`2.05 s`** (`65 passed, 0 failed`) |
+| `mo test tests/test-governance-feeds.mo` | End-to-end Milestone 12 governance, proposals, O(diff) feeds, and `commit_and_crash` recovery | **`1.40 s`** (`3 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | 4 full HTTP + MCP + M10 + Search + Governance/Proposals/Feeds `ApiTest.send` suites | **`2.97 s`** (`4 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, **`54` MCP tools** (incl. 11 M12 Policy/Proposal/Feed tools), Governance & Feeds Inspector UI tab, `259` export entries | **PASS** (`reads_skipped = 1`, `key_skips = 1`, `child_landed = 1`, `txid = 51`) |
+| `bench/real_world_agent_sim.py` (`AgentWorkbench` `mo serve --workers 8`) | Phase 1A (`5.26 s`, `stale_retries = 49`, `needless_send_backs = 7`) vs Phase 1B (`2.19 s`, `stale_retries = 0`, `key_skips = 15`); Phase 2/3 Replay (`486.1 ms` / `408.8 ms` sim, `86.8 ms` export over `1,687` entries); M10 (`range_key_skips = 3`, `rescued = 1`, `child_worlds_merged = 2`); `SIGKILL` verify | **PASS** (`verify = 188.2 ms`, post-M10 `111.2 ms`, `txid = 533`, `pages = 463`) |
+| `bench/kill_loop.py ... 100` | `100` consecutive real OS `kill -9` (`SIGKILL`) crashes under synced transactions | **PASS** (`100` kills in **`11.7 s`**, `acked = 666`, `txid = 667`, `pages = 163`, `free = 6`) |
