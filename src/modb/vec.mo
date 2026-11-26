@@ -147,6 +147,7 @@ end
 
 struct PreparedQuery
   q_ints: List(Int)
+  q_bytes: Bytes
   q_scale: Float
   q_floats: List(Float)
   zero_norm?: Bool
@@ -627,7 +628,21 @@ end
 fn prepare_query(values: List(Float), cfg: VecConfig) : PreparedQuery
   (prepared, _norm, zero?) = prepare_values_for_metric(values, cfg.metric)
   (q_ints, q_scale) = quantize_values(prepared, cfg.encoding)
-  PreparedQuery(q_ints: q_ints, q_scale: q_scale, q_floats: prepared, zero_norm?: zero?)
+  q_bytes = pack_quantized_ints(q_ints, cfg.encoding)
+  PreparedQuery(
+    q_ints: q_ints,
+    q_bytes: q_bytes,
+    q_scale: q_scale,
+    q_floats: prepared,
+    zero_norm?: zero?
+  )
+end
+
+fn dot_quantized_payload(raw: Bytes, q_bytes: Bytes, dims: Int, enc: VectorEncoding) : Int
+  case enc
+    Quantized16: raw.dot_u16_be_biased(vec_header_size, q_bytes, 0, dims, 32767) or 0
+    Quantized8: raw.dot_u8_biased(vec_header_size, q_bytes, 0, dims, 127) or 0
+  end
 end
 
 fn score_encoded_vector(
@@ -672,12 +687,7 @@ fn score_encoded_vector(
   case cfg.metric
     Cosine:
       return Ok(0.0) if pq.zero_norm? or zero_doc? or doc_scale <= 0.0 or pq.q_scale <= 0.0
-      var acc = 0
-      for i in 0..dims
-        vi = decode_lane_signed_int_at(raw, vec_header_size, cfg.encoding, i)
-        qi = pq.q_ints.get(i) or 0
-        acc += vi * qi
-      end
+      acc = dot_quantized_payload(raw, pq.q_bytes, dims, cfg.encoding)
       s = acc.to_float * doc_scale * pq.q_scale
       if s.nan? or s.infinite?
         Ok(0.0)
@@ -690,12 +700,7 @@ fn score_encoded_vector(
       end
     DotProduct:
       return Ok(0.0) if doc_scale <= 0.0 or pq.q_scale <= 0.0
-      var acc = 0
-      for i in 0..dims
-        vi = decode_lane_signed_int_at(raw, vec_header_size, cfg.encoding, i)
-        qi = pq.q_ints.get(i) or 0
-        acc += vi * qi
-      end
+      acc = dot_quantized_payload(raw, pq.q_bytes, dims, cfg.encoding)
       s = acc.to_float * doc_scale * pq.q_scale
       Ok(if s.nan? or s.infinite?: 0.0 else: s)
     Euclidean:
