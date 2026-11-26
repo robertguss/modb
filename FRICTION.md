@@ -105,6 +105,11 @@ Running ledger of every Mo compiler bug, VM/Perceus cliff, missing stdlib primit
 - **What happened:** `Json.to_text` encoded every JSON string by splitting it into `List(Char)` and running pure-Mo `escape_char(c)` per character, while `Json.parse` scanned `text.chars` and ran 32 `controls()` full-string passes. Exporting a real multi-agent DB with `19` buckets and `916` hex-encoded entries burned through `MO_LIMIT_API_REQUEST_WORK` (`67,108,864` instructions) in `1,321.7 ms` and returned HTTP 500.
 - **Resolution:** First added `Export.encode_snapshot_json` in `src/modb/export.mo` (`1,321.7 ms` 500 → `46.7 ms` 200), then landed native RFC 8259 `Json.quote_raw` and `Json.parse_raw` Rust primitives in [robertguss/mo#437](https://github.com/robertguss/mo/pull/437) (`crates/mo-prim/src/json.rs`), delivering **294× faster** JSON rendering (`1,176 ms → 4 ms` on 422 KiB), **16× faster** JSON parsing (`65 ms → 4 ms`), and **2.8–5.1× faster** end-to-end MoDB Replay and `/admin/verify` across `ShopApi` and `AgentWorkbench`.
 
+### 19. ~~Large declarative `api` route tables trigger `E1203: MO_LIMIT_CODEGEN_LIVE_WORK` at ~154 routes~~ — Fixed in [robertguss/mo@25045555](https://github.com/robertguss/mo/commit/25045555)
+- **Where:** `~/code/mo/crates/mo-lower/src/apis.rs` (`emit_dispatch_fns` / `build_route_chain`), surfaced in `motet/server.mo` when growing past 154 declarative HTTP routes
+- **What happened:** `emit_dispatch_fns` previously lowered every `api` route into a single nested chain inside `.%api.route`. Around ~154 routes, liveness analysis over that single function exceeded `MO_LIMIT_CODEGEN_LIVE_WORK` (`1u << 26` in `crates/mo-def/defs/limits.h`) and failed compilation with `E1203`.
+- **Resolution:** Chunked route lowering in `crates/mo-lower/src/apis.rs` into chains of at most `ROUTE_CHUNK_SIZE = 24` routes per `.%api.route.chunk.{c}` helper via tail calls (`build_route_chunk_chain` + `emit_route_chunks`), carrying `matched: Bool` so `405 Method Not Allowed` vs `404 Not Found` semantics stay identical while keeping each lowered function's liveness graph bounded O(1). Verified with a new 260-route `ApiTest` test (`apitest_large_route_table_scales_past_250_routes` in `crates/mo-cli/tests/apitest_app_tests.rs`) covering GET/POST/DELETE dispatch, `405`, `404`, `/openapi.json`, and `/docs`.
+
 ---
 
 ## What Worked Surprisingly Well
