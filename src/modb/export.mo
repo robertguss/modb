@@ -8,6 +8,8 @@ ExportError(..),
 PortableEntry(..),
 PortableBucket(..),
 PortableSnapshot(..),
+BackupReport(..),
+CompactReport(..),
 to_text,
 compute_snapshot_digest,
 encode_snapshot_json,
@@ -19,12 +21,15 @@ verify_snapshot,
 decode_snapshot_buckets,
 import_disk,
 import_file,
-import_db
+import_db,
+backup_db,
+compact_db_with_hook,
+compact_db
 use Crypto
 use Json
 use Modb{Store, pins_bucket}
 use Modb.Errors{ModbError, wrap_io}
-use Modb.Ledger{Db, LedgerError, Schema, SchemaState, meta_bucket}
+use Modb.Ledger{Db, LedgerError, Schema, SchemaState, genesis_hash, meta_bucket}
 use Modb.Pager{BlockStore, disk_page_count, from_file}
 use Modb.Table
 
@@ -39,6 +44,7 @@ enum ExportError
   InvalidEncoding(bucket: Text, detail: Text)
   ChecksumMismatch(expected: Text, actual: Text)
   TargetNotEmpty(path: Text)
+  PostImportFailed(detail: Text)
 end
 
 ## Formats an `ExportError` as a human-readable message.
@@ -50,6 +56,7 @@ fn to_text(err: ExportError) : Text
     InvalidEncoding(bucket: b, detail: d): "invalid portable encoding in bucket '#{b}': #{d}"
     ChecksumMismatch(expected: exp, actual: act): "portable snapshot checksum mismatch: expected #{exp}, got #{act}"
     TargetNotEmpty(path: p): "import target '#{p}' already exists or is non-empty"
+    PostImportFailed(detail: d): "post-import hook failed: #{d}"
   end
 end
 
@@ -75,6 +82,35 @@ struct PortableSnapshot
   bucket_count: Int
   entry_count: Int
   buckets: List(PortableBucket)
+  sha256: Text
+end
+
+## Verification report returned after a consistent online `backup_db` snapshot swap.
+struct BackupReport
+  source_txid: Int
+  schema_version: Int
+  include_internal: Bool
+  bucket_count: Int
+  entry_count: Int
+  page_count: Int
+  free_page_count: Int
+  sha256: Text
+end
+
+## Metrics and integrity flags returned after `compact_db` or `Replay.compact_with_baseline`.
+struct CompactReport
+  before_txid: Int
+  after_txid: Int
+  schema_version: Int
+  include_internal: Bool
+  before_pages: Int
+  after_pages: Int
+  before_free_pages: Int
+  after_free_pages: Int
+  before_audit_entries: Int
+  after_audit_entries: Int
+  checkpoint_recorded?: Bool
+  baseline_pinned?: Bool
   sha256: Text
 end
 
@@ -345,14 +381,189 @@ end
 
 ## Imports a verified `PortableSnapshot` into a brand-new ledger-backed database file at `path`,
 ## opens it with `sc`, and runs full `Ledger.verify_all` (storage + audit hash chain + invariants).
+## When `snap.include_internal == false` and `snap.schema_version > 0`, seeds `_modb_meta` at
+## `snap.schema_version` first so already-applied seed/historical migrations never re-run and
+## overwrite compacted live rows.
 fn import_db(files: Files, path: Text, sc: Schema, snap: PortableSnapshot, now: Time) : Result(
   Db,
   ExportError
 )
-  _ = try import_file(files, path, snap)
+  if not snap.include_internal and snap.schema_version > 0 and
+    snap.schema_version <= sc.target_version
+    if files.exists?(path)
+      return Error(TargetNotEmpty(path: path))
+    end
+    decoded0 = try decode_snapshot_buckets(snap)
+    has_meta? = decoded0.any?(fn(p) p.0 == meta_bucket end)
+    decoded = if has_meta?
+      decoded0
+    else
+      st = SchemaState(version: snap.schema_version, next_audit_seq: 1, last_audit_hash: genesis_hash)
+      decoded0.append((meta_bucket, [(Table.encode_text_key("state"), Json.encode(st).bytes)]))
+    end
+    fh = try wrap_io(files.open(path)).map_error(fn(e) StorageFailure(e) end)
+    store0 = try Modb.build_from_buckets(from_file(fh), snap.source_txid, decoded).map_error(fn(e)
+      StorageFailure(e)
+    end)
+    _ = try Modb.verify(store0).map_error(fn(e) StorageFailure(e) end)
+  else
+    _ = try import_file(files, path, snap)
+  end
   db = try Ledger.open(files, path, sc, now).map_error(fn(le) LedgerFailure(le) end)
   _ = try Ledger.verify_all(db).map_error(fn(le) LedgerFailure(le) end)
   Ok(db)
+end
+
+## Takes a consistent lock-coordinated online snapshot of `src_path` (safe concurrently under
+## multi-worker `mo serve`), rebuilds and verifies a brand-new compacted database at `dst_path`,
+## and swaps it atomically into place. Refuses if `dst_path` already exists.
+fn backup_db(
+  rf: ReadFiles,
+  src_path: Text,
+  dst_files: Files,
+  dst_path: Text,
+  sc: Schema,
+  include_internal: Bool,
+  now: Time
+) : Result(BackupReport, ExportError)
+  if dst_files.exists?(dst_path)
+    return Error(TargetNotEmpty(path: dst_path))
+  end
+  snap = try export_locked(rf, src_path, sc, include_internal, now)
+  tmp_path = "#{dst_path}.backup.tmp"
+  _rm0 = dst_files.remove(tmp_path)
+  db_bak = case import_db(dst_files, tmp_path, sc, snap, now)
+    Ok(d): d
+    Error(e):
+      _rm1 = dst_files.remove(tmp_path)
+      return Error(e)
+  end
+  st_bak = Ledger.store(db_bak)
+  pages = Modb.page_count(st_bak)
+  free_pages = Modb.free_page_count(st_bak)
+  case wrap_io(dst_files.rename(tmp_path, dst_path)).map_error(fn(e) StorageFailure(e) end)
+    Ok(Unit): Unit
+    Error(e):
+      _rm2 = dst_files.remove(tmp_path)
+      return Error(e)
+  end
+  Ok(
+    BackupReport(
+      source_txid: snap.source_txid,
+      schema_version: snap.schema_version,
+      include_internal: snap.include_internal,
+      bucket_count: snap.bucket_count,
+      entry_count: snap.entry_count,
+      page_count: pages,
+      free_page_count: free_pages,
+      sha256: snap.sha256
+    )
+  )
+end
+
+## Rebuilds and compacts a ledger-backed database cleanly via `PortableSnapshot`, invokes
+## `after_import(ldb)` on the staged database (e.g. to re-provision root Grants or pin a
+## `ReplayBaseline`), optionally records a fresh `VerifyCheckpoint`, verifies everything end to end,
+## and atomically replaces `path`. On any failure, removes the staging temp file and leaves `path`
+## untouched. Caller must ensure no concurrent writers are active during final swap.
+fn compact_db_with_hook(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  include_internal: Bool,
+  record_checkpoint?: Bool,
+  now: Time,
+  after_import: fn(Db) : Result(Db, ExportError)
+) : Result(CompactReport, ExportError)
+  stats_snap = try Ledger.read_locked(
+    files.read_only,
+    path,
+    sc,
+    fn(le) LedgerFailure(le) end,
+    fn(db)
+      st = Ledger.store(db)
+      b_txid = Ledger.txid(db)
+      b_pages = Modb.page_count(st)
+      b_free = Modb.free_page_count(st)
+      b_audit = Ledger.audit_count(db)
+      snap = try export_db(db, include_internal, now)
+      Ok((b_txid, b_pages, b_free, b_audit, snap))
+    end
+  )
+  (before_txid, before_pages, before_free_pages, before_audit_entries, snap) = stats_snap
+  tmp_path = "#{path}.compact.tmp"
+  _rm0 = files.remove(tmp_path)
+
+  ldb0 = case import_db(files, tmp_path, sc, snap, now)
+    Ok(d): d
+    Error(e):
+      _rm1 = files.remove(tmp_path)
+      return Error(e)
+  end
+  ldb1 = case after_import(ldb0)
+    Ok(d): d
+    Error(e):
+      _rm2 = files.remove(tmp_path)
+      return Error(e)
+  end
+  ldb2 = if record_checkpoint?
+    case Ledger.record_verify_checkpoint(ldb1, now)
+      Ok((next_ldb, _cp)): next_ldb
+      Error(le):
+        _rm3 = files.remove(tmp_path)
+        return Error(LedgerFailure(le))
+    end
+  else
+    ldb1
+  end
+  rep = case Ledger.verify_all(ldb2)
+    Ok(r): r
+    Error(le):
+      _rm4 = files.remove(tmp_path)
+      return Error(LedgerFailure(le))
+  end
+
+  after_txid = Ledger.txid(ldb2)
+  after_pages = rep.storage.page_count
+  after_free_pages = Modb.free_page_count(Ledger.store(ldb2))
+  after_audit_entries = rep.audit.entry_count
+
+  case wrap_io(files.rename(tmp_path, path)).map_error(fn(e) StorageFailure(e) end)
+    Ok(Unit): Unit
+    Error(e):
+      _rm5 = files.remove(tmp_path)
+      return Error(e)
+  end
+
+  Ok(
+    CompactReport(
+      before_txid: before_txid,
+      after_txid: after_txid,
+      schema_version: sc.target_version,
+      include_internal: include_internal,
+      before_pages: before_pages,
+      after_pages: after_pages,
+      before_free_pages: before_free_pages,
+      after_free_pages: after_free_pages,
+      before_audit_entries: before_audit_entries,
+      after_audit_entries: after_audit_entries,
+      checkpoint_recorded?: record_checkpoint?,
+      baseline_pinned?: false,
+      sha256: snap.sha256
+    )
+  )
+end
+
+## Convenience `compact_db` with no post-import hook.
+fn compact_db(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  include_internal: Bool,
+  record_checkpoint?: Bool,
+  now: Time
+) : Result(CompactReport, ExportError)
+  compact_db_with_hook(files, path, sc, include_internal, record_checkpoint?, now, fn(db) Ok(db) end)
 end
 
 struct NoteRow

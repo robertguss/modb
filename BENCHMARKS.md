@@ -208,3 +208,22 @@ Measured after installing `mo` with native RFC 8259 `Json.quote_raw` and `Json.p
 | `AgentWorkbench` Phase 3 Bug-Fix Replay (`82` calls) | `sim 690.9 ms`, `accept 456.3 ms` | **`sim 183.2 ms`, `accept 116.1 ms`** | **3.8× / 3.9× faster** |
 | `AgentWorkbench` Portable Export (`19` buckets, `922` entries) | `46.7 ms` (was `1,321.7 ms` 500) | **`31.6 ms`** | **1.5× faster** (**>41×** vs pre-fix) |
 | `AgentWorkbench` Post-`SIGKILL` `/admin/verify` (`475` tx, `312` pages) | `296.7 ms` | **`157.3 ms`** | **1.9× faster** |
+
+---
+
+## 10. Milestone 8 & 9: Incremental Worlds, Views, Online Backup & Atomic Compaction (2026-11-26)
+
+Measured on disk via pure-Rust `mo` (`4 KiB` synced B+Tree pages) after `398` audited Replay calls (`200` inserts, `150` deletes, `50` overwrites) and in the Milestone 8/9 verification suites:
+
+| Operation / Benchmark | Scope / Workload | Observed Latency & Result |
+| --- | --- | --- |
+| `Ledger.verify_all` (cold full scan) | `398` audit entries, `110` B+Tree pages | **`245 ms`** |
+| `Ledger.verify_fast(..., 100)` (`VerifyCheckpoint`) | Tail window check + invariant check (`398` entries) | **`9 ms`** (**27.2× faster** vs `verify_all`) |
+| Online `Export.backup_db` (`include_internal: false`) | `txid = 400`, `50` live entries (`1` bucket) | **`22 ms`** |
+| Atomic `Replay.compact_with_baseline_default` | `before_pages = 110`, `after_pages = 13` (**-88%** pages) | **`49 ms`** (`free: 14 → 3`, `audit: 398 → 0`, `baseline_pinned = true`, `checkpoint = true`) |
+| `Views.execute_read_program_recorded` | `items_public` (`50` scanned, `25` returned, `_modb_read_log`) | **`17 ms`** |
+| `Views.execute_release_recorded` (`k >= 5`) | Aggregate release over `cohort = 50` rows | **`23 ms`** |
+| `World.land_world` (O(1) CoW read re-validation) | `9` scoped reads on `items` + concurrent unrelated `notes` commit | **`16 ms`** (`reads_verified = 9`, `reads_skipped = 9`) |
+| `mo test tests/test-views-incremental.mo` | `5` tests (Views, Releases, `ReadLog`, O(1) World skip, negative control) | **`1,125.6 ms`** (`5 passed, 0 failed`) |
+| `mo test tests/test-compact-backup.mo` | `4` tests (`backup_db`, `compact_db`, `compact_with_baseline` + delta replay, rollback) | **`6,259.6 ms`** (`4 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` (`AgentWorkbench` M7+M8 E2E) | `mo serve --workers 8`, `35` MCP tools, Inspector UI, `130` export entries | **PASS** (`reads_skipped = 1`, `txid = 32`, hash verified) |

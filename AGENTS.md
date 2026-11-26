@@ -15,9 +15,12 @@ incremental invariants), Milestone 6 (real-world 8-worker multi-agent `AgentWork
 empirical coarse-vs-fine needless send-back, replay recovery, and `SIGKILL` simulation), and
 Milestone 7 (live zero-CDN `WorkbenchUi` browser Inspector, native Streamable HTTP `POST /mcp`
 server with 35 tools, and zero-dependency Python stdio MCP bridge `tools/modb_mcp_server.py`),
-and Milestone 8 (Grant-scoped hierarchical `Views` & k-anonymous `Releases`, zero-approval
+Milestone 8 (Grant-scoped hierarchical `Views` & k-anonymous `Releases`, zero-approval
 sandboxed ad-hoc `ReadPrograms` with static field gating & read provenance log, stateless agent
-self-onboarding `OnboardingManifest`, and O(1) CoW-diff incremental World read re-validation)
+self-onboarding `OnboardingManifest`, and O(1) CoW-diff incremental World read re-validation),
+and Milestone 9 (first-class online `Export.backup_db`, atomic `Export.compact_db` /
+`Export.compact_db_with_hook`, replay-safe `Replay.compact_with_baseline` preserving
+`_modb_replay_baseline`, and production Worlds + Views integration in `motet`)
 live in `src/`, `tools/`, verified in `tests/` and `bench/` and demonstrated in `examples/shop.mo`,
 `examples/shop-api.mo`, `examples/agent-workbench.mo`, and `examples/workbench-ui.mo`.
 `specs/` holds active build specs, `design.md` holds the broader long-term design, and `map.md` is
@@ -70,6 +73,7 @@ mo test tests/test-pins-diff.mo
 mo test tests/test-worlds.mo
 mo test tests/test-replay-export.mo
 mo test tests/test-views-incremental.mo
+mo test tests/test-compact-backup.mo
 mo test examples/shop.mo
 mo test examples/shop-api.mo
 mo test examples/agent-workbench.mo

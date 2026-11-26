@@ -497,7 +497,7 @@ fn map_export_error(err: Export.ExportError) : ShopApiError
     Export.LedgerFailure(le): map_ledger_error(le)
     Export.StorageFailure(_) | Export.UnsupportedFormat(found: _, supported: _) | Export
       .InvalidEncoding(bucket: _, detail: _) | Export.ChecksumMismatch(expected: _, actual: _) | Export
-      .TargetNotEmpty(path: _): StorageFailed(message: err.to_text)
+      .TargetNotEmpty(path: _) | Export.PostImportFailed(detail: _): StorageFailed(message: err.to_text)
   end
 end
 

@@ -59,7 +59,9 @@ simulate_replay_locked,
 get_proposal_locked,
 list_proposals_locked,
 accept_proposal_locked,
-discard_proposal_locked
+discard_proposal_locked,
+compact_with_baseline,
+compact_with_baseline_default
 use Json
 use Modb{Store, WriteTx}
 use Modb.Errors{ModbError}
@@ -1450,6 +1452,60 @@ fn discard_proposal_locked(
       Ok(prop)
     end
   )
+end
+
+## Compacts a ledger-backed database cleanly (`include_internal: false`, fresh verification
+## checkpoint) and pins its resulting CoW root as `_modb_replay_baseline` so future
+## `simulate_replay` and O(diff) delta proposals preserve all pre-compaction state.
+## Runs `after_import(ldb)` (e.g. to re-provision root Grants) inside the atomic staging step
+## before verification and file replacement.
+fn compact_with_baseline(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  now: Time,
+  after_import: fn(Db) : Result(Db, ReplayError)
+) : Result(Export.CompactReport, ReplayError)
+  rep = try Export.compact_db_with_hook(
+    files,
+    path,
+    sc,
+    false,
+    true,
+    now,
+    fn(ldb0)
+      ldb1 = try after_import(ldb0).map_error(fn(re) Export.PostImportFailed(detail: re.to_text) end)
+      (ldb2, _bl) = try pin_baseline(ldb1, now).map_error(
+        fn(re) Export.PostImportFailed(detail: re.to_text) end
+      )
+      Ok(ldb2)
+    end
+  ).map_error(fn(ee) ExportFailure(ee) end)
+  Ok(
+    Export.CompactReport(
+      before_txid: rep.before_txid,
+      after_txid: rep.after_txid,
+      schema_version: rep.schema_version,
+      include_internal: rep.include_internal,
+      before_pages: rep.before_pages,
+      after_pages: rep.after_pages,
+      before_free_pages: rep.before_free_pages,
+      after_free_pages: rep.after_free_pages,
+      before_audit_entries: rep.before_audit_entries,
+      after_audit_entries: rep.after_audit_entries,
+      checkpoint_recorded?: rep.checkpoint_recorded?,
+      baseline_pinned?: true,
+      sha256: rep.sha256
+    )
+  )
+end
+
+## Convenience overload of `compact_with_baseline` with no extra post-import hook.
+fn compact_with_baseline_default(files: Files, path: Text, sc: Schema, now: Time) : Result(
+  Export.CompactReport,
+  ReplayError
+)
+  compact_with_baseline(files, path, sc, now, fn(db) Ok(db) end)
 end
 
 struct TallyRow
