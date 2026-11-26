@@ -81,6 +81,8 @@ struct ParsedFlags
   prefix?: Bool
   key_file_opt: Option(Text)
   key_env_opt: Option(Text)
+  keyring_file_opt: Option(Text)
+  keyring_env_opt: Option(Text)
   key_id_opt: Option(Text)
   aad_opt: Option(Text)
   encrypt?: Bool
@@ -107,6 +109,8 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var prefix? = false
   var key_file_opt = None
   var key_env_opt = None
+  var keyring_file_opt = None
+  var keyring_env_opt = None
   var key_id_opt = None
   var aad_opt = None
   var encrypt? = false
@@ -192,6 +196,14 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       val = try rest.get(i + 1).or_fail("--key-env requires a value")
       key_env_opt = Some(val)
       i += 2
+    else if tok == "--keyring-file"
+      val = try rest.get(i + 1).or_fail("--keyring-file requires a value")
+      keyring_file_opt = Some(val)
+      i += 2
+    else if tok == "--keyring-env"
+      val = try rest.get(i + 1).or_fail("--keyring-env requires a value")
+      keyring_env_opt = Some(val)
+      i += 2
     else if tok == "--key-id"
       val = try rest.get(i + 1).or_fail("--key-id requires a value")
       key_id_opt = Some(val)
@@ -232,6 +244,8 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       prefix?: prefix?,
       key_file_opt: key_file_opt,
       key_env_opt: key_env_opt,
+      keyring_file_opt: keyring_file_opt,
+      keyring_env_opt: keyring_env_opt,
       key_id_opt: key_id_opt,
       aad_opt: aad_opt,
       encrypt?: encrypt?,
@@ -1613,7 +1627,75 @@ fn load_sync_key(rf: ReadFiles, env_opt: Option(Env), f: ParsedFlags) : Result(B
 end
 
 fn has_key_flag?(f: ParsedFlags) : Bool
-  f.key_file_opt is Some(_) or f.key_env_opt is Some(_)
+  f.key_file_opt is Some(_) or f.key_env_opt is Some(_) or f.keyring_file_opt is Some(_) or
+    f.keyring_env_opt is Some(_)
+end
+
+fn resolve_sync_key_id(f: ParsedFlags, env_opt: Option(Env)) : Text
+  case f.key_id_opt
+    Some(id) if not id.trim.empty?: id.trim
+    Some(_) | None:
+      case env_opt
+        Some(env):
+          case env.get("MODB_BACKUP_KEY_ID")
+            Some(id) if not id.trim.empty?: id.trim
+            Some(_) | None: "default"
+          end
+        None: "default"
+      end
+  end
+end
+
+fn load_sync_keyring_opt(rf: ReadFiles, env_opt: Option(Env), f: ParsedFlags) : Result(
+  Option(Map(Text, Bytes)),
+  Text
+)
+  kr_opt = case f.keyring_file_opt
+    Some(kpath):
+      raw = try rf.read_text(kpath).map_error(fn(e) e.to_text end)
+      kr = try Sync.parse_keyring_text(raw).map_error(fn(se) Sync.to_text(se) end)
+      Some(kr)
+    None:
+      case f.keyring_env_opt
+        Some(ev):
+          env = try env_opt.or_fail("no Env capability available to read keyring env var")
+          raw = try env.get(ev).or_fail("keyring env var '#{ev}' is not set")
+          kr = try Sync.parse_keyring_text(raw).map_error(fn(se) Sync.to_text(se) end)
+          Some(kr)
+        None:
+          if f.key_file_opt is Some(_) or f.key_env_opt is Some(_)
+            None
+          else
+            case env_opt
+              Some(env):
+                case env.get("MODB_BACKUP_KEYRING")
+                  Some(raw) if not raw.trim.empty?:
+                    kr = try Sync.parse_keyring_text(raw).map_error(fn(se) Sync.to_text(se) end)
+                    Some(kr)
+                  Some(_) | None: None
+                end
+              None: None
+            end
+          end
+      end
+  end
+  case (kr_opt, env_opt)
+    (Some(kr), Some(env)):
+      kid = resolve_sync_key_id(f, Some(env))
+      if kr.get(kid) is None
+        case env.get("MODB_BACKUP_KEY_HEX")
+          Some(hex_raw) if not hex_raw.trim.empty?:
+            case decode_sync_key_bytes(hex_raw.trim.bytes)
+              Ok(kb): return Ok(Some(kr.set(kid, kb)))
+              Error(_): Unit
+            end
+          Some(_) | None: Unit
+        end
+      end
+      Ok(Some(kr))
+    (Some(kr), None): Ok(Some(kr))
+    (None, _): Ok(None)
+  end
 end
 
 fn cmd_sync(
@@ -1646,7 +1728,7 @@ fn cmd_sync(
     aad = f.aad_opt or ""
     delta_paths = f.positional.drop(2)
     rep = if use_dec?
-      key = case load_sync_key(files.read_only, env_opt, f)
+      kr_opt = case load_sync_keyring_opt(files.read_only, env_opt, f)
         Ok(k): k
         Error(msg): return fail_msg(console, msg)
       end
@@ -1666,9 +1748,21 @@ fn cmd_sync(
         end
         sealed_deltas = sealed_deltas.append(senv)
       end
-      case Sync.restore_sealed_chain(files, dst_path, sealed_base, sealed_deltas, key, aad)
-        Ok(r): r
-        Error(se): return fail_msg(console, Sync.to_text(se))
+      case kr_opt
+        Some(kr):
+          case Sync.restore_sealed_chain_with_keyring(files, dst_path, sealed_base, sealed_deltas, kr, aad)
+            Ok(r): r
+            Error(se): return fail_msg(console, Sync.to_text(se))
+          end
+        None:
+          key = case load_sync_key(files.read_only, env_opt, f)
+            Ok(k): k
+            Error(msg): return fail_msg(console, msg)
+          end
+          case Sync.restore_sealed_chain(files, dst_path, sealed_base, sealed_deltas, key, aad)
+            Ok(r): r
+            Error(se): return fail_msg(console, Sync.to_text(se))
+          end
       end
     else
       base_snap = case Json.decode[PortableSnapshot](base_raw)
@@ -1777,7 +1871,7 @@ fn cmd_sync(
         Some(r): r
         None: return fail_msg(console, "no SecureRandom capability available for encryption")
       end
-      key_id = f.key_id_opt or "default"
+      key_id = resolve_sync_key_id(f, env_opt)
       aad = f.aad_opt or ""
       senv = case Sync.seal_snapshot(srng, key, key_id, aad, snap, now)
         Ok(e): e
@@ -1833,7 +1927,7 @@ fn cmd_sync(
         Some(r): r
         None: return fail_msg(console, "no SecureRandom capability available for encryption")
       end
-      key_id = f.key_id_opt or "default"
+      key_id = resolve_sync_key_id(f, env_opt)
       aad = f.aad_opt or ""
       senv = case Sync.seal_delta(srng, key, key_id, aad, delta, now)
         Ok(e): e
@@ -1908,7 +2002,7 @@ fn cmd_sync(
     end
     use_dec? = f.decrypt? or has_key_flag?(f) or draw.contains?("\"ciphertext_b64\"")
     delta = if use_dec?
-      key = case load_sync_key(files.read_only, env_opt, f)
+      kr_opt = case load_sync_keyring_opt(files.read_only, env_opt, f)
         Ok(k): k
         Error(msg): return fail_msg(console, msg)
       end
@@ -1917,9 +2011,21 @@ fn cmd_sync(
         Ok(e): e
         Error(je): return fail_msg(console, "invalid sealed delta JSON: #{je}")
       end
-      case Sync.open_delta(key, aad, senv)
-        Ok(d): d
-        Error(se): return fail_msg(console, Sync.to_text(se))
+      case kr_opt
+        Some(kr):
+          case Sync.open_delta_with_keyring(kr, aad, senv)
+            Ok(d): d
+            Error(se): return fail_msg(console, Sync.to_text(se))
+          end
+        None:
+          key = case load_sync_key(files.read_only, env_opt, f)
+            Ok(k): k
+            Error(msg): return fail_msg(console, msg)
+          end
+          case Sync.open_delta(key, aad, senv)
+            Ok(d): d
+            Error(se): return fail_msg(console, Sync.to_text(se))
+          end
       end
     else
       case Json.decode[SyncDelta](draw)

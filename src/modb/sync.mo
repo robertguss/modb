@@ -43,8 +43,13 @@ seal_delta,
 open_delta,
 seal_snapshot,
 open_snapshot,
+parse_keyring_text,
+open_bytes_with_keyring,
+open_delta_with_keyring,
+open_snapshot_with_keyring,
 restore_chain,
 restore_sealed_chain,
+restore_sealed_chain_with_keyring,
 init_peer_locked,
 get_peer_locked,
 list_peers_locked,
@@ -83,6 +88,7 @@ enum SyncError
   ChainMismatch(expected_seq: Int, actual_seq: Int, expected_prev_hash: Text, actual_prev_hash: Text)
   InvalidKeyLength(expected: Int, got: Int)
   InvalidEnvelope(reason: Text)
+  KeyNotFound(key_id: Text)
   DecryptionFailed
   TargetExists(path: Text)
 end
@@ -107,6 +113,7 @@ fn to_text(err: SyncError) : Text
     ): "sync hash-chain mismatch: expected seq=#{es} prev=#{eh}, got seq=#{acs} prev=#{ah}"
     InvalidKeyLength(expected: exp, got: g): "invalid encryption key length: expected #{exp} bytes, got #{g}"
     InvalidEnvelope(reason: r): "invalid sealed envelope: #{r}"
+    KeyNotFound(key_id: kid): "backup keyring has no key for key_id '#{kid}'"
     DecryptionFailed: "sealed envelope decryption failed (wrong key, AAD, or tampered ciphertext)"
     TargetExists(path: p): "restore destination already exists: #{p}"
   end
@@ -963,6 +970,119 @@ fn open_snapshot(key: Bytes, expected_aad: Text, env: SealedEnvelope) : Result(
   Ok(snap)
 end
 
+fn decode_key_32_text(raw: Text) : Result(Bytes, SyncError)
+  t = raw.trim
+  if t.byte_count == 64
+    case Bytes.from_hex(t)
+      Some(kb) if kb.size == 32: return Ok(kb)
+      Some(_) | None: Unit
+    end
+  end
+  if t.starts_with?("b64:")
+    b64 = t.drop_prefix("b64:") or ""
+    case Bytes.from_base64url(b64)
+      Some(kb) if kb.size == 32: return Ok(kb)
+      Some(_) | None: Unit
+    end
+  end
+  validate_key_32(t.bytes)
+end
+
+## Parses a backup keyring in JSON (`{"k1":"<64-hex>"}`) or `k1=<64-hex>,k2=<64-hex>` form.
+## Supports key rotation across generations/deltas without weakening single-key validation.
+fn parse_keyring_text(raw: Text) : Result(Map(Text, Bytes), SyncError)
+  t = raw.trim
+  if t.empty?
+    return Error(InvalidEnvelope(reason: "empty backup keyring"))
+  end
+  var out = {}
+  if t.starts_with?("{")
+    entries = case Json.decode[Map(Text, Text)](t.bytes)
+      Ok(m): m
+      Error(_): return Error(InvalidEnvelope(reason: "malformed JSON backup keyring"))
+    end
+    for (kid, sec) in entries
+      clean_id = kid.trim
+      if clean_id.empty?
+        return Error(InvalidEnvelope(reason: "keyring contains empty key_id"))
+      end
+      kb = try decode_key_32_text(sec)
+      out = out.set(clean_id, kb)
+    end
+  else
+    normalized = t.replace("\r", "\n").replace(";", "\n").replace(",", "\n")
+    for part in normalized.split("\n")
+      line = part.trim
+      if not line.empty?
+        pieces = line.split("=")
+        if pieces.size < 2
+          return Error(InvalidEnvelope(reason: "keyring entry must have key_id=key format"))
+        end
+        clean_id = (pieces.first or "").trim
+        if clean_id.empty?
+          return Error(InvalidEnvelope(reason: "keyring entry has empty key_id"))
+        end
+        sec = pieces.drop(1).join("=")
+        kb = try decode_key_32_text(sec)
+        out = out.set(clean_id, kb)
+      end
+    end
+  end
+  if out.empty?
+    return Error(InvalidEnvelope(reason: "empty backup keyring"))
+  end
+  Ok(out)
+end
+
+## Decrypts `env` by selecting the key matching `env.key_id` from `keys`.
+fn open_bytes_with_keyring(
+  keys: Map(Text, Bytes),
+  expected_kind: Text,
+  expected_aad: Text,
+  env: SealedEnvelope
+) : Result(Bytes, SyncError)
+  k = try keys.get(env.key_id).or_fail(KeyNotFound(key_id: env.key_id))
+  open_bytes(k, expected_kind, expected_aad, env)
+end
+
+## Decrypts, decodes, and hash-verifies a `SyncDelta` using `keys[env.key_id]`.
+fn open_delta_with_keyring(
+  keys: Map(Text, Bytes),
+  expected_aad: Text,
+  env: SealedEnvelope
+) : Result(SyncDelta, SyncError)
+  pt = try open_bytes_with_keyring(keys, "delta", expected_aad, env)
+  raw = try pt.decode_utf8.or_fail(
+    InvalidEnvelope(reason: "decrypted delta payload is not valid UTF-8")
+  )
+  delta = case Json.decode[SyncDelta](raw)
+    Ok(d): d
+    Error(je): return Error(InvalidDelta(reason: "malformed decrypted delta JSON: #{je}"))
+  end
+  _ = try verify_delta(delta)
+  Ok(delta)
+end
+
+## Decrypts, decodes, and SHA-256-verifies a `PortableSnapshot` using `keys[env.key_id]`.
+fn open_snapshot_with_keyring(
+  keys: Map(Text, Bytes),
+  expected_aad: Text,
+  env: SealedEnvelope
+) : Result(Export.PortableSnapshot, SyncError)
+  pt = try open_bytes_with_keyring(keys, "snapshot", expected_aad, env)
+  raw = try pt.decode_utf8.or_fail(
+    InvalidEnvelope(reason: "decrypted snapshot payload is not valid UTF-8")
+  )
+  snap = case Json.decode[Export.PortableSnapshot](raw)
+    Ok(s): s
+    Error(je): return Error(
+      InvalidEnvelope(reason: "malformed decrypted snapshot JSON: #{je}")
+    )
+  end
+  _ = try wrap_export(Export.verify_snapshot(snap))
+  Ok(snap)
+end
+
 ## Builds and verifies a fresh MoDB file at `dst_path` from `base_snap` followed by an ordered,
 ## hash-chained list of `deltas` (`seq = 1..N`, `prev_hash` starting at `genesis_hash`).
 ## Uses temporary staging + `Modb.verify` + atomic rename, and cleans up on any error.
@@ -1043,6 +1163,24 @@ fn restore_sealed_chain(
   var deltas = []
   for env in sealed_deltas
     d = try open_delta(key, expected_aad, env)
+    deltas = deltas.append(d)
+  end
+  restore_chain(files, dst_path, base_snap, deltas)
+end
+
+## Decrypts, verifies, and restores a database across key-rotated envelopes selected by `env.key_id`.
+fn restore_sealed_chain_with_keyring(
+  files: Files,
+  dst_path: Text,
+  sealed_base: SealedEnvelope,
+  sealed_deltas: List(SealedEnvelope),
+  keys: Map(Text, Bytes),
+  expected_aad: Text
+) : Result(RestoreChainReport, SyncError)
+  base_snap = try open_snapshot_with_keyring(keys, expected_aad, sealed_base)
+  var deltas = []
+  for env in sealed_deltas
+    d = try open_delta_with_keyring(keys, expected_aad, env)
     deltas = deltas.append(d)
   end
   restore_chain(files, dst_path, base_snap, deltas)
@@ -1228,6 +1366,12 @@ test "Modb.Sync unit tests: peer pin lifecycle, JSON roundtrip, AEAD tamper chec
     InvalidKeyLength(expected: 32, got: 5)
   )
   assert open_snapshot(key, "modb:prod", env_delta) is Error(InvalidEnvelope(reason: _))
+
+  ## Keyring rotation test
+  assert parse_keyring_text("k1=#{key.to_hex}") is Ok(kr_single)
+  assert open_snapshot_with_keyring(kr_single, "modb:prod", env_snap) is Ok(snap_kr)
+  assert snap_kr == snap
+  assert open_snapshot_with_keyring({}, "modb:prod", env_snap) is Error(KeyNotFound(key_id: "k1"))
 
   ## Restore chain builds verified replica
   assert restore_chain(files, "restored.modb", snap, [d1]) is Ok(rep)

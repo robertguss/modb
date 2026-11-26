@@ -368,3 +368,70 @@ test "5. Encrypted restore_sealed_chain & negative controls (tamper, wrong key, 
   forged_delta.delta_hash = "deadbeef"
   assert Sync.verify_delta(forged_delta) is Error(Sync.InvalidDelta(reason: _))
 end
+
+test "Sync keyring rotation restores mixed-generation sealed chains across key_ids"
+  files = Files.in_memory({})
+  srng = SecureRandom.seeded(77)
+  t0 = Time.parse("2026-11-26T23:00:00Z") or stop "time"
+  assert Modb.open(files, "rot-src.modb") is Ok(db0)
+  tx0 = Modb.begin_write(db0)
+  assert Modb.tx_put(tx0, "cfg", "k0".bytes, "v0".bytes) is Ok(tx0b)
+  assert Modb.commit(tx0b) is Ok(db1)
+
+  assert Sync.init_peer(db1, "rot-peer", true, false, t0) is Ok((s2, _))
+  assert Sync.export_peer_base_snapshot(s2, "rot-peer", t0) is Ok(base_snap)
+  assert Bytes.from_hex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20") is
+    Some(k1)
+  assert Bytes.from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is
+    Some(k2)
+  assert Sync.seal_snapshot(srng, k1, "rot-v1", "host:rot", base_snap, t0) is Ok(esnap)
+
+  tx1 = Modb.begin_write(s2)
+  assert Modb.tx_put(tx1, "cfg", "k1".bytes, "v1".bytes) is Ok(tx1b)
+  assert Modb.commit(tx1b) is Ok(s3)
+  assert Sync.export_delta(s3, "rot-peer", t0) is Ok((s4, d1))
+  assert Sync.ack_peer(s4, "rot-peer", d1.seq, d1.delta_hash, t0) is Ok((s5, _))
+  assert Sync.seal_delta(srng, k1, "rot-v1", "host:rot", d1, t0) is Ok(ed1)
+
+  ## Rotate active sealing key to rot-v2 / k2
+  tx2 = Modb.begin_write(s5)
+  assert Modb.tx_put(tx2, "cfg", "k2".bytes, "v2".bytes) is Ok(tx2b)
+  assert Modb.commit(tx2b) is Ok(s6)
+  assert Sync.export_delta(s6, "rot-peer", t0) is Ok((_s7, d2))
+  assert Sync.seal_delta(srng, k2, "rot-v2", "host:rot", d2, t0) is Ok(ed2)
+
+  csv_kr = "rot-v1=0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20,rot-v2=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  json_kr = "{\"rot-v1\":\"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\",\"rot-v2\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+  assert Sync.parse_keyring_text(csv_kr) is Ok(kr_csv)
+  assert Sync.parse_keyring_text(json_kr) is Ok(kr_json)
+  assert kr_csv == kr_json
+  assert Sync.parse_keyring_text("missing_equals") is Error(Sync.InvalidEnvelope(reason: _))
+
+  ## Single wrong/incomplete key fails, while full keyring restores both generations cleanly
+  assert Sync.restore_sealed_chain(files, "rot-single-fail.modb", esnap, [ed1, ed2], k1, "host:rot") is
+    Error(Sync.DecryptionFailed)
+  assert Sync.restore_sealed_chain_with_keyring(
+    files,
+    "rot-missing-id.modb",
+    esnap,
+    [ed1, ed2],
+    {"rot-v1": k1},
+    "host:rot"
+  ) is
+    Error(Sync.KeyNotFound(key_id: "rot-v2"))
+  assert Sync.restore_sealed_chain_with_keyring(
+    files,
+    "rot-ok.modb",
+    esnap,
+    [ed1, ed2],
+    kr_json,
+    "host:rot"
+  ) is
+    Ok(rep)
+  assert rep.deltas_applied == 2
+  assert Modb.open_read_only(files.read_only, "rot-ok.modb") is Ok(restored)
+  assert Modb.verify(restored) is Ok(_)
+  assert Modb.get(restored, "cfg", "k0".bytes) == Ok(Some("v0".bytes))
+  assert Modb.get(restored, "cfg", "k1".bytes) == Ok(Some("v1".bytes))
+  assert Modb.get(restored, "cfg", "k2".bytes) == Ok(Some("v2".bytes))
+end
