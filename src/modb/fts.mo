@@ -49,6 +49,11 @@ enum FtsError
   InvalidDocument(reason: Text)
 end
 
+fn utf8_code_bytes(ch: Char) : Int
+  c = ch.code
+  if c < 128: 1 else if c < 2048: 2 else if c < 65536: 3 else: 4
+end
+
 ## Formats an `FtsError` as a human-readable diagnostic.
 fn to_text(err: FtsError) : Text
   case err
@@ -238,7 +243,7 @@ fn tokenize(text: Text, max_token_bytes: Int) : List(Text)
   for ch in text.chars
     case fold_word_char(ch)
       Some(wc):
-        cb = wc.to_text.byte_count
+        cb = utf8_code_bytes(wc)
         if cur_bytes + cb <= cap
           cur_chars = cur_chars.append(wc)
           cur_bytes += cb
