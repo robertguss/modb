@@ -1048,7 +1048,9 @@ fn map_sync_error(err: Sync.SyncError) : WorkbenchError
     ): SyncConflict(detail: Sync.to_text(err))
     Sync.InvalidPeerId(peer_id: _) | Sync.InvalidDelta(reason: _) | Sync.InvalidEnvelope(
       reason: _
-    ) | Sync.InvalidKeyLength(expected: _, got: _): InvalidInput(reason: Sync.to_text(err))
+    ) | Sync.InvalidKeyLength(expected: _, got: _) | Sync.KeyNotFound(key_id: _): InvalidInput(
+      reason: Sync.to_text(err)
+    )
     Sync.StorageFailure(_) | Sync.TableFailure(_) | Sync.ExportFailure(_) | Sync.PinMissing(
       pin_id: _
     ) | Sync.DecryptionFailed | Sync.TargetExists(path: _): StorageFailed(
@@ -5638,7 +5640,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.8.0")
+              "version": Json.String("0.8.1")
             })
           })
         )
