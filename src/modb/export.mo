@@ -13,6 +13,8 @@ CompactReport(..),
 to_text,
 compute_snapshot_digest,
 encode_snapshot_json,
+export_filtered_at_root,
+export_filtered_store,
 export_at_root,
 export_store,
 export_db,
@@ -201,29 +203,38 @@ fn read_schema_version_at_root(store: Store, cat_root: Int) : Result(Int, Export
   end
 end
 
-## Exports a layout-independent `PortableSnapshot` from an explicit committed or pinned `cat_root`.
-## Layout-dependent `_modb_pins` is always excluded; other `_modb_*` internal buckets are included
-## iff `include_internal` is `true`.
-fn export_at_root(store: Store, cat_root: Int, source_txid: Int, include_internal: Bool, now: Time) : Result(
-  PortableSnapshot,
-  ExportError
-)
+## Exports a layout-independent `PortableSnapshot` from an explicit committed or pinned `cat_root`,
+## applying `allow_bucket(bucket_name)` after internal-bucket filtering and returning `(snapshot, skipped_buckets)`.
+## Skipped buckets never have their B+Tree data pages read.
+fn export_filtered_at_root(
+  store: Store,
+  cat_root: Int,
+  source_txid: Int,
+  include_internal: Bool,
+  allow_bucket: fn(Text) : Bool,
+  now: Time
+) : Result((PortableSnapshot, List(Text)), ExportError)
   all_names = try Modb.buckets_at_root(store, cat_root).map_error(fn(e) StorageFailure(e) end)
   sc_ver = try read_schema_version_at_root(store, cat_root)
   var exported_buckets = []
+  var skipped_buckets = []
   var total_entries = 0
   for bname in all_names
-    skip? = bname == pins_bucket or (not include_internal and bname.starts_with?("_modb_"))
-    if not skip?
-      rows = try Modb.scan_at_root(store, cat_root, bname, None, None, 0).map_error(fn(e)
-        StorageFailure(e)
-      end)
-      var entries = []
-      for (k, v) in rows
-        entries = entries.append(PortableEntry(key_hex: k.to_hex, value_hex: v.to_hex))
+    skip_internal? = bname == pins_bucket or (not include_internal and bname.starts_with?("_modb_"))
+    if not skip_internal?
+      if not allow_bucket(bname)
+        skipped_buckets = skipped_buckets.append(bname)
+      else
+        rows = try Modb.scan_at_root(store, cat_root, bname, None, None, 0).map_error(fn(e)
+          StorageFailure(e)
+        end)
+        var entries = []
+        for (k, v) in rows
+          entries = entries.append(PortableEntry(key_hex: k.to_hex, value_hex: v.to_hex))
+        end
+        total_entries += entries.size
+        exported_buckets = exported_buckets.append(PortableBucket(name: bname, entries: entries))
       end
-      total_entries += entries.size
-      exported_buckets = exported_buckets.append(PortableBucket(name: bname, entries: entries))
     end
   end
   digest = compute_snapshot_digest(
@@ -234,19 +245,53 @@ fn export_at_root(store: Store, cat_root: Int, source_txid: Int, include_interna
     now,
     exported_buckets
   )
-  Ok(
-    PortableSnapshot(
-      format_version: export_format_version,
-      source_txid: source_txid,
-      schema_version: sc_ver,
-      include_internal: include_internal,
-      exported_at: now,
-      bucket_count: exported_buckets.size,
-      entry_count: total_entries,
-      buckets: exported_buckets,
-      sha256: digest
-    )
+  snap = PortableSnapshot(
+    format_version: export_format_version,
+    source_txid: source_txid,
+    schema_version: sc_ver,
+    include_internal: include_internal,
+    exported_at: now,
+    bucket_count: exported_buckets.size,
+    entry_count: total_entries,
+    buckets: exported_buckets,
+    sha256: digest
   )
+  Ok((snap, skipped_buckets))
+end
+
+## Exports a filtered layout-independent `PortableSnapshot` of the current committed `store`.
+fn export_filtered_store(
+  store: Store,
+  include_internal: Bool,
+  allow_bucket: fn(Text) : Bool,
+  now: Time
+) : Result((PortableSnapshot, List(Text)), ExportError)
+  export_filtered_at_root(
+    store,
+    Modb.catalog_root(store),
+    Modb.txid(store),
+    include_internal,
+    allow_bucket,
+    now
+  )
+end
+
+## Exports a layout-independent `PortableSnapshot` from an explicit committed or pinned `cat_root`.
+## Layout-dependent `_modb_pins` is always excluded; other `_modb_*` internal buckets are included
+## iff `include_internal` is `true`.
+fn export_at_root(store: Store, cat_root: Int, source_txid: Int, include_internal: Bool, now: Time) : Result(
+  PortableSnapshot,
+  ExportError
+)
+  (snap, _skipped) = try export_filtered_at_root(
+    store,
+    cat_root,
+    source_txid,
+    include_internal,
+    fn(_b) true end,
+    now
+  )
+  Ok(snap)
 end
 
 ## Exports the current committed state of `store` into a layout-independent `PortableSnapshot`.

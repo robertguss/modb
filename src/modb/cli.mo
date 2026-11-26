@@ -1,6 +1,6 @@
 ## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `fts`, `vec`,
-## `backup`, `export`, `restore`, `compact`, `diff`). Works on any `.modb` database file safely using
-## advisory `flock` coordination and read-only `ReadFiles` where applicable.
+## `policy`, `proposals`, `feeds`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
+## `.modb` database file safely using advisory `flock` coordination and read-only `ReadFiles`.
 module Modb.Cli
 expose run_cli,
 main
@@ -9,13 +9,17 @@ use Modb{Store}
 use Modb.Claims
 use Modb.Errors{wrap_io}
 use Modb.Export{PortableSnapshot}
+use Modb.Feeds
 use Modb.Fts
 use Modb.Grants
 use Modb.Ledger{SchemaState, genesis_hash, meta_bucket}
 use Modb.Pager{from_file}
+use Modb.Policy
+use Modb.Proposals
 use Modb.Table
 use Modb.Tree{KeyDiff}
 use Modb.Vec
+use Modb.Views
 use Modb.World
 
 fn print_usage(console: Console) : Unit
@@ -31,6 +35,10 @@ fn print_usage(console: Console) : Unit
       "  modb worlds <db.modb> [--json]",
       "  modb fts <db.modb> [prefix] [query...] [--scope S] [--prefix] [--limit N] [--json]",
       "  modb vec <db.modb> [prefix] [--json]",
+      "  modb policy <db.modb> [--json]",
+      "  modb proposals <db.modb> [--status pending|approved|rejected|withdrawn] [--json]",
+      "  modb feeds <db.modb> [--json]",
+      "  modb feeds <db.modb> poll <feed_id> [--limit N] [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
       "  modb export <src.modb> <out.json> [--include-internal]",
       "  modb restore <in.json> <dst.modb>",
@@ -52,6 +60,7 @@ struct ParsedFlags
   action_opt: Option(Text)
   pin_opt: Option(Text)
   scope_opt: Option(Text)
+  status_opt: Option(Text)
   prefix?: Bool
 end
 
@@ -66,6 +75,7 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var action_opt = None
   var pin_opt = None
   var scope_opt = None
+  var status_opt = None
   var prefix? = false
   var i = 0
   while i < rest.size
@@ -110,6 +120,10 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       val = try rest.get(i + 1).or_fail("--scope requires a value")
       scope_opt = Some(val)
       i += 2
+    else if tok == "--status"
+      val = try rest.get(i + 1).or_fail("--status requires a value")
+      status_opt = Some(val)
+      i += 2
     else if tok == "--prefix"
       prefix? = true
       i += 1
@@ -132,6 +146,7 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       action_opt: action_opt,
       pin_opt: pin_opt,
       scope_opt: scope_opt,
+      status_opt: status_opt,
       prefix?: prefix?
     )
   )
@@ -226,6 +241,11 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
       w_open = worlds.filter(fn(w) w.status is World.Open end).size
       w_metrics = try World.metrics(store).map_error(fn(e) World.to_text(e) end)
       w_telem = try World.telemetry(store).map_error(fn(e) World.to_text(e) end)
+      clearances = try Policy.list_clearances(store).map_error(fn(e) Policy.to_text(e) end)
+      gov_props = try Proposals.list_proposals(store, None).map_error(fn(e)
+        Proposals.to_text(e)
+      end)
+      feeds = try Feeds.list_feeds(store).map_error(fn(e) Feeds.to_text(e) end)
       schema_ver = case st_opt
         Some(s): s.version
         None: 0
@@ -252,6 +272,9 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
         w_open,
         w_metrics,
         w_telem,
+        clearances.size,
+        gov_props.size,
+        feeds.size,
         b_counts,
         total_entries
       ))
@@ -273,6 +296,9 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
       w_open,
       wm,
       wt,
+      clr_cnt,
+      prop_cnt,
+      feed_cnt,
       b_counts,
       total_entries
     )):
@@ -297,6 +323,9 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
           "worlds_open": Json.int(w_open),
           "world_metrics": wm.to_json,
           "world_telemetry": wt.to_json,
+          "clearances": Json.int(clr_cnt),
+          "gov_proposals": Json.int(prop_cnt),
+          "feeds": Json.int(feed_cnt),
           "total_entries": Json.int(total_entries),
           "buckets": buckets_json
         })
@@ -308,7 +337,7 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
         console.print(
           "pins=#{pin_cnt} grants=#{grant_cnt} claims=#{claim_cnt} worlds=#{world_cnt} (open=#{w_open}) landed=#{wm
             .total_landed} key_skips=#{wt.key_level_reads_skipped} child_landed=#{wt
-            .child_worlds_landed}"
+            .child_worlds_landed} clearances=#{clr_cnt} proposals=#{prop_cnt} feeds=#{feed_cnt}"
         )
         for (b, c) in b_counts
           console.print("  bucket #{b}: #{c} entries")
@@ -1078,6 +1107,202 @@ fn cmd_vec(console: Console, files: Files, f: ParsedFlags) : Int
   end
 end
 
+fn cmd_policy(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb policy <db.modb> [--json]")
+  end
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      clearances = try Policy.list_clearances(store).map_error(fn(e) Policy.to_text(e) end)
+      dviews = try Proposals.list_dynamic_views(store).map_error(fn(e) Proposals.to_text(e) end)
+      drels = try Proposals.list_dynamic_releases(store).map_error(fn(e) Proposals.to_text(e) end)
+      dinvs = try Proposals.list_dynamic_invariants(store).map_error(fn(e) Proposals.to_text(e) end)
+      Ok((clearances, dviews, drels, dinvs))
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok((clearances, dviews, drels, dinvs)):
+      if f.json?
+        out = Json.Object({
+          "clearances": clearances.to_json,
+          "dynamic_views": dviews.to_json,
+          "dynamic_releases": drels.to_json,
+          "dynamic_invariants": dinvs.to_json
+        })
+        console.print(Json.encode(out))
+      else
+        console.print(
+          "clearances=#{clearances.size} dynamic_views=#{dviews.size} dynamic_releases=#{drels
+            .size} dynamic_invariants=#{dinvs.size}"
+        )
+        for c in clearances
+          console.print(
+            "  grant=#{c.grant_id} clearance=#{Policy.sensitivity_to_text(c.max_sensitivity)} by=#{c
+              .granted_by} reason=#{c.reason}"
+          )
+        end
+        for dv in dviews
+          console.print("  dynamic_view=#{dv.name} narrows=#{dv.base_view} fields=#{dv.fields.join(",")}")
+        end
+        for dr in drels
+          console.print(
+            "  dynamic_release=#{dr.release_name} #{Policy.sensitivity_to_text(dr.input_sensitivity)}->#{Policy
+              .sensitivity_to_text(dr.output_sensitivity)} k>=#{dr.min_group_size}"
+          )
+        end
+        for di in dinvs
+          console.print("  dynamic_invariant=#{di.name} bucket=#{di.bucket}")
+        end
+      end
+      0
+  end
+end
+
+fn parse_proposal_status_flag(s_opt: Option(Text)) : Result(Option(Proposals.ProposalStatus), Text)
+  case s_opt
+    None: Ok(None)
+    Some(raw):
+      norm = Text.from_chars(raw.trim.chars.map(fn(c) c.ascii_lowercase end))
+      if norm == "pending"
+        Ok(Some(Proposals.Pending))
+      else if norm == "approved"
+        Ok(Some(Proposals.Approved))
+      else if norm == "rejected"
+        Ok(Some(Proposals.Rejected))
+      else if norm == "withdrawn"
+        Ok(Some(Proposals.Withdrawn))
+      else
+        Error("unknown proposal status '#{raw}' (expected pending|approved|rejected|withdrawn)")
+      end
+  end
+end
+
+fn cmd_proposals(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb proposals <db.modb> [--status pending|approved|rejected|withdrawn] [--json]"
+    )
+  end
+  st_opt = case parse_proposal_status_flag(f.status_opt)
+    Ok(s): s
+    Error(msg): return fail_msg(console, msg)
+  end
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store) Proposals.list_proposals(store, st_opt).map_error(fn(e) Proposals.to_text(e) end) end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(props):
+      if f.json?
+        console.print(Json.encode(props.to_json))
+      else
+        console.print("governance_proposals=#{props.size}")
+        for p in props
+          st_txt = case p.status
+            Proposals.Pending: "pending"
+            Proposals.Approved: "approved"
+            Proposals.Rejected: "rejected"
+            Proposals.Withdrawn: "withdrawn"
+          end
+          console.print(
+            "  #{p.id} status=#{st_txt} risk=#{p.diff.risk_level} widens=#{p.diff.widens_access} by=#{p
+              .proposer} | #{p.diff.summary}"
+          )
+        end
+      end
+      0
+  end
+end
+
+fn cmd_feeds(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb feeds <db.modb> [--json] | modb feeds <db.modb> poll <feed_id> [--limit N] [--json]"
+    )
+  end
+  if f.positional.size >= 2
+    sub = (f.positional.get(1) or "").trim
+    if sub != "poll" or f.positional.size < 3
+      return fail_msg(
+        console,
+        "usage: modb feeds <db.modb> poll <feed_id> [--limit N] [--json]"
+      )
+    end
+    feed_id = (f.positional.get(2) or "").trim
+    lim = f.limit_opt or 100
+    now = clock.now
+    qres = Modb.with_shared_lock(
+      files.read_only,
+      path,
+      fn(e) e.to_text end,
+      fn(store)
+        Feeds.poll_feed(store, Policy.policy(), feed_id, true, lim, now).map_error(fn(e)
+          Feeds.to_text(e)
+        end)
+      end
+    )
+    return case qres
+      Error(msg): fail_msg(console, msg)
+      Ok(batch):
+        if f.json?
+          console.print(Json.encode(batch.to_json))
+        else
+          console.print(
+            "feed=#{batch.feed_id} from_tx=#{batch.from_txid} to_tx=#{batch.to_txid} events=#{batch
+              .events.size} truncated=#{batch.truncated} pages_read=#{batch.pages_read} subtrees_skipped=#{batch
+              .subtrees_skipped}"
+          )
+          for ev in batch.events
+            kshow = ev.key_text or ev.key_hex
+            op_txt = case ev.op
+              Feeds.OpAdded: "added"
+              Feeds.OpModified: "modified"
+              Feeds.OpRemoved: "removed"
+            end
+            console.print("  [#{op_txt}] #{ev.bucket}:#{kshow}")
+          end
+        end
+        0
+    end
+  end
+
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store) Feeds.list_feeds(store).map_error(fn(e) Feeds.to_text(e) end) end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(subs):
+      if f.json?
+        console.print(Json.encode(subs.to_json))
+      else
+        console.print("feeds=#{subs.size}")
+        for s in subs
+          bs = if s.buckets.empty?: "*" else: s.buckets.join(",")
+          console.print(
+            "  #{s.id} principal=#{s.principal} cursor_tx=#{s.cursor_txid} delivered=#{s
+              .events_delivered} buckets=[#{bs}] pin=#{s.pin_id}"
+          )
+        end
+      end
+      0
+  end
+end
+
 ## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, and `Clock`.
 fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   head = (argv.first or "").trim
@@ -1096,6 +1321,9 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   return cmd_worlds(console, files, clock, f) if head == "worlds"
   return cmd_fts(console, files, f) if head == "fts"
   return cmd_vec(console, files, f) if head == "vec"
+  return cmd_policy(console, files, f) if head == "policy"
+  return cmd_proposals(console, files, f) if head == "proposals"
+  return cmd_feeds(console, files, clock, f) if head == "feeds"
   return cmd_backup(console, files, clock, f) if head == "backup"
   return cmd_export(console, files, clock, f) if head == "export"
   return cmd_restore(console, files, f) if head == "restore"
@@ -1223,4 +1451,77 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   c_vec_ls = Console.fake()
   assert run_cli(["vec", "app.modb", "--json"], c_vec_ls, files, clock) == 0
   assert c_vec_ls.printed.join("\n").contains?("\"dimensions\":4")
+
+  ## Milestone 12 CLI: clearances (`modb policy`), governance proposals (`modb proposals`), and feeds (`modb feeds`)
+  assert Ledger.open(files, "app.modb", sc, t0) is Ok(db_g0)
+  t_exp = Time.parse("2026-11-26T12:00:00Z") or stop "t_exp"
+  assert Grants.issue_root(
+    db_g0,
+    meta,
+    Grants.GrantSpec(
+      id: "g-cli",
+      principal: "agent:cli",
+      allowed_actions: ["save"],
+      max_calls: 10,
+      expires_at: t_exp
+    )
+  ) is
+    Ok((db_g1, _))
+  assert Policy.set_clearance(db_g1, Policy.policy(), meta, "g-cli", Policy.Confidential, t0) is
+    Ok((db_g2, _))
+  assert Proposals.submit_proposal(
+    db_g2,
+    Views.catalog(),
+    Policy.policy(),
+    "p-cli-inv",
+    Proposals.ProposeInvariant(
+      spec: Proposals.DynamicInvariantSpec(
+        name: "note_body_req",
+        description: "non-empty body",
+        bucket: "notes",
+        rule: Proposals.FieldNonEmpty(field: "body")
+      )
+    ),
+    "agent:cli",
+    Some("g-cli"),
+    "cli proposal",
+    t0
+  ) is
+    Ok((db_g3, _))
+  assert Feeds.subscribe(
+    db_g3,
+    Feeds.FeedSpec(
+      id: "f-cli",
+      principal: "agent:cli",
+      grant_id: Some("g-cli"),
+      buckets: ["notes"],
+      include_internal: false,
+      from_beginning: false
+    ),
+    "cli feed",
+    t0
+  ) is
+    Ok((db_g4, _))
+  assert Ledger.write(db_g4, meta, "put n4", Json.Null, fn(tx)
+    Table.put(tx, tbl, "n4", NoteRec(body: "delta"))
+  end) is
+    Ok(_)
+
+  c_pol = Console.fake()
+  assert run_cli(["policy", "app.modb"], c_pol, files, clock) == 0
+  assert c_pol.printed.join("\n").contains?("g-cli") and
+    c_pol.printed.join("\n").contains?("confidential")
+
+  c_prp = Console.fake()
+  assert run_cli(["proposals", "app.modb", "--status", "pending"], c_prp, files, clock) == 0
+  assert c_prp.printed.join("\n").contains?("p-cli-inv")
+
+  c_fds = Console.fake()
+  assert run_cli(["feeds", "app.modb"], c_fds, files, clock) == 0
+  assert c_fds.printed.join("\n").contains?("f-cli")
+
+  c_fdp = Console.fake()
+  assert run_cli(["feeds", "app.modb", "poll", "f-cli"], c_fdp, files, clock) == 0
+  assert c_fdp.printed.join("\n").contains?("events=1") and
+    c_fdp.printed.join("\n").contains?("notes:n4")
 end

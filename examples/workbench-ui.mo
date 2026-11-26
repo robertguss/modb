@@ -285,6 +285,7 @@ fn page_html() : Text
         <button class="tab" data-tab="grants">Grants &amp; Claims</button>
         <button class="tab" data-tab="worlds">Speculative Worlds &amp; Diffs</button>
         <button class="tab" data-tab="views">Views, Reads &amp; Onboarding</button>
+        <button class="tab" data-tab="governance">Governance &amp; Feeds</button>
         <button class="tab" data-tab="replay">Replay Studio</button>
         <button class="tab" data-tab="audit">Audit Ledger</button>
       </nav>
@@ -466,6 +467,54 @@ fn page_html() : Text
             <h2>Read Provenance Log <span id="reads-count" class="pill">0</span></h2>
             <div id="reads-list" class="muted" style="max-height:360px;overflow:auto">No ad-hoc reads or releases recorded yet.</div>
           </div>
+        </div>
+      </section>
+
+      <section id="tab-governance" class="tab-panel hidden">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Sensitivity Clearances <span class="pill purple">Non-Widening</span></h2>
+            <div class="form-row">
+              <input id="gov-clr-grant" placeholder="grant_id (e.g. g-sre)" />
+              <select id="gov-clr-sens">
+                <option value="public">Public</option>
+                <option value="internal">Internal</option>
+                <option value="confidential" selected>Confidential</option>
+                <option value="secret">Secret</option>
+              </select>
+              <button class="primary" onclick="setClearance()">Set Clearance</button>
+            </div>
+            <div id="clearances-list" class="muted">No explicit clearances set yet.</div>
+          </div>
+          <div class="card">
+            <h2>Reactive Change Feeds <span class="pill info">O(diff) CoW Pins</span></h2>
+            <div class="form-row">
+              <input id="gov-feed-id" placeholder="feed id (e.g. watch-tasks)" />
+              <input id="gov-feed-grant" placeholder="grant_id (optional)" />
+              <input id="gov-feed-buckets" value="tasks,projects" placeholder="buckets csv (blank=all user)" />
+              <label class="mono muted" style="display:flex;align-items:center;gap:4px">
+                <input id="gov-feed-begin" type="checkbox" /> from_beginning
+              </label>
+              <button class="primary" onclick="subscribeFeed()">Subscribe</button>
+            </div>
+            <div id="feeds-list" class="muted">No active change feeds.</div>
+            <pre id="feed-poll-out">Click "Poll" or "Consume" on a feed to stream O(diff) deltas.</pre>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Human-Reviewed Agent Proposals <span class="pill warn">CapabilityDiff</span></h2>
+          <div class="form-row">
+            <input id="gov-prop-id" placeholder="proposal id (e.g. prop-view-ops)" />
+            <select id="gov-prop-kind">
+              <option value="view">Propose Narrowed View</option>
+              <option value="clearance">Propose Clearance</option>
+              <option value="invariant">Propose Int/Enum Invariant</option>
+            </select>
+            <input id="gov-prop-target" placeholder="view_name / grant_id / invariant_name" />
+            <input id="gov-prop-detail" placeholder="base_view:field1,field2 | sensitivity | bucket:field" style="flex:2 1 240px" />
+            <button class="primary" onclick="submitGovProposal()">Submit Proposal</button>
+          </div>
+          <div id="gov-proposals-list" class="muted">No governance proposals submitted yet.</div>
         </div>
       </section>
 
@@ -1271,6 +1320,153 @@ fn page_html() : Text
           + '</tbody></table>';
       }
 
+      function renderGovernance(policySum, govProps, feeds) {
+        const clrs = (policySum && policySum.clearances) || [];
+        const dviews = (policySum && policySum.dynamic_views) || [];
+        if (!clrs.length && !dviews.length) {
+          $('clearances-list').innerHTML = '<div class="muted">All grants use default Public clearance.</div>';
+        } else {
+          $('clearances-list').innerHTML =
+            (clrs.length
+              ? ('<table><thead><tr><th>Grant</th><th>Max Sensitivity</th><th>By</th><th>Reason</th></tr></thead><tbody>'
+                + clrs.map((c) => '<tr><td class="mono">' + esc(c.grant_id) + '</td><td><span class="pill purple">' + esc(enumTag(c.max_sensitivity)) + '</span></td><td class="mono">' + esc(c.granted_by) + '</td><td>' + esc(c.reason) + '</td></tr>').join('')
+                + '</tbody></table>')
+              : '')
+            + (dviews.length
+              ? ('<div class="summary-pills" style="margin-top:8px">' + dviews.map((dv) => '<span class="pill ok">dynamic view: ' + esc(dv.name) + ' &rarr; ' + esc(dv.base_view) + '</span>').join('') + '</div>')
+              : '');
+        }
+
+        if (!feeds.length) {
+          $('feeds-list').innerHTML = '<div class="muted">No active change feeds.</div>';
+        } else {
+          $('feeds-list').innerHTML = '<table><thead><tr><th>Feed</th><th>Principal / Grant</th><th>Cursor TX</th><th>Delivered</th><th>Buckets</th><th>Actions</th></tr></thead><tbody>'
+            + feeds.map((f) => '<tr><td class="mono"><strong>' + esc(f.id) + '</strong></td>'
+              + '<td class="mono">' + esc(f.principal) + ' <span class="muted">' + esc(f.grant_id || '-') + '</span></td>'
+              + '<td class="mono">tx #' + f.cursor_txid + '</td>'
+              + '<td class="mono">' + f.events_delivered + '</td>'
+              + '<td class="mono">[' + esc((f.buckets || []).join(', ') || '*') + ']</td>'
+              + '<td><div class="actions-cell">'
+              + '<button class="small" data-action="feed-poll" data-id="' + esc(f.id) + '">Poll</button>'
+              + '<button class="small success" data-action="feed-consume" data-id="' + esc(f.id) + '">Consume</button>'
+              + '<button class="small danger" data-action="feed-unsub" data-id="' + esc(f.id) + '">Unsub</button>'
+              + '</div></td></tr>').join('') + '</tbody></table>';
+        }
+
+        if (!govProps.length) {
+          $('gov-proposals-list').innerHTML = '<div class="muted">No governance proposals yet. Submit one above to inspect its machine-checked CapabilityDiff.</div>';
+        } else {
+          $('gov-proposals-list').innerHTML = govProps.slice().reverse().map((p) => {
+            const st = enumTag(p.status);
+            const stCls = st === 'approved' ? 'ok' : (st === 'pending' ? 'warn' : 'err');
+            const d = p.diff || {};
+            const riskCls = d.risk_level === 'low' ? 'ok' : (d.risk_level === 'high' ? 'err' : 'warn');
+            const btns = st === 'pending'
+              ? '<div class="actions-cell"><button class="small success" data-action="gov-approve" data-id="' + esc(p.id) + '">Approve</button><button class="small danger" data-action="gov-reject" data-id="' + esc(p.id) + '">Reject</button></div>'
+              : '';
+            return '<div class="card" style="margin-bottom:8px;background:var(--panel-2)">'
+              + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+              + '<div><strong>' + esc(p.id) + '</strong> <span class="pill ' + stCls + '">' + esc(st) + '</span> '
+              + '<span class="pill ' + riskCls + '">risk ' + esc(d.risk_level || '?') + '</span> '
+              + (d.widens_access ? '<span class="pill err">widens_access</span> ' : '<span class="pill ok">narrows_only</span> ')
+              + '<span class="mono muted">by ' + esc(p.proposer) + '</span>'
+              + '<div class="muted" style="margin-top:4px">' + esc(d.summary || '') + '</div></div>'
+              + '<div>' + btns + '</div></div></div>';
+          }).join('');
+        }
+      }
+
+      async function setClearance() {
+        try {
+          const grant_id = $('gov-clr-grant').value.trim();
+          const max_sensitivity = $('gov-clr-sens').value;
+          await api('POST', '/policy/clearances', { grant_id, max_sensitivity }, true);
+          toast('Set clearance ' + max_sensitivity + ' on ' + grant_id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Clearance error: ' + e.message, 'err'); }
+      }
+
+      async function subscribeFeed() {
+        try {
+          const id = $('gov-feed-id').value.trim();
+          const grant_id = $('gov-feed-grant').value.trim() || null;
+          const buckets = $('gov-feed-buckets').value.split(',').map((s) => s.trim()).filter(Boolean);
+          const from_beginning = $('gov-feed-begin').checked;
+          await api('POST', '/feeds', { id, grant_id, buckets, include_internal: false, from_beginning }, true);
+          toast('Subscribed feed ' + id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Subscribe error: ' + e.message, 'err'); }
+      }
+
+      async function pollFeedUi(id) {
+        try {
+          const batch = await api('GET', '/feeds/' + encodeURIComponent(id) + '/poll', null, true);
+          $('feed-poll-out').textContent = JSON.stringify(batch, null, 2);
+          toast('Polled ' + id + ': ' + batch.events.length + ' events (pages_read=' + batch.pages_read + ')', 'ok');
+        } catch (e) { toast('Poll error: ' + e.message, 'err'); }
+      }
+
+      async function consumeFeedUi(id) {
+        try {
+          const out = await api('POST', '/feeds/' + encodeURIComponent(id) + '/consume', null, true);
+          $('feed-poll-out').textContent = JSON.stringify(out, null, 2);
+          toast('Consumed ' + out.batch.events.length + ' events (cursor tx #' + out.subscription.cursor_txid + ')', 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Consume error: ' + e.message, 'err'); }
+      }
+
+      async function unsubscribeFeedUi(id) {
+        try {
+          await api('DELETE', '/feeds/' + encodeURIComponent(id), null, true);
+          toast('Unsubscribed ' + id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Unsubscribe error: ' + e.message, 'err'); }
+      }
+
+      async function submitGovProposal() {
+        try {
+          const id = $('gov-prop-id').value.trim();
+          const kind = $('gov-prop-kind').value;
+          const target = $('gov-prop-target').value.trim();
+          const detail = $('gov-prop-detail').value.trim();
+          const body = { id, kind, description: 'UI proposal ' + id };
+          if (kind === 'view') {
+            const parts = detail.split(':');
+            body.view_name = target;
+            body.base_view = (parts[0] || 'tasks_finance').trim();
+            body.fields = (parts[1] || 'id,title,status').split(',').map((s) => s.trim()).filter(Boolean);
+          } else if (kind === 'clearance') {
+            body.target_grant_id = target;
+            body.target_clearance = detail || 'internal';
+          } else if (kind === 'invariant') {
+            const parts = detail.split(':');
+            body.invariant_name = target;
+            body.bucket = (parts[0] || 'tasks').trim();
+            body.field = (parts[1] || 'title').trim();
+            body.rule_kind = 'non_empty';
+          }
+          const prop = await api('POST', '/proposals', body, true);
+          toast('Submitted ' + prop.id + ' (risk=' + prop.diff.risk_level + ')', 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Proposal error: ' + e.message, 'err'); }
+      }
+
+      async function approveGovProposal(id) {
+        try {
+          await api('POST', '/proposals/' + encodeURIComponent(id) + '/approve', null, true);
+          toast('Approved governance proposal ' + id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Approve error: ' + e.message, 'err'); }
+      }
+
+      async function rejectGovProposal(id) {
+        try {
+          await api('POST', '/proposals/' + encodeURIComponent(id) + '/reject', null, true);
+          toast('Rejected governance proposal ' + id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Reject error: ' + e.message, 'err'); }
+      }
+
       document.addEventListener('click', (e) => {
         const el = e.target.closest('[data-action]');
         if (!el) return;
@@ -1287,6 +1483,11 @@ fn page_html() : Text
         else if (act === 'world-abort') abortWorld(id);
         else if (act === 'proposal-accept') acceptProposal(id);
         else if (act === 'proposal-discard') discardProposal(id);
+        else if (act === 'gov-approve') approveGovProposal(id);
+        else if (act === 'gov-reject') rejectGovProposal(id);
+        else if (act === 'feed-poll') pollFeedUi(id);
+        else if (act === 'feed-consume') consumeFeedUi(id);
+        else if (act === 'feed-unsub') unsubscribeFeedUi(id);
       });
 
       async function refreshAll(explicit = false) {
@@ -1315,7 +1516,7 @@ fn page_html() : Text
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
 
-          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads, searchStats] = await Promise.all([
+          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads, searchStats, policySum, govProps, feeds] = await Promise.all([
             api('GET', '/projects'),
             api('GET', '/grants'),
             api('GET', '/claims'),
@@ -1327,6 +1528,9 @@ fn page_html() : Text
             api('GET', auditPath),
             api('GET', '/reads?limit=50'),
             api('GET', '/search/stats'),
+            api('GET', '/policy'),
+            api('GET', '/proposals'),
+            api('GET', '/feeds'),
           ]);
           renderProjects(projects);
           await refreshTasks();
@@ -1338,6 +1542,7 @@ fn page_html() : Text
           renderAudit(audit);
           renderReads(reads);
           renderSearchStats(searchStats);
+          renderGovernance(policySum, govProps, feeds);
         } catch (e) {
           if (explicit) toast('Refresh error: ' + e.message, 'err');
         }

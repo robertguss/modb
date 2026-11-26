@@ -129,11 +129,22 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 43, len(tools)
+            assert len(tools) >= 54, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_search",
                 "modb_search_stats",
+                "modb_policy_get",
+                "modb_clearance_set",
+                "modb_proposal_submit",
+                "modb_proposals_list",
+                "modb_proposal_approve",
+                "modb_proposal_reject",
+                "modb_feed_subscribe",
+                "modb_feeds_list",
+                "modb_feed_poll",
+                "modb_feed_consume",
+                "modb_feed_unsubscribe",
                 "modb_list_grants",
                 "modb_list_worlds",
                 "modb_world_diff",
@@ -448,6 +459,105 @@ def main() -> int:
             is_err, ver2 = call_tool(proc, 122, "modb_verify", {})
             assert not is_err and ver2["ok"] is True, (is_err, ver2)
 
+            # Milestone 12: Sensitivity clearances, Governance proposals + CapabilityDiff, and Reactive Feeds via MCP!
+            is_err, pol0 = call_tool(proc, 123, "modb_policy_get", {})
+            assert not is_err and any(c["grant_id"] == "g-sre" for c in pol0["clearances"]), (is_err, pol0)
+
+            is_err, sub_gp = call_tool(
+                proc,
+                124,
+                "modb_proposal_submit",
+                {
+                    "id": "mcp-view-triage",
+                    "kind": "view",
+                    "proposer_grant_id": "g-sre",
+                    "description": "Operational triage view via MCP",
+                    "view_name": "tasks_triage",
+                    "base_view": "tasks_finance",
+                    "fields": ["id", "project_id", "title", "status"],
+                    "reason": "propose tasks_triage",
+                },
+            )
+            assert not is_err and sub_gp["diff"]["narrows_only"] and sub_gp["diff"]["risk_level"] == "low", (
+                is_err,
+                sub_gp,
+            )
+
+            is_err, app_gp = call_tool(
+                proc,
+                125,
+                "modb_proposal_approve",
+                {"proposal_id": "mcp-view-triage", "note": "lgtm via mcp"},
+            )
+            assert not is_err and app_gp["status"] == "approved", (is_err, app_gp)
+
+            is_err, dyn_q = call_tool(
+                proc,
+                126,
+                "modb_read_program",
+                {
+                    "program": {
+                        "view": "tasks_triage",
+                        "where_clause": {"eq": {"field": "project_id", "value": "infra"}},
+                        "limit": 10,
+                    }
+                },
+            )
+            assert not is_err and dyn_q["result_count"] >= 4, (is_err, dyn_q)
+
+            is_err, sub_f = call_tool(
+                proc,
+                127,
+                "modb_feed_subscribe",
+                {
+                    "id": "mcp-tasks-feed",
+                    "grant_id": "g-sre",
+                    "buckets": ["tasks"],
+                    "reason": "mcp reactive feed",
+                },
+            )
+            assert not is_err and sub_f["id"] == "mcp-tasks-feed", (is_err, sub_f)
+
+            is_err, t_new = call_tool(
+                proc,
+                128,
+                "modb_create_task",
+                {
+                    "id": 912,
+                    "project_id": "infra",
+                    "title": "M12 reactive feed task",
+                    "base_cost_cents": 1500,
+                    "reason": "trigger mcp feed",
+                },
+            )
+            assert not is_err and t_new["id"] == 912, (is_err, t_new)
+
+            is_err, p_batch = call_tool(
+                proc, 129, "modb_feed_poll", {"feed_id": "mcp-tasks-feed", "limit": 20}
+            )
+            assert not is_err and len(p_batch["events"]) == 1, (is_err, p_batch)
+
+            is_err, c_out = call_tool(
+                proc, 130, "modb_feed_consume", {"feed_id": "mcp-tasks-feed", "limit": 20}
+            )
+            assert not is_err and c_out["subscription"]["events_delivered"] == 1, (is_err, c_out)
+
+            is_err, idle_b = call_tool(
+                proc, 131, "modb_feed_poll", {"feed_id": "mcp-tasks-feed", "limit": 20}
+            )
+            assert not is_err and len(idle_b["events"]) == 0 and idle_b["pages_read"] == 0, (is_err, idle_b)
+
+            is_err, unsub = call_tool(
+                proc,
+                132,
+                "modb_feed_unsubscribe",
+                {"feed_id": "mcp-tasks-feed", "reason": "done mcp feed"},
+            )
+            assert not is_err and unsub["ok"] is True, (is_err, unsub)
+
+            is_err, ver3 = call_tool(proc, 133, "modb_verify", {})
+            assert not is_err and ver3["ok"] is True, (is_err, ver3)
+
             # 4. Extract live Inspector UI URL from stderr and verify UI + inspector HTTP routes!
             base_url = None
             for line in stderr_lines:
@@ -461,6 +571,7 @@ def main() -> int:
             assert st_ui == 200 and "MoDB AgentWorkbench" in html and "Replay Studio" in html
             assert "scan_tasks_range" in html and "Fork Child World" in html
             assert "Search (FTS / Hybrid)" in html and "/search/stats" in html
+            assert "Governance &amp; Feeds" in html and "/policy" in html
             st_ui2, html2 = http_get(f"{base_url}/ui")
             assert st_ui2 == 200 and html2 == html
 
@@ -473,6 +584,9 @@ def main() -> int:
                 "/worlds/telemetry",
                 "/reads",
                 "/search/stats",
+                "/policy",
+                "/proposals",
+                "/feeds",
                 "/audit",
                 "/admin/replay/calls",
                 "/admin/replay/proposals",
@@ -482,11 +596,11 @@ def main() -> int:
                 json.loads(body)
 
             print(
-                f"PASS: Milestone 7+8+10+11 stdio MCP + Live Inspector UI verified "
+                f"PASS: Milestone 7+8+10+11+12 stdio MCP + Live Inspector UI verified "
                 f"(tools={len(tools)}, ui={base_url}/, reads_skipped={landed['reads_skipped']}, "
                 f"key_skips={tcounts['key_level_reads_skipped']}, child_landed={tcounts['child_worlds_landed']}, "
                 f"infra_spent=20000c, payments_spent=8000c, "
-                f"export_entries={snap['entry_count']}, txid={ver2['txid']}, hash={ver2['last_audit_hash'][:16]}...)"
+                f"export_entries={snap['entry_count']}, txid={ver3['txid']}, hash={ver3['last_audit_hash'][:16]}...)"
             )
             return 0
         finally:

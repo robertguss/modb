@@ -58,6 +58,7 @@ snapshot_scan,
 release_snapshot,
 changed_buckets_between_roots,
 diff_bucket_roots,
+diff_bucket_roots_with_stats,
 diff_roots,
 diff_roots_with_stats,
 diff_tx_from_root,
@@ -1280,15 +1281,25 @@ fn changed_buckets_between_roots(store: Store, root_a: Int, root_b: Int) : Resul
   Ok(out)
 end
 
+## Structural O(diff) comparison of a single bucket between two committed/pinned catalog roots,
+## returning both key diffs and subtree-skip telemetry.
+fn diff_bucket_roots_with_stats(store: Store, root_a: Int, root_b: Int, bucket: Text) : Result(
+  (List(KeyDiff), DiffStats),
+  ModbError
+)
+  return Ok(([], DiffStats(pages_read: 0, subtrees_skipped: 0))) if root_a == root_b
+  ba = try lookup_bucket_root(store.pager, {}, root_a, bucket)
+  bb = try lookup_bucket_root(store.pager, {}, root_b, bucket)
+  diff_trees_with_stats(store.pager, {}, {}, ba, bb)
+end
+
 ## Structural O(diff) comparison of a single bucket between two committed/pinned catalog roots.
 fn diff_bucket_roots(store: Store, root_a: Int, root_b: Int, bucket: Text) : Result(
   List(KeyDiff),
   ModbError
 )
-  return Ok([]) if root_a == root_b
-  ba = try lookup_bucket_root(store.pager, {}, root_a, bucket)
-  bb = try lookup_bucket_root(store.pager, {}, root_b, bucket)
-  diff_trees(store.pager, {}, {}, ba, bb)
+  (changes, _stats) = try diff_bucket_roots_with_stats(store, root_a, root_b, bucket)
+  Ok(changes)
 end
 
 fn diff_catalog_roots_internal(

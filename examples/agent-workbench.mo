@@ -17,9 +17,12 @@ use Json
 use Modb
 use Modb.Claims
 use Modb.Export
+use Modb.Feeds
 use Modb.Fts
 use Modb.Grants
 use Modb.Ledger
+use Modb.Policy
+use Modb.Proposals
 use Modb.Replay
 use Modb.Table
 use Modb.Vec
@@ -249,6 +252,60 @@ struct SearchResponse
   hits: List(Vec.HybridHit)
 end
 
+struct ClearanceInput
+  grant_id: Text
+  max_sensitivity: Text
+end
+
+struct PolicySummaryResponse
+  clearances: List(Policy.ClearanceRecord)
+  dynamic_views: List(Proposals.DynamicViewSpec)
+  dynamic_releases: List(Proposals.DynamicReleaseSpec)
+  dynamic_invariants: List(Proposals.DynamicInvariantSpec)
+end
+
+struct GovProposalInput
+  id: Text
+  kind: Text
+  proposer_grant_id: Option(Text)
+  description: Option(Text)
+  view_name: Option(Text)
+  base_view: Option(Text)
+  fields: Option(List(Text))
+  field_sensitivities: Option(Map(Text, Text))
+  release_name: Option(Text)
+  input_sensitivity: Option(Text)
+  output_sensitivity: Option(Text)
+  min_group_size: Option(Int)
+  target_grant_id: Option(Text)
+  target_clearance: Option(Text)
+  invariant_name: Option(Text)
+  bucket: Option(Text)
+  rule_kind: Option(Text)
+  field: Option(Text)
+  min: Option(Int)
+  max: Option(Int)
+  allowed_values: Option(List(Text))
+end
+
+struct FeedSubscribeInput
+  id: Text
+  grant_id: Option(Text)
+  buckets: Option(List(Text))
+  include_internal: Option(Bool)
+  from_beginning: Option(Bool)
+end
+
+struct FeedAckInput
+  up_to_txid: Int
+  delivered_count: Option(Int)
+end
+
+struct FeedConsumeResponse
+  batch: Feeds.FeedBatch
+  subscription: Feeds.FeedSubscription
+end
+
 enum WorkbenchError
   Unauthenticated
   Forbidden(required: Text)
@@ -271,6 +328,9 @@ enum WorkbenchError
   ViewMissing(name: Text)
   ViewFieldBlocked(detail: Text)
   ReleaseBlocked(detail: Text)
+  ClearanceBlocked(detail: Text)
+  FeedMissing(id: Text)
+  FeedConflict(detail: Text)
   WorkBudgetBlocked(detail: Text)
   StorageFailed(message: Text)
 end
@@ -352,6 +412,28 @@ api
     delete "/proposals/:id" delete_replay_proposal
   end
 
+  scope "/policy"
+    get "" get_policy
+    post "/clearances" post_policy_clearance
+  end
+
+  scope "/proposals"
+    get "" list_gov_proposals
+    post "" post_gov_proposal
+    post "/:id/approve" post_gov_proposal_approve
+    post "/:id/reject" post_gov_proposal_reject
+    post "/:id/withdraw" post_gov_proposal_withdraw
+  end
+
+  scope "/feeds"
+    get "" list_gov_feeds
+    post "" post_gov_feed
+    get "/:id/poll" get_gov_feed_poll
+    post "/:id/ack" post_gov_feed_ack
+    post "/:id/consume" post_gov_feed_consume
+    delete "/:id" delete_gov_feed
+  end
+
   status Unauthenticated = 401
   status Forbidden(_) = 403
   status MissingReason = 400
@@ -373,6 +455,9 @@ api
   status ViewMissing(_) = 404
   status ViewFieldBlocked(_) = 403
   status ReleaseBlocked(_) = 403
+  status ClearanceBlocked(_) = 403
+  status FeedMissing(_) = 404
+  status FeedConflict(_) = 409
   status WorkBudgetBlocked(_) = 429
   status StorageFailed(_) = 500
 end
@@ -798,6 +883,65 @@ fn map_replay_error(err: Replay.ReplayError) : WorkbenchError
   end
 end
 
+fn map_policy_error(err: Policy.PolicyError) : WorkbenchError
+  case err
+    Policy.LedgerFailure(le): map_ledger_error(le)
+    Policy.GrantFailure(ge): map_grant_error(ge)
+    Policy.ViewsFailure(ve): map_views_error(ve)
+    Policy.ExportFailure(ee): map_export_error(ee)
+    Policy.FtsFailure(fe): map_fts_error(fe)
+    Policy.VecFailure(ve): map_vec_error(ve)
+    Policy.InvalidPolicy(reason: r): InvalidInput(reason: r)
+    Policy.ClearanceDenied(subject: _, required: _, actual: _) | Policy.ClearanceWideningDenied(
+      grant_id: _,
+      parent_id: _,
+      requested: _,
+      parent_clearance: _
+    ) | Policy.ExportBlocked(bucket: _, required: _, actual: _): ClearanceBlocked(
+      detail: Policy.to_text(err)
+    )
+    Policy.DeclassificationDenied(
+      release: _,
+      input_sensitivity: _,
+      output_sensitivity: _,
+      min_group_size: _
+    ): ReleaseBlocked(detail: Policy.to_text(err))
+  end
+end
+
+fn map_proposal_error(err: Proposals.ProposalError) : WorkbenchError
+  case err
+    Proposals.LedgerFailure(le): map_ledger_error(le)
+    Proposals.GrantFailure(ge): map_grant_error(ge)
+    Proposals.PolicyFailure(pe): map_policy_error(pe)
+    Proposals.InvalidProposal(reason: r): InvalidInput(reason: r)
+    Proposals.ProposalAlreadyExists(id: _) | Proposals.ProposalNotPending(id: _, status: _) | Proposals
+      .ExistingDataViolatesInvariant(
+        name: _,
+        bucket: _,
+        violation_count: _,
+        sample: _
+      ): ProposalConflict(detail: Proposals.to_text(err))
+    Proposals.ProposalNotFound(id: id): ProposalMissing(id: id)
+    Proposals.ApprovalDenied(reason: r): Forbidden(required: r)
+  end
+end
+
+fn map_feed_error(err: Feeds.FeedError) : WorkbenchError
+  case err
+    Feeds.LedgerFailure(le): map_ledger_error(le)
+    Feeds.GrantFailure(ge): map_grant_error(ge)
+    Feeds.PolicyFailure(pe): map_policy_error(pe)
+    Feeds.InvalidFeed(reason: r): InvalidInput(reason: r)
+    Feeds.FeedNotFound(id: id): FeedMissing(id: id)
+    Feeds.FeedAlreadyExists(id: _) | Feeds.PinMissing(feed_id: _, pin_id: _) | Feeds.CursorStale(
+      feed_id: _,
+      expected_txid: _,
+      actual_txid: _
+    ): FeedConflict(detail: Feeds.to_text(err))
+  end
+end
+
 ## Action handler for `create_project`.
 fn action_create_project() : fn(Modb.WriteTx, Json) : Result((Modb.WriteTx, Json), Text)
   projs = projects_table()
@@ -1214,6 +1358,43 @@ fn workbench_view_catalog() : Views.ViewCatalog
     "referential_integrity",
     "Every task references an existing project and every artifact references an existing task"
   )
+end
+
+## Milestone 12 Sensitivity & Declassification Policy for AgentWorkbench.
+fn workbench_policy() : Policy.SensitivityPolicy
+  Policy.policy().with_default_clearance(Policy.Public).with_bucket_sensitivity(
+    "projects",
+    Policy.Internal
+  ).with_bucket_sensitivity("tasks", Policy.Internal).with_bucket_sensitivity(
+    "artifacts",
+    Policy.Internal
+  ).with_bucket_sensitivity("secrets", Policy.Secret).with_view_field_sensitivity(
+    "tasks_finance",
+    "assignee",
+    Policy.Internal
+  ).with_view_field_sensitivity("tasks_finance", "base_cost_cents", Policy.Confidential)
+    .with_view_field_sensitivity("tasks_finance", "billed_cents", Policy.Confidential)
+    .with_view_field_sensitivity("projects_finance", "budget_cents", Policy.Confidential)
+    .with_view_field_sensitivity("projects_finance", "spent_cents", Policy.Confidential)
+    .with_view_field_sensitivity("projects_finance", "remaining_cents", Policy.Confidential)
+    .with_scope_sensitivity("restricted", Policy.Confidential).with_scope_sensitivity(
+      "vault",
+      Policy.Secret
+    ).with_release_policy(
+      "project_budget_summary",
+      Policy.ReleasePolicy(
+        input_sensitivity: Policy.Confidential,
+        output_sensitivity: Policy.Public,
+        min_group_size: 2
+      )
+    ).with_release_policy(
+      "task_cost_by_status",
+      Policy.ReleasePolicy(
+        input_sensitivity: Policy.Confidential,
+        output_sensitivity: Policy.Public,
+        min_group_size: 2
+      )
+    )
 end
 
 fn workbench_replay_catalog(overhead_override: Option(Int)) : Replay.ReplayCatalog
@@ -2417,6 +2598,21 @@ fn post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       ttl_seconds: 7200
     )
   )
+  _ = try Policy.set_clearance_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_policy(),
+    Ledger.WriteMeta(
+      principal: admin.principal,
+      action: "policy_set_clearance",
+      reason: "seed SRE confidential clearance",
+      at: clock.now
+    ),
+    "g-sre",
+    Policy.Confidential,
+    clock.now
+  ).map_error(map_policy_error)
 
   ## Rogue sub-agent completes #301 and #302 via Worlds -> burns 44,000c of 50,000c infra budget!
   for tid in [301, 302]
@@ -2541,16 +2737,19 @@ fn get_describe(caller: Caller, rf: ReadFiles, clock: Clock, grant_id: Option(Te
 )
   now = clock.now
   is_admin? = caller.role is Admin
-  vcat = workbench_view_catalog()
+  base_cat = workbench_view_catalog()
   Ledger.read_locked(
     rf,
     db_path(),
     workbench_schema(),
     map_ledger_error,
     fn(db)
+      live_cat = try Proposals.materialize_catalog(Ledger.store(db), base_cat).map_error(
+        map_proposal_error
+      )
       Views.describe_for_caller(
         db,
-        vcat,
+        live_cat,
         caller.principal,
         role_label(caller.role),
         is_admin?,
@@ -2568,18 +2767,33 @@ fn post_view_query(caller: Caller, files: Files, clock: Clock, body: ReadProgram
   WorkbenchError
 )
   is_admin? = caller.role is Admin
-  Views.execute_read_program_locked(
+  now = clock.now
+  base_cat = workbench_view_catalog()
+  base_pol = workbench_policy()
+  Ledger.locked(
     files,
     db_path(),
     workbench_schema(),
-    workbench_view_catalog(),
-    body.program,
-    caller.principal,
-    body.grant_id,
-    is_admin?,
-    Views.default_limits(),
-    clock.now
-  ).map_error(map_views_error)
+    now,
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      live_pol = try Proposals.materialize_policy(st, base_pol).map_error(map_proposal_error)
+      (_next, gov, _log) = try Policy.execute_read_program_governed_recorded(
+        db,
+        live_cat,
+        live_pol,
+        body.program,
+        caller.principal,
+        body.grant_id,
+        is_admin?,
+        Views.default_limits(),
+        now
+      ).map_error(map_policy_error)
+      Ok(gov.result)
+    end
+  )
 end
 
 fn post_release(caller: Caller, files: Files, clock: Clock, name: Text, body: ReleaseRequest) : Result(
@@ -2587,18 +2801,34 @@ fn post_release(caller: Caller, files: Files, clock: Clock, name: Text, body: Re
   WorkbenchError
 )
   is_admin? = caller.role is Admin
-  Views.execute_release_locked(
+  now = clock.now
+  base_cat = workbench_view_catalog()
+  base_pol = workbench_policy()
+  args = body.args or Json.Object({})
+  Ledger.locked(
     files,
     db_path(),
     workbench_schema(),
-    workbench_view_catalog(),
-    name,
-    body.args or Json.Object({}),
-    caller.principal,
-    body.grant_id,
-    is_admin?,
-    clock.now
-  ).map_error(map_views_error)
+    now,
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      live_pol = try Proposals.materialize_policy(st, base_pol).map_error(map_proposal_error)
+      (_next, res, _log) = try Policy.execute_release_governed_recorded(
+        db,
+        live_cat,
+        live_pol,
+        name,
+        args,
+        caller.principal,
+        body.grant_id,
+        is_admin?,
+        now
+      ).map_error(map_policy_error)
+      Ok(res)
+    end
+  )
 end
 
 fn get_reads(rf: ReadFiles, limit: Option(Int)) : Result(List(Views.ReadLogEntry), WorkbenchError)
@@ -2610,6 +2840,400 @@ fn get_reads(rf: ReadFiles, limit: Option(Int)) : Result(List(Views.ReadLogEntry
     map_ledger_error,
     fn(db) Views.list_read_log(Ledger.store(db), lim).map_error(map_views_error) end
   )
+end
+
+## ---------------------------------------------------------------------------
+## Milestone 12: Sensitivity Clearances, Governance Proposals, & Reactive Feeds
+## ---------------------------------------------------------------------------
+fn parse_sensitivity_arg(raw: Text) : Result(Policy.Sensitivity, WorkbenchError)
+  Policy.sensitivity_from_text(raw).or_fail(
+    InvalidInput(reason: "invalid sensitivity '#{raw}' (expected public|internal|confidential|secret)")
+  )
+end
+
+fn get_policy(rf: ReadFiles) : Result(PolicySummaryResponse, WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      clrs = try Policy.list_clearances(st).map_error(map_policy_error)
+      dviews = try Proposals.list_dynamic_views(st).map_error(map_proposal_error)
+      drels = try Proposals.list_dynamic_releases(st).map_error(map_proposal_error)
+      dinvs = try Proposals.list_dynamic_invariants(st).map_error(map_proposal_error)
+      Ok(
+        PolicySummaryResponse(
+          clearances: clrs,
+          dynamic_views: dviews,
+          dynamic_releases: drels,
+          dynamic_invariants: dinvs
+        )
+      )
+    end
+  )
+end
+
+fn post_policy_clearance(caller: Caller, files: Files, clock: Clock, body: ClearanceInput) : Result(
+  Policy.ClearanceRecord,
+  WorkbenchError
+)
+  try require_admin(caller)
+  sens = try parse_sensitivity_arg(body.max_sensitivity)
+  meta = try write_meta(caller, "policy_set_clearance", clock)
+  Policy.set_clearance_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_policy(),
+    meta,
+    body.grant_id,
+    sens,
+    clock.now
+  ).map_error(map_policy_error)
+end
+
+fn parse_proposal_kind(inp: GovProposalInput) : Result(Proposals.ProposalKind, WorkbenchError)
+  k = Text.from_chars(inp.kind.trim.chars.map(fn(c) c.ascii_lowercase end))
+  desc = inp.description or "agent proposal"
+  if k == "view"
+    vname = try inp.view_name.or_fail(InvalidInput(reason: "view proposal requires 'view_name'"))
+    bview = try inp.base_view.or_fail(InvalidInput(reason: "view proposal requires 'base_view'"))
+    flds = try inp.fields.or_fail(InvalidInput(reason: "view proposal requires 'fields'"))
+    var fsens = {}
+    case inp.field_sensitivities
+      Some(m):
+        for (fname, sval) in m.entries
+          ps = try parse_sensitivity_arg(sval)
+          fsens = fsens.set(fname, ps)
+        end
+      None: Unit
+    end
+    Ok(
+      Proposals.ProposeView(
+        spec: Proposals.DynamicViewSpec(
+          name: vname,
+          description: desc,
+          base_view: bview,
+          fields: flds,
+          field_sensitivities: fsens
+        )
+      )
+    )
+  else if k == "release_policy"
+    rname = try inp.release_name.or_fail(
+      InvalidInput(reason: "release_policy proposal requires 'release_name'")
+    )
+    in_s = try parse_sensitivity_arg(inp.input_sensitivity or "confidential")
+    out_s = try parse_sensitivity_arg(inp.output_sensitivity or "public")
+    min_k = inp.min_group_size or 2
+    Ok(
+      Proposals.ProposeReleasePolicy(
+        spec: Proposals.DynamicReleaseSpec(
+          release_name: rname,
+          description: desc,
+          input_sensitivity: in_s,
+          output_sensitivity: out_s,
+          min_group_size: min_k
+        )
+      )
+    )
+  else if k == "clearance"
+    tg = case inp.target_grant_id
+      Some(g): g
+      None: try inp.proposer_grant_id.or_fail(
+        InvalidInput(reason: "clearance proposal requires 'target_grant_id'")
+      )
+    end
+    tc = try parse_sensitivity_arg(
+      try inp.target_clearance.or_fail(
+        InvalidInput(reason: "clearance proposal requires 'target_clearance'")
+      )
+    )
+    Ok(Proposals.ProposeClearance(grant_id: tg, target_clearance: tc, justification: desc))
+  else if k == "invariant"
+    iname = try inp.invariant_name.or_fail(
+      InvalidInput(reason: "invariant proposal requires 'invariant_name'")
+    )
+    bname = try inp.bucket.or_fail(InvalidInput(reason: "invariant proposal requires 'bucket'"))
+    rk = Text.from_chars((inp.rule_kind or "non_empty").trim.chars.map(fn(c) c.ascii_lowercase end))
+    fld = try inp.field.or_fail(InvalidInput(reason: "invariant proposal requires 'field'"))
+    rule = if rk == "non_empty"
+      Proposals.FieldNonEmpty(field: fld)
+    else if rk == "int_range"
+      Proposals.IntRange(field: fld, min: inp.min, max: inp.max)
+    else if rk == "allowed_values"
+      vs = try inp.allowed_values.or_fail(
+        InvalidInput(reason: "allowed_values rule requires 'allowed_values'")
+      )
+      Proposals.AllowedValues(field: fld, values: vs)
+    else
+      return Error(
+        InvalidInput(
+          reason: "unknown invariant rule_kind '#{rk}' (expected non_empty|int_range|allowed_values)"
+        )
+      )
+    end
+    Ok(
+      Proposals.ProposeInvariant(
+        spec: Proposals.DynamicInvariantSpec(
+          name: iname,
+          description: desc,
+          bucket: bname,
+          rule: rule
+        )
+      )
+    )
+  else
+    Error(
+      InvalidInput(
+        reason: "unknown proposal kind '#{inp.kind}' (expected view|release_policy|clearance|invariant)"
+      )
+    )
+  end
+end
+
+fn list_gov_proposals(rf: ReadFiles, status: Option(Text)) : Result(
+  List(Proposals.GovernanceProposal),
+  WorkbenchError
+)
+  st_opt = case status
+    None: None
+    Some(raw) if raw.trim.empty?: None
+    Some(raw):
+      norm = Text.from_chars(raw.trim.chars.map(fn(c) c.ascii_lowercase end))
+      if norm == "pending"
+        Some(Proposals.Pending)
+      else if norm == "approved"
+        Some(Proposals.Approved)
+      else if norm == "rejected"
+        Some(Proposals.Rejected)
+      else if norm == "withdrawn"
+        Some(Proposals.Withdrawn)
+      else
+        return Error(InvalidInput(reason: "unknown proposal status '#{raw}'"))
+      end
+  end
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Proposals.list_proposals(Ledger.store(db), st_opt).map_error(map_proposal_error) end
+  )
+end
+
+fn post_gov_proposal(caller: Caller, files: Files, clock: Clock, body: GovProposalInput) : Result(
+  Proposals.GovernanceProposal,
+  WorkbenchError
+)
+  kind = try parse_proposal_kind(body)
+  reason = (caller.reason or "").trim
+  eff_reason = if reason.empty?: "submit proposal" else: reason
+  base_cat = workbench_view_catalog()
+  base_pol = workbench_policy()
+  now = clock.now
+  Ledger.locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    now,
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      live_pol = try Proposals.materialize_policy(st, base_pol).map_error(map_proposal_error)
+      (_next, prop) = try Proposals.submit_proposal(
+        db,
+        live_cat,
+        live_pol,
+        body.id,
+        kind,
+        caller.principal,
+        body.proposer_grant_id,
+        eff_reason,
+        now
+      ).map_error(map_proposal_error)
+      Ok(prop)
+    end
+  )
+end
+
+fn post_gov_proposal_approve(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Proposals.GovernanceProposal,
+  WorkbenchError
+)
+  try require_admin(caller)
+  note = (caller.reason or "").trim
+  eff_note = if note.empty?: "approved by #{caller.principal}" else: note
+  base_cat = workbench_view_catalog()
+  base_pol = workbench_policy()
+  now = clock.now
+  Ledger.locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    now,
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      live_pol = try Proposals.materialize_policy(st, base_pol).map_error(map_proposal_error)
+      (_next, prop) = try Proposals.approve_proposal(
+        db,
+        live_cat,
+        live_pol,
+        id,
+        caller.principal,
+        true,
+        eff_note,
+        now
+      ).map_error(map_proposal_error)
+      Ok(prop)
+    end
+  )
+end
+
+fn post_gov_proposal_reject(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Proposals.GovernanceProposal,
+  WorkbenchError
+)
+  try require_admin(caller)
+  note = (caller.reason or "").trim
+  eff_note = if note.empty?: "rejected by #{caller.principal}" else: note
+  Proposals.reject_proposal_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    caller.principal,
+    true,
+    eff_note,
+    clock.now
+  ).map_error(map_proposal_error)
+end
+
+fn post_gov_proposal_withdraw(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Proposals.GovernanceProposal,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  note = (caller.reason or "").trim
+  eff_note = if note.empty?: "withdrawn by #{caller.principal}" else: note
+  Proposals.withdraw_proposal_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    caller.principal,
+    is_admin?,
+    eff_note,
+    clock.now
+  ).map_error(map_proposal_error)
+end
+
+fn list_gov_feeds(rf: ReadFiles) : Result(List(Feeds.FeedSubscription), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Feeds.list_feeds(Ledger.store(db)).map_error(map_feed_error) end
+  )
+end
+
+fn post_gov_feed(caller: Caller, files: Files, clock: Clock, body: FeedSubscribeInput) : Result(
+  Feeds.FeedSubscription,
+  WorkbenchError
+)
+  reason = (caller.reason or "").trim
+  eff_reason = if reason.empty?: "subscribe change feed '#{body.id}'" else: reason
+  spec = Feeds.FeedSpec(
+    id: body.id,
+    principal: caller.principal,
+    grant_id: body.grant_id,
+    buckets: body.buckets or [],
+    include_internal: body.include_internal or false,
+    from_beginning: body.from_beginning or false
+  )
+  Feeds.subscribe_locked(files, db_path(), workbench_schema(), spec, eff_reason, clock.now).map_error(
+    map_feed_error
+  )
+end
+
+fn get_gov_feed_poll(caller: Caller, rf: ReadFiles, clock: Clock, id: Text, limit: Option(Int)) : Result(
+  Feeds.FeedBatch,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  lim = limit or 100
+  base_pol = workbench_policy()
+  now = clock.now
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_pol = try Proposals.materialize_policy(st, base_pol).map_error(map_proposal_error)
+      Feeds.poll_feed(st, live_pol, id, is_admin?, lim, now).map_error(map_feed_error)
+    end
+  )
+end
+
+fn post_gov_feed_ack(caller: Caller, files: Files, clock: Clock, id: Text, body: FeedAckInput) : Result(
+  Feeds.FeedSubscription,
+  WorkbenchError
+)
+  _ = caller
+  Feeds.ack_feed_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    body.up_to_txid,
+    body.delivered_count or 0,
+    clock.now
+  ).map_error(map_feed_error)
+end
+
+fn post_gov_feed_consume(caller: Caller, files: Files, clock: Clock, id: Text, limit: Option(Int)) : Result(
+  FeedConsumeResponse,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  lim = limit or 100
+  base_pol = workbench_policy()
+  now = clock.now
+  Ledger.locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    now,
+    map_ledger_error,
+    fn(db)
+      live_pol = try Proposals.materialize_policy(Ledger.store(db), base_pol).map_error(
+        map_proposal_error
+      )
+      (_next, batch, sub) = try Feeds.consume_feed(db, live_pol, id, is_admin?, lim, now).map_error(
+        map_feed_error
+      )
+      Ok(FeedConsumeResponse(batch: batch, subscription: sub))
+    end
+  )
+end
+
+fn delete_gov_feed(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  OkStatus,
+  WorkbenchError
+)
+  meta = try write_meta(caller, "feed_unsubscribe", clock)
+  _ = try Feeds.unsubscribe_locked(files, db_path(), workbench_schema(), id, meta).map_error(
+    map_feed_error
+  )
+  Ok(OkStatus(ok: true))
 end
 
 ## ---------------------------------------------------------------------------
@@ -3102,6 +3726,139 @@ fn mcp_tools_list() : Json
         "modb_search_stats",
         "Return transactional FTS (BM25+) and quantized Vector corpus statistics for the Workbench.",
         empty_schema
+      ),
+      mcp_tool_def(
+        "modb_policy_get",
+        "List persisted Grant Sensitivity clearances and approved dynamic views/releases/invariants.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_clearance_set",
+        "Set Sensitivity clearance (public|internal|confidential|secret) on a Grant (admin, non-widening below parent).",
+        mcp_schema(
+          {
+            "grant_id": mcp_prop("string", "Grant ID"),
+            "max_sensitivity": mcp_prop(
+              "string",
+              "Clearance ceiling: public | internal | confidential | secret"
+            ),
+            "reason": reason_p
+          },
+          ["grant_id", "max_sensitivity"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_proposal_submit",
+        "Submit a declarative governance proposal (view, release_policy, clearance, or invariant); computes a machine-checked CapabilityDiff for human approval.",
+        mcp_schema(
+          {
+            "id": mcp_prop("string", "Unique governance proposal ID"),
+            "kind": mcp_prop(
+              "string",
+              "Proposal kind: view | release_policy | clearance | invariant"
+            ),
+            "proposer_grant_id": mcp_prop("string", "Optional active proposer Grant ID"),
+            "description": mcp_prop("string", "Human-readable proposal description"),
+            "view_name": mcp_prop("string", "For kind=view: new view name"),
+            "base_view": mcp_prop("string", "For kind=view: existing wider view"),
+            "fields": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "release_name": mcp_prop("string", "For kind=release_policy: release name"),
+            "min_group_size": mcp_prop("integer", "For kind=release_policy: k-anonymity floor"),
+            "target_grant_id": mcp_prop("string", "For kind=clearance: target Grant ID"),
+            "target_clearance": mcp_prop("string", "For kind=clearance: target sensitivity"),
+            "invariant_name": mcp_prop("string", "For kind=invariant: invariant name"),
+            "bucket": mcp_prop("string", "For kind=invariant: target user bucket"),
+            "rule_kind": mcp_prop("string", "For kind=invariant: non_empty | int_range | allowed_values"),
+            "field": mcp_prop("string", "For kind=invariant: JSON field name"),
+            "reason": reason_p
+          },
+          ["id", "kind"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_proposals_list",
+        "List human-reviewed Governance Proposals and their CapabilityDiffs (optional status filter).",
+        mcp_schema(
+          {"status": mcp_prop("string", "Optional filter: pending | approved | rejected | withdrawn")},
+          []
+        )
+      ),
+      mcp_tool_def(
+        "modb_proposal_approve",
+        "Human-only atomic approval of a Pending governance proposal (admin); applies View/Release/Clearance/Invariant atomically.",
+        mcp_schema(
+          {
+            "proposal_id": mcp_prop("string", "Pending proposal ID"),
+            "note": mcp_prop("string", "Optional approval review note"),
+            "reason": reason_p
+          },
+          ["proposal_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_proposal_reject",
+        "Human-only rejection of a Pending governance proposal (admin).",
+        mcp_schema(
+          {
+            "proposal_id": mcp_prop("string", "Pending proposal ID"),
+            "note": mcp_prop("string", "Optional rejection reason"),
+            "reason": reason_p
+          },
+          ["proposal_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_feed_subscribe",
+        "Subscribe to a persistent CoW-pinned txid-cursor reactive Change Feed over specific or all buckets.",
+        mcp_schema(
+          {
+            "id": mcp_prop("string", "Unique feed subscription ID"),
+            "grant_id": mcp_prop("string", "Optional Grant ID enforcing clearance + revocation"),
+            "buckets": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "include_internal": mcp_prop("boolean", "Include _modb_* buckets (default false)"),
+            "from_beginning": mcp_prop("boolean", "Bootstrap full history first (default false)"),
+            "reason": reason_p
+          },
+          ["id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_feeds_list",
+        "List all active reactive Change Feed subscriptions and their pinned txid cursors.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_feed_poll",
+        "Poll structural O(diff) bucket/key changes since a feed's pinned cursor (read-only; sensitivity-filtered).",
+        mcp_schema(
+          {
+            "feed_id": mcp_prop("string", "Feed ID"),
+            "limit": mcp_prop("integer", "Max events to return (default 100, 0=unlimited)")
+          },
+          ["feed_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_feed_consume",
+        "Atomically poll O(diff) changes and advance the feed's persistent CoW cursor + graduate deferred pages.",
+        mcp_schema(
+          {
+            "feed_id": mcp_prop("string", "Feed ID"),
+            "limit": mcp_prop("integer", "Max events to consume (default 100)")
+          },
+          ["feed_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_feed_unsubscribe",
+        "Unsubscribe a reactive Change Feed and unpin its persistent CoW root.",
+        mcp_schema({"feed_id": mcp_prop("string", "Feed ID"), "reason": reason_p}, ["feed_id"])
       )
     ])
   })
@@ -3322,6 +4079,67 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Error(e): mcp_tool_result(e.to_text, true)
       end
     "modb_search_stats": mcp_encode_result(get_search_stats(rf))
+    "modb_policy_get": mcp_encode_result(get_policy(rf))
+    "modb_clearance_set":
+      case Json.from_json[ClearanceInput](args)
+        Ok(inp): mcp_encode_result(post_policy_clearance(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_proposal_submit":
+      case Json.from_json[GovProposalInput](args)
+        Ok(inp): mcp_encode_result(post_gov_proposal(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_proposals_list": mcp_encode_result(list_gov_proposals(rf, args.text_at("status")))
+    "modb_proposal_approve":
+      case mcp_req_text(args, "proposal_id")
+        Ok(pid):
+          note_eff = case args.text_at("note")
+            Some(n) if not n.trim.empty?: Caller(
+              principal: eff.principal,
+              role: eff.role,
+              reason: Some(n)
+            )
+            Some(_) | None: eff
+          end
+          mcp_encode_result(post_gov_proposal_approve(note_eff, files, clock, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_proposal_reject":
+      case mcp_req_text(args, "proposal_id")
+        Ok(pid):
+          note_eff = case args.text_at("note")
+            Some(n) if not n.trim.empty?: Caller(
+              principal: eff.principal,
+              role: eff.role,
+              reason: Some(n)
+            )
+            Some(_) | None: eff
+          end
+          mcp_encode_result(post_gov_proposal_reject(note_eff, files, clock, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_feed_subscribe":
+      case Json.from_json[FeedSubscribeInput](args)
+        Ok(inp): mcp_encode_result(post_gov_feed(eff, files, clock, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_feeds_list": mcp_encode_result(list_gov_feeds(rf))
+    "modb_feed_poll":
+      case mcp_req_text(args, "feed_id")
+        Ok(fid): mcp_encode_result(get_gov_feed_poll(eff, rf, clock, fid, args.int_at("limit")))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_feed_consume":
+      case mcp_req_text(args, "feed_id")
+        Ok(fid): mcp_encode_result(post_gov_feed_consume(eff, files, clock, fid, args.int_at("limit")))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_feed_unsubscribe":
+      case mcp_req_text(args, "feed_id")
+        Ok(fid): mcp_encode_result(delete_gov_feed(eff, files, clock, fid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -4566,4 +5384,205 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     env
   )
   assert fts_mcp.status == 200 and fts_mcp.text.contains?("\"isError\":false")
+end
+
+test "AgentWorkbench Milestone 12: Sensitivity Policy, Governance Proposals, and Reactive Change Feeds (REST + MCP)"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-26T17:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "WB_ADMIN_TOKEN": "tok-admin",
+    "WB_PLANNER_TOKEN": "tok-plan",
+    "WB_WORKER_TOKEN": "tok-work"
+  })
+
+  ## Seed demo via MCP -> g-sre gets Confidential clearance, g-rogue-sub stays Public
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/admin/demo").with_bearer("tok-admin").with_header("X-Reason", "seed m12"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## Check GET /policy shows g-sre clearance
+  pol_r = ApiTest.send(AgentWorkbench, Api.get("/policy"), files, ro, clock, env)
+  assert pol_r.status == 200 and
+    Json.decode_strict[PolicySummaryResponse](pol_r.text) is Ok(pol_sum)
+  assert pol_sum.clearances.any?(fn(c)
+    c.grant_id == "g-sre" and c.max_sensitivity is Policy.Confidential
+  end)
+
+  ## Planner proposes narrowed View `tasks_triage` (low risk); worker cannot approve (403); admin approves atomically!
+  sub_prop = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/proposals").with_bearer("tok-plan").with_header("X-Reason", "triage view").with_json(
+      GovProposalInput(
+        id: "gov-triage",
+        kind: "view",
+        proposer_grant_id: Some("g-sre"),
+        description: Some("Triage view without base_cost_cents"),
+        view_name: Some("tasks_triage"),
+        base_view: Some("tasks_finance"),
+        fields: Some(["id", "project_id", "title", "status"]),
+        field_sensitivities: None,
+        release_name: None,
+        input_sensitivity: None,
+        output_sensitivity: None,
+        min_group_size: None,
+        target_grant_id: None,
+        target_clearance: None,
+        invariant_name: None,
+        bucket: None,
+        rule_kind: None,
+        field: None,
+        min: None,
+        max: None,
+        allowed_values: None
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sub_prop.status == 200 and
+    Json.decode_strict[Proposals.GovernanceProposal](sub_prop.text) is Ok(gp0)
+  assert gp0.diff.narrows_only and gp0.diff.risk_level == "low"
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/proposals/gov-triage/approve").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    403
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/proposals/gov-triage/approve").with_bearer("tok-admin").with_header(
+      "X-Reason",
+      "approve triage"
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## Approved dynamic View is immediately queryable via `/views/query`!
+  dyn_q = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/query").with_bearer("tok-admin").with_json(
+      ReadProgramRequest(
+        grant_id: None,
+        program: Views.ReadProgram(
+          view: "tasks_triage",
+          where_clause: None,
+          select: None,
+          group_by: None,
+          aggregates: None,
+          order_by: Some(Views.SortSpec(field: "id", desc: false)),
+          limit: Some(10)
+        )
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert dyn_q.status == 200 and dyn_q.text.contains?("failover")
+
+  ## Subscribe a reactive Change Feed via MCP -> mutate task -> Poll -> Consume -> Unsubscribe!
+  sub_f = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(201),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_feed_subscribe"),
+          "arguments": Json.Object({
+            "id": Json.String("wb-tasks-feed"),
+            "grant_id": Json.String("g-sre"),
+            "buckets": Json.Array([Json.String("tasks")]),
+            "reason": Json.String("watch tasks")
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sub_f.status == 200 and sub_f.text.contains?("\"isError\":false")
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "trigger feed").with_json(
+      CreateTaskInput(id: 901, project_id: "infra", title: "Feed watch task", base_cost_cents: 500)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  poll_f = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/feeds/wb-tasks-feed/poll").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert poll_f.status == 200 and
+    Json.decode_strict[Feeds.FeedBatch](poll_f.text) is Ok(fb0)
+  assert fb0.events.size == 1 and fb0.clearance is Policy.Confidential
+
+  cons_f = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/feeds/wb-tasks-feed/consume").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert cons_f.status == 200 and
+    Json.decode_strict[FeedConsumeResponse](cons_f.text) is Ok(fcr)
+  assert fcr.subscription.events_delivered == 1
+
+  ## Subsequent idle poll reads 0 pages and emits 0 events
+  poll_idle = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/feeds/wb-tasks-feed/poll").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert poll_idle.status == 200 and
+    Json.decode_strict[Feeds.FeedBatch](poll_idle.text) is Ok(fb_idle)
+  assert fb_idle.events.empty? and fb_idle.pages_read == 0
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.delete("/feeds/wb-tasks-feed").with_bearer("tok-admin").with_header("X-Reason", "done"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  ver = ApiTest.send(AgentWorkbench, Api.get("/admin/verify"), files, ro, clock, env)
+  assert ver.status == 200 and Json.decode_strict[VerifySummary](ver.text) is Ok(vs) and vs.ok
 end
