@@ -24,7 +24,11 @@ poll_feed_locked,
 ack_feed_locked,
 consume_feed_locked,
 resync_feed_locked,
-unsubscribe_locked
+unsubscribe_locked,
+feed_topic,
+bucket_topic,
+feed_subscribe_topics,
+commit_signal_json
 use Json
 use Modb{Store, pins_bucket}
 use Modb.Errors{ModbError}
@@ -40,6 +44,38 @@ feeds_bucket = "_modb_feeds"
 ## Deterministic Layer 1 persistent CoW root pin name for a subscription.
 fn feed_pin_id(id: Text) : Text
   "feed:#{id}"
+end
+
+## Canonical SSE topic name for a single reactive change feed subscription.
+fn feed_topic(feed_id: Text) : Text
+  "feed:#{feed_id.trim}"
+end
+
+## Canonical SSE topic name for mutations touching a specific MoDB bucket.
+fn bucket_topic(bucket: Text) : Text
+  "bucket:#{bucket.trim}"
+end
+
+## Returns the sorted SSE subscription topics covering a `FeedSubscription`.
+## Explicit-bucket feeds subscribe to `"feed:<id>"` plus each `"bucket:<name>"`;
+## wildcard feeds (`buckets.empty?`) subscribe to `"feed:<id>"` plus `"bucket:*"`.
+fn feed_subscribe_topics(sub: FeedSubscription) : List(Text)
+  if sub.buckets.empty?
+    sort_unique_texts([feed_topic(sub.id), "bucket:*"])
+  else
+    sort_unique_texts([feed_topic(sub.id)].concat(sub.buckets.map(bucket_topic)))
+  end
+end
+
+## Encodes a compact JSON delta signal pushed over SSE when buckets commit.
+## Subscribers still poll `poll_feed` / `consume_feed` for clearance-gated O(diff) events.
+fn commit_signal_json(txid: Int, buckets: List(Text), action: Text) : Json
+  clean_buckets = sort_unique_texts(buckets)
+  Json.Object({
+    "txid": Json.int(txid),
+    "buckets": Json.Array(clean_buckets.map(fn(b) Json.String(b) end)),
+    "action": Json.String(action.trim)
+  })
 end
 
 ## Specification to register a reactive change-feed subscription.
@@ -745,4 +781,40 @@ test "Modb.Feeds: subscribe, O(1) idle poll, O(diff) events, sensitivity skip, C
   assert Ledger.verify_all(db6) is Ok(_)
   assert unsubscribe(db6, "sub-tail", m) is Ok(db7)
   assert Ledger.verify_all(db7) is Ok(_)
+
+  assert feed_topic("  sub-1 ") == "feed:sub-1"
+  assert bucket_topic(" tasks ") == "bucket:tasks"
+  ts0 = Time.parse("2026-11-26T16:20:00Z") or stop "ts0"
+  explicit_sub = FeedSubscription(
+    id: "f-tasks",
+    principal: "agent:test",
+    grant_id: None,
+    buckets: ["projects", "tasks", "tasks"],
+    include_internal: false,
+    pin_id: "feed:f-tasks",
+    cursor_txid: 1,
+    bootstrapped: true,
+    created_at: ts0,
+    last_acked_at: None,
+    events_delivered: 0
+  )
+  assert feed_subscribe_topics(explicit_sub) == ["bucket:projects", "bucket:tasks", "feed:f-tasks"]
+  wild_sub = FeedSubscription(
+    id: "f-all",
+    principal: "agent:test",
+    grant_id: None,
+    buckets: [],
+    include_internal: false,
+    pin_id: "feed:f-all",
+    cursor_txid: 1,
+    bootstrapped: true,
+    created_at: ts0,
+    last_acked_at: None,
+    events_delivered: 0
+  )
+  assert feed_subscribe_topics(wild_sub) == ["bucket:*", "feed:f-all"]
+  sig = commit_signal_json(42, ["tasks", "projects", "tasks"], " complete_task ")
+  assert sig.int_at("txid") == Some(42)
+  assert sig.text_at("action") == Some("complete_task")
+  assert sig.get("buckets") == Some(Json.Array([Json.String("projects"), Json.String("tasks")]))
 end

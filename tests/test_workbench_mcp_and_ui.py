@@ -116,7 +116,7 @@ def main() -> int:
             send_rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             init_resp = read_json_line(proc)
             assert init_resp["result"]["serverInfo"]["name"] == "modb-agent-workbench", init_resp
-            assert init_resp["result"]["serverInfo"]["version"] == "0.5.0", init_resp
+            assert init_resp["result"]["serverInfo"]["version"] == "0.6.0", init_resp
             assert init_resp["result"]["protocolVersion"] == "2025-03-26", init_resp
 
             send_rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -605,6 +605,7 @@ def main() -> int:
             assert "Search (FTS / Hybrid)" in html and "/search/stats" in html
             assert "Governance &amp; Feeds" in html and "/policy" in html
             assert "Session Taint Monitor" in html and "/taint/sessions" in html and "/erasures" in html
+            assert "/events/stream" in html and "feed-stream" in html
             st_ui2, html2 = http_get(f"{base_url}/ui")
             assert st_ui2 == 200 and html2 == html
 

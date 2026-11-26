@@ -354,6 +354,7 @@ api
   get "/" get_ui
   get "/ui" get_ui
   get "/health" get_health
+  get "/events/stream" get_events_stream
   get "/describe" get_describe
   post "/views/query" post_view_query
   post "/releases/:name" post_release
@@ -363,92 +364,93 @@ api
   post "/mcp" post_mcp
 
   scope "/projects"
-    post "" post_project
+    post "" http_post_project
     get "" list_projects
     get "/:id" get_project
     get "/:id/tasks" get_project_tasks
   end
 
   scope "/tasks"
-    post "" post_task
+    post "" http_post_task
     get "/:id" get_task
-    post "/:id/complete" post_complete_task
+    post "/:id/complete" http_post_complete_task
     get "/:id/artifacts" get_task_artifacts
   end
 
   scope "/grants"
-    post "" post_grant
+    post "" http_post_grant
     get "" list_grants
     get "/:id" get_grant
-    post "/:id/delegate" post_delegate_grant
-    post "/:id/revoke" post_revoke_grant
+    post "/:id/delegate" http_post_delegate_grant
+    post "/:id/revoke" http_post_revoke_grant
   end
 
   scope "/claims"
-    post "" post_claim
+    post "" http_post_claim
     get "" list_claims
-    post "/:resource/heartbeat" post_claim_heartbeat
-    delete "/:resource" delete_claim
+    post "/:resource/heartbeat" http_post_claim_heartbeat
+    delete "/:resource" http_delete_claim
   end
 
   scope "/worlds"
-    post "" post_world
+    post "" http_post_world
     get "" list_worlds
     get "/metrics" get_world_metrics
     get "/telemetry" get_world_telemetry
-    post "/:id/children" post_world_child
+    post "/:id/children" http_post_world_child
     get "/:id/children" list_world_children
     post "/:id/query" post_world_query
-    post "/:id/call" post_world_call
+    post "/:id/call" http_post_world_call
     get "/:id/diff" get_world_diff
-    post "/:id/land" post_world_land
-    post "/:id/land-fair" post_world_land_fair
-    post "/:id/land-child" post_world_land_child
-    post "/:id/priority" post_world_priority
-    delete "/:id" delete_world
+    post "/:id/land" http_post_world_land
+    post "/:id/land-fair" http_post_world_land_fair
+    post "/:id/land-child" http_post_world_land_child
+    post "/:id/priority" http_post_world_priority
+    delete "/:id" http_delete_world
   end
 
   get "/audit" get_audit
-  post "/admin/init" post_admin_init
-  post "/admin/demo" post_admin_demo
+  post "/admin/init" http_post_admin_init
+  post "/admin/demo" http_post_admin_demo
   get "/admin/verify" get_admin_verify
   get "/admin/export" get_admin_export
 
   scope "/admin/replay"
     get "/calls" get_replay_calls
-    post "/simulate" post_replay_simulate
+    post "/simulate" http_post_replay_simulate
     get "/proposals" list_replay_proposals
     get "/proposals/:id" get_replay_proposal
-    post "/proposals/:id/accept" post_replay_accept
-    delete "/proposals/:id" delete_replay_proposal
+    post "/proposals/:id/accept" http_post_replay_accept
+    delete "/proposals/:id" http_delete_replay_proposal
   end
 
   scope "/policy"
     get "" get_policy
-    post "/clearances" post_policy_clearance
+    post "/clearances" http_post_policy_clearance
   end
 
   scope "/proposals"
     get "" list_gov_proposals
-    post "" post_gov_proposal
-    post "/:id/approve" post_gov_proposal_approve
-    post "/:id/reject" post_gov_proposal_reject
-    post "/:id/withdraw" post_gov_proposal_withdraw
+    post "" http_post_gov_proposal
+    post "/:id/approve" http_post_gov_proposal_approve
+    post "/:id/reject" http_post_gov_proposal_reject
+    post "/:id/withdraw" http_post_gov_proposal_withdraw
   end
 
   scope "/feeds"
     get "" list_gov_feeds
-    post "" post_gov_feed
+    post "" http_post_gov_feed
     get "/:id/poll" get_gov_feed_poll
-    post "/:id/ack" post_gov_feed_ack
-    post "/:id/consume" post_gov_feed_consume
-    delete "/:id" delete_gov_feed
+    get "/:id/stream" get_gov_feed_stream
+    post "/:id/ack" http_post_gov_feed_ack
+    post "/:id/consume" http_post_gov_feed_consume
+    delete "/:id" http_delete_gov_feed
   end
 
   scope "/taint"
     get "/sessions" list_taint_sessions
-    post "/sessions/:id/untrusted" post_taint_untrusted
-    post "/sessions/:id/clear" post_taint_clear
+    post "/sessions/:id/untrusted" http_post_taint_untrusted
+    post "/sessions/:id/clear" http_post_taint_clear
   end
 
   get "/erasures" list_erasures
@@ -3366,6 +3368,666 @@ fn list_erasures(rf: ReadFiles) : Result(List(Erasure.ErasureReceipt), Workbench
 end
 
 ## ---------------------------------------------------------------------------
+## Milestone 14: Cross-Worker Real-Time SSE Push (`SseBroker`)
+## ---------------------------------------------------------------------------
+fn current_txid_quiet(rf: ReadFiles) : Int
+  case Ledger.read_locked(rf, db_path(), workbench_schema(), map_ledger_error, fn(db)
+    Ok(Ledger.txid(db))
+  end)
+    Ok(n): n
+    Error(_): 0
+  end
+end
+
+fn publish_workbench_commit(
+  res: Api.Response,
+  rf: ReadFiles,
+  event: Text,
+  action: Text,
+  buckets: List(Text),
+  extra_topic: Option((Text, Text))
+) : Api.Response
+  txid = current_txid_quiet(rf)
+  sig = Feeds.commit_signal_json(txid, buckets, action)
+  var out = Api.with_sse_publish_json(res, "workbench", event, sig)
+  var pub_wild? = false
+  for b in buckets
+    clean = b.trim
+    if not clean.empty?
+      out = Api.with_sse_publish_json(out, Feeds.bucket_topic(clean), "feed.delta", sig)
+      if clean != Feeds.feeds_bucket and clean != Modb.pins_bucket
+        pub_wild? = true
+      end
+    end
+  end
+  if pub_wild?
+    out = Api.with_sse_publish_json(out, "bucket:*", "feed.delta", sig)
+  end
+  case extra_topic
+    Some((topic, tevt)): Api.with_sse_publish_json(out, topic, tevt, sig)
+    None: out
+  end
+end
+
+fn json_ok_response(val: T) : Api.Response where T: Json
+  Api.response(200, [("content-type", "application/json")], Json.encode(val).bytes)
+end
+
+fn json_sse(
+  val: T,
+  rf: ReadFiles,
+  event: Text,
+  action: Text,
+  buckets: List(Text)
+) : Api.Response where T: Json
+  publish_workbench_commit(json_ok_response(val), rf, event, action, buckets, None)
+end
+
+fn req_last_event_id(req: Api.Request) : Option(Text)
+  case req.header("Last-Event-ID")
+    Some(v): Some(v)
+    None: req.header("last-event-id")
+  end
+end
+
+fn get_events_stream(rf: ReadFiles, req: Api.Request) : Result(Api.Response, WorkbenchError)
+  h = try get_health(rf)
+  last_id = req_last_event_id(req)
+  Ok(
+    Api.sse_stream_with(
+      ["workbench"],
+      last_id,
+      Some(2000),
+      [(Some("health"), Json.encode(h))]
+    )
+  )
+end
+
+fn get_gov_feed_stream(
+  caller: Caller,
+  rf: ReadFiles,
+  clock: Clock,
+  req: Api.Request,
+  id: Text,
+  limit: Option(Int)
+) : Result(Api.Response, WorkbenchError)
+  is_admin? = caller.role is Admin
+  lim = limit or 100
+  now = clock.now
+  pol = workbench_policy()
+  (sub, batch) = try Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      sub_opt = try Feeds.get_feed(st, id).map_error(map_feed_error)
+      sub = try sub_opt.or_fail(FeedMissing(id: id))
+      batch = try Feeds.poll_feed(st, pol, id, is_admin?, lim, now).map_error(map_feed_error)
+      Ok((sub, batch))
+    end
+  )
+  topics = Feeds.feed_subscribe_topics(sub)
+  last_id = req_last_event_id(req)
+  Ok(
+    Api.sse_stream_with(
+      topics,
+      last_id,
+      Some(2000),
+      [(Some("feed.snapshot"), Json.encode(batch))]
+    )
+  )
+end
+
+fn http_post_project(caller: Caller, files: Files, clock: Clock, body: ProjectInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  row = try post_project(caller, files, clock, body)
+  Ok(json_sse(row, files.read_only, "project.created", "create_project", ["projects"]))
+end
+
+fn http_post_task(caller: Caller, files: Files, clock: Clock, body: CreateTaskInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  row = try post_task(caller, files, clock, body)
+  Ok(json_sse(row, files.read_only, "task.created", "create_task", ["tasks"]))
+end
+
+fn http_post_complete_task(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Int,
+  body: CompleteTaskInput
+) : Result(Api.Response, WorkbenchError)
+  row = try post_complete_task(caller, files, clock, id, body)
+  Ok(
+    json_sse(
+      row,
+      files.read_only,
+      "task.completed",
+      "complete_task",
+      ["tasks", "projects", "artifacts"]
+    )
+  )
+end
+
+fn http_post_grant(caller: Caller, files: Files, clock: Clock, body: GrantInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  g = try post_grant(caller, files, clock, body)
+  Ok(json_sse(g, files.read_only, "grant.issued", "issue_grant", [Grants.grants_bucket]))
+end
+
+fn http_post_delegate_grant(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: GrantInput
+) : Result(Api.Response, WorkbenchError)
+  g = try post_delegate_grant(caller, files, clock, id, body)
+  Ok(json_sse(g, files.read_only, "grant.delegated", "delegate_grant", [Grants.grants_bucket]))
+end
+
+fn http_post_revoke_grant(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  g = try post_revoke_grant(caller, files, clock, id)
+  Ok(json_sse(g, files.read_only, "grant.revoked", "revoke_grant", [Grants.grants_bucket]))
+end
+
+fn http_post_claim(caller: Caller, files: Files, clock: Clock, body: ClaimInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  c = try post_claim(caller, files, clock, body)
+  Ok(json_sse(c, files.read_only, "claim.acquired", "acquire_claim", [Claims.claims_bucket]))
+end
+
+fn http_post_claim_heartbeat(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  resource: Text,
+  body: HeartbeatInput
+) : Result(Api.Response, WorkbenchError)
+  c = try post_claim_heartbeat(caller, files, clock, resource, body)
+  Ok(json_sse(c, files.read_only, "claim.heartbeat", "heartbeat_claim", [Claims.claims_bucket]))
+end
+
+fn http_delete_claim(caller: Caller, files: Files, clock: Clock, resource: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  st = try delete_claim(caller, files, clock, resource)
+  Ok(json_sse(st, files.read_only, "claim.released", "release_claim", [Claims.claims_bucket]))
+end
+
+fn http_post_world(caller: Caller, files: Files, clock: Clock, body: WorldOpenInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  w = try post_world(caller, files, clock, body)
+  Ok(json_sse(w, files.read_only, "world.opened", "open_world", [World.worlds_bucket]))
+end
+
+fn http_post_world_child(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: ChildWorldOpenInput
+) : Result(Api.Response, WorkbenchError)
+  w = try post_world_child(caller, files, clock, id, body)
+  Ok(
+    json_sse(
+      w,
+      files.read_only,
+      "world.child_opened",
+      "open_child_world",
+      [World.worlds_bucket, World.world_links_bucket]
+    )
+  )
+end
+
+fn http_post_world_call(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: WorldCallInput
+) : Result(Api.Response, WorkbenchError)
+  r = try post_world_call(caller, files, clock, id, body)
+  Ok(json_sse(r, files.read_only, "world.called", "world_call", [World.worlds_bucket]))
+end
+
+fn http_post_world_land(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  r = try post_world_land(caller, files, clock, id)
+  Ok(
+    json_sse(
+      r,
+      files.read_only,
+      "world.landed",
+      "land_world",
+      ["tasks", "projects", "artifacts", World.worlds_bucket, Grants.grants_bucket, Claims.claims_bucket]
+    )
+  )
+end
+
+fn http_post_world_land_fair(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  out = try post_world_land_fair(caller, files, clock, id)
+  (evt, act, bkts) = case out
+    World.LandedOk(result: _): (
+      "world.land_fair",
+      "land_world_fair",
+      ["tasks", "projects", "artifacts", World.worlds_bucket, Claims.claims_bucket]
+    )
+    World.DeferredByFairness(ticket: _, retry_after: _): (
+      "world.deferred",
+      "defer_world_fair",
+      [World.worlds_bucket, World.world_fairness_bucket]
+    )
+  end
+  Ok(json_sse(out, files.read_only, evt, act, bkts))
+end
+
+fn http_post_world_land_child(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  r = try post_world_land_child(caller, files, clock, id)
+  Ok(
+    json_sse(
+      r,
+      files.read_only,
+      "world.child_landed",
+      "land_child_world",
+      [World.worlds_bucket, World.world_links_bucket]
+    )
+  )
+end
+
+fn http_post_world_priority(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: PriorityClaimInput
+) : Result(Api.Response, WorkbenchError)
+  t = try post_world_priority(caller, files, clock, id, body)
+  Ok(json_sse(t, files.read_only, "world.priority", "claim_priority", [World.world_fairness_bucket]))
+end
+
+fn http_delete_world(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  st = try delete_world(caller, files, clock, id)
+  Ok(json_sse(st, files.read_only, "world.aborted", "drop_world", [World.worlds_bucket]))
+end
+
+fn http_post_admin_init(caller: Caller, files: Files, clock: Clock) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  h = try post_admin_init(caller, files, clock)
+  Ok(json_sse(h, files.read_only, "admin.init", "admin_init", ["projects"]))
+end
+
+fn http_post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  d = try post_admin_demo(caller, files, clock)
+  Ok(
+    json_sse(
+      d,
+      files.read_only,
+      "admin.demo",
+      "seed_demo",
+      ["projects", "tasks", "artifacts", Grants.grants_bucket, Claims.claims_bucket, World.worlds_bucket]
+    )
+  )
+end
+
+fn http_post_replay_simulate(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  body: ReplaySimulateInput
+) : Result(Api.Response, WorkbenchError)
+  p = try post_replay_simulate(caller, files, clock, body)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "replay.simulated",
+      "simulate_replay",
+      [Replay.replay_proposals_bucket]
+    )
+  )
+end
+
+fn http_post_replay_accept(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try post_replay_accept(caller, files, clock, id)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "replay.accepted",
+      "accept_replay_proposal",
+      ["projects", "tasks", "artifacts", Grants.grants_bucket, Replay.replay_proposals_bucket]
+    )
+  )
+end
+
+fn http_delete_replay_proposal(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try delete_replay_proposal(caller, files, clock, id)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "replay.discarded",
+      "discard_replay_proposal",
+      [Replay.replay_proposals_bucket]
+    )
+  )
+end
+
+fn http_post_policy_clearance(caller: Caller, files: Files, clock: Clock, body: ClearanceInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  r = try post_policy_clearance(caller, files, clock, body)
+  Ok(json_sse(r, files.read_only, "policy.clearance", "set_clearance", [Policy.clearances_bucket]))
+end
+
+fn http_post_gov_proposal(caller: Caller, files: Files, clock: Clock, body: GovProposalInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try post_gov_proposal(caller, files, clock, body)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "proposal.submitted",
+      "submit_proposal",
+      [Proposals.proposals_bucket]
+    )
+  )
+end
+
+fn http_post_gov_proposal_approve(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try post_gov_proposal_approve(caller, files, clock, id)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "proposal.approved",
+      "approve_proposal",
+      [Proposals.proposals_bucket, Policy.clearances_bucket]
+    )
+  )
+end
+
+fn http_post_gov_proposal_reject(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try post_gov_proposal_reject(caller, files, clock, id)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "proposal.rejected",
+      "reject_proposal",
+      [Proposals.proposals_bucket]
+    )
+  )
+end
+
+fn http_post_gov_proposal_withdraw(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  p = try post_gov_proposal_withdraw(caller, files, clock, id)
+  Ok(
+    json_sse(
+      p,
+      files.read_only,
+      "proposal.withdrawn",
+      "withdraw_proposal",
+      [Proposals.proposals_bucket]
+    )
+  )
+end
+
+fn http_post_gov_feed(caller: Caller, files: Files, clock: Clock, body: FeedSubscribeInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  sub = try post_gov_feed(caller, files, clock, body)
+  Ok(
+    publish_workbench_commit(
+      json_ok_response(sub),
+      files.read_only,
+      "feed.subscribed",
+      "feed_subscribe",
+      [Feeds.feeds_bucket],
+      Some((Feeds.feed_topic(sub.id), "feed.subscribed"))
+    )
+  )
+end
+
+fn http_post_gov_feed_ack(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: FeedAckInput
+) : Result(Api.Response, WorkbenchError)
+  sub = try post_gov_feed_ack(caller, files, clock, id, body)
+  Ok(
+    publish_workbench_commit(
+      json_ok_response(sub),
+      files.read_only,
+      "feed.acked",
+      "feed_ack",
+      [Feeds.feeds_bucket],
+      Some((Feeds.feed_topic(id), "feed.acked"))
+    )
+  )
+end
+
+fn http_post_gov_feed_consume(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  limit: Option(Int)
+) : Result(Api.Response, WorkbenchError)
+  r = try post_gov_feed_consume(caller, files, clock, id, limit)
+  Ok(
+    publish_workbench_commit(
+      json_ok_response(r),
+      files.read_only,
+      "feed.consumed",
+      "feed_consume",
+      [Feeds.feeds_bucket],
+      Some((Feeds.feed_topic(id), "feed.consumed"))
+    )
+  )
+end
+
+fn http_delete_gov_feed(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  st = try delete_gov_feed(caller, files, clock, id)
+  Ok(
+    publish_workbench_commit(
+      json_ok_response(st),
+      files.read_only,
+      "feed.unsubscribed",
+      "feed_unsubscribe",
+      [Feeds.feeds_bucket],
+      Some((Feeds.feed_topic(id), "feed.unsubscribed"))
+    )
+  )
+end
+
+fn http_post_taint_untrusted(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: TaintUntrustedInput
+) : Result(Api.Response, WorkbenchError)
+  s = try post_taint_untrusted(caller, files, clock, id, body)
+  Ok(
+    json_sse(
+      s,
+      files.read_only,
+      "taint.untrusted",
+      "record_untrusted",
+      [Taint.taint_sessions_bucket]
+    )
+  )
+end
+
+fn http_post_taint_clear(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  s = try post_taint_clear(caller, files, clock, id)
+  Ok(
+    json_sse(s, files.read_only, "taint.cleared", "clear_taint", [Taint.taint_sessions_bucket])
+  )
+end
+
+fn feed_extra_topic(args: Json, evt: Text) : Option((Text, Text))
+  fid = (args.text_at("id") or "").trim
+  if fid.empty?
+    None
+  else
+    Some((Feeds.feed_topic(fid), evt))
+  end
+end
+
+fn mcp_tool_sse_spec(name: Text, args: Json) : Option((Text, List(Text), Option((Text, Text))))
+  case name
+    "modb_init": Some(("admin.init", ["projects"], None))
+    "modb_seed_demo": Some((
+      "admin.demo",
+      ["projects", "tasks", "artifacts", Grants.grants_bucket, Claims.claims_bucket, World.worlds_bucket],
+      None
+    ))
+    "modb_create_project": Some(("project.created", ["projects"], None))
+    "modb_create_task": Some(("task.created", ["tasks"], None))
+    "modb_complete_task": Some(("task.completed", ["tasks", "projects", "artifacts"], None))
+    "modb_issue_grant": Some(("grant.issued", [Grants.grants_bucket], None))
+    "modb_delegate_grant": Some(("grant.delegated", [Grants.grants_bucket], None))
+    "modb_revoke_grant": Some(("grant.revoked", [Grants.grants_bucket], None))
+    "modb_acquire_claim": Some(("claim.acquired", [Claims.claims_bucket], None))
+    "modb_release_claim": Some(("claim.released", [Claims.claims_bucket], None))
+    "modb_world_open": Some(("world.opened", [World.worlds_bucket], None))
+    "modb_world_call": Some(("world.called", [World.worlds_bucket], None))
+    "modb_world_land": Some((
+      "world.landed",
+      ["tasks", "projects", "artifacts", World.worlds_bucket, Grants.grants_bucket, Claims.claims_bucket],
+      None
+    ))
+    "modb_world_abort": Some(("world.aborted", [World.worlds_bucket], None))
+    "modb_world_open_child": Some((
+      "world.child_opened",
+      [World.worlds_bucket, World.world_links_bucket],
+      None
+    ))
+    "modb_world_land_child": Some((
+      "world.child_landed",
+      [World.worlds_bucket, World.world_links_bucket],
+      None
+    ))
+    "modb_world_claim_priority": Some(("world.priority", [World.world_fairness_bucket], None))
+    "modb_world_land_fair": Some((
+      "world.land_fair",
+      ["tasks", "projects", "artifacts", World.worlds_bucket, Claims.claims_bucket],
+      None
+    ))
+    "modb_replay_simulate": Some(("replay.simulated", [Replay.replay_proposals_bucket], None))
+    "modb_replay_accept": Some((
+      "replay.accepted",
+      ["projects", "tasks", "artifacts", Grants.grants_bucket, Replay.replay_proposals_bucket],
+      None
+    ))
+    "modb_replay_discard": Some(("replay.discarded", [Replay.replay_proposals_bucket], None))
+    "modb_clearance_set": Some(("policy.clearance", [Policy.clearances_bucket], None))
+    "modb_proposal_submit": Some(("proposal.submitted", [Proposals.proposals_bucket], None))
+    "modb_proposal_approve": Some((
+      "proposal.approved",
+      [Proposals.proposals_bucket, Policy.clearances_bucket],
+      None
+    ))
+    "modb_proposal_reject": Some(("proposal.rejected", [Proposals.proposals_bucket], None))
+    "modb_feed_subscribe": Some(
+      ("feed.subscribed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.subscribed"))
+    )
+    "modb_feed_consume": Some(
+      ("feed.consumed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.consumed"))
+    )
+    "modb_feed_unsubscribe": Some(
+      ("feed.unsubscribed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.unsubscribed"))
+    )
+    "modb_taint_record_untrusted": Some(("taint.untrusted", [Taint.taint_sessions_bucket], None))
+    "modb_taint_clear": Some(("taint.cleared", [Taint.taint_sessions_bucket], None))
+    _: None
+  end
+end
+
+fn mcp_publish_if_mutation(
+  http_res: Api.Response,
+  rf: ReadFiles,
+  name: Text,
+  args: Json,
+  tool_res: Json
+) : Api.Response
+  return http_res if tool_res.get("isError") == Some(Json.Boolean(true))
+  case mcp_tool_sse_spec(name, args)
+    Some((evt, buckets, extra)): publish_workbench_commit(
+      http_res,
+      rf,
+      evt,
+      name,
+      buckets,
+      extra
+    )
+    None: http_res
+  end
+end
+
+## ---------------------------------------------------------------------------
 ## Native Streamable HTTP MCP JSON-RPC 2.0 Server (`POST /mcp`)
 ## ---------------------------------------------------------------------------
 fn mcp_json_response(payload: Json) : Api.Response
@@ -4353,7 +5015,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.5.0")
+              "version": Json.String("0.6.0")
             })
           })
         )
@@ -4372,7 +5034,15 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
         Some(tname):
           targs = params.get("arguments") or Json.Object({})
           res = mcp_call_tool(caller, files, clock, tname, targs)
-          Ok(mcp_json_response(mcp_rpc_ok(id_val, res)))
+          Ok(
+            mcp_publish_if_mutation(
+              mcp_json_response(mcp_rpc_ok(id_val, res)),
+              files.read_only,
+              tname,
+              targs,
+              res
+            )
+          )
       end
     _: Ok(mcp_json_response(mcp_rpc_error(id_val, -32601, "method not found: #{method}")))
   end
@@ -5854,4 +6524,145 @@ test "AgentWorkbench Milestone 12: Sensitivity Policy, Governance Proposals, and
 
   ver = ApiTest.send(AgentWorkbench, Api.get("/admin/verify"), files, ro, clock, env)
   assert ver.status == 200 and Json.decode_strict[VerifySummary](ver.text) is Ok(vs) and vs.ok
+end
+
+test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross-worker delta publish"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-26T20:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "WB_ADMIN_TOKEN": "tok-admin",
+    "WB_PLANNER_TOKEN": "tok-plan",
+    "WB_WORKER_TOKEN": "tok-work"
+  })
+
+  init_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/admin/init").with_bearer("tok-admin").with_header("X-Reason", "m14 init"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert init_r.status == 200
+  init_pubs = Api.sse_published_events(init_r)
+  assert init_pubs.any?(fn(p) p.topic == "workbench" and p.event == Some("admin.init") end)
+
+  ev_r = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/events/stream").with_header("Last-Event-ID", "7"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert ev_r.status == 200
+  assert Api.sse_subscribe_topics(ev_r) == ["workbench"]
+  assert ev_r.text.contains?("event: health")
+
+  f1 = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/feeds").with_bearer("tok-work").with_header("X-Reason", "sub tasks").with_json(
+      FeedSubscribeInput(
+        id: "sse-tasks",
+        grant_id: None,
+        buckets: Some(["tasks"]),
+        include_internal: Some(false),
+        from_beginning: Some(false)
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert f1.status == 200
+  f1_pubs = Api.sse_published_events(f1)
+  assert f1_pubs.any?(fn(p) p.topic == "feed:sse-tasks" and p.event == Some("feed.subscribed") end)
+
+  f2 = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/feeds").with_bearer("tok-work").with_header("X-Reason", "sub wild").with_json(
+      FeedSubscribeInput(
+        id: "sse-wild",
+        grant_id: None,
+        buckets: None,
+        include_internal: Some(false),
+        from_beginning: Some(true)
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert f2.status == 200
+
+  t_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "sse task").with_json(
+      CreateTaskInput(id: 951, project_id: "infra", title: "Live SSE delta task", base_cost_cents: 1200)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert t_r.status == 200
+  t_pubs = Api.sse_published_events(t_r)
+  assert t_pubs.any?(fn(p) p.topic == "workbench" and p.event == Some("task.created") end)
+  assert t_pubs.any?(fn(p) p.topic == "bucket:tasks" and p.event == Some("feed.delta") end)
+  assert t_pubs.any?(fn(p) p.topic == "bucket:*" and p.event == Some("feed.delta") end)
+
+  s1 = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/feeds/sse-tasks/stream").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert s1.status == 200
+  assert Api.sse_subscribe_topics(s1) == ["bucket:tasks", "feed:sse-tasks"]
+  assert s1.text.contains?("event: feed.snapshot") and s1.text.contains?("\"feed_id\":\"sse-tasks\"")
+
+  s2 = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/feeds/sse-wild/stream").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert s2.status == 200
+  assert Api.sse_subscribe_topics(s2) == ["bucket:*", "feed:sse-wild"]
+  assert s2.text.contains?("event: feed.snapshot")
+
+  mcp_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-admin").with_header("X-Reason", "mcp sse").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(99),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_create_project"),
+          "arguments": Json.Object({
+            "id": Json.String("sse-proj"),
+            "name": Json.String("SSE Proj"),
+            "budget_cents": Json.int(25000)
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert mcp_r.status == 200
+  mcp_pubs = Api.sse_published_events(mcp_r)
+  assert mcp_pubs.any?(fn(p) p.topic == "workbench" and p.event == Some("project.created") end)
+  assert mcp_pubs.any?(fn(p) p.topic == "bucket:projects" and p.event == Some("feed.delta") end)
 end

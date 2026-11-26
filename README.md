@@ -154,6 +154,7 @@ mo test examples/agent-workbench.mo
 python3 tests/test_multiprocess_flock.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 python3 tests/test_shop_api_live.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 python3 tests/test_workbench_mcp_and_ui.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
+python3 tests/test_workbench_sse_live.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 
 # Stress benchmarks
 python3 bench/kill_loop.py "$(command -v mo || echo ~/code/mo/target/release/mo)" 100
@@ -169,12 +170,12 @@ TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-modb.mo 100000 && rm -rf "$
 
 | Path | Purpose |
 | --- | --- |
-| [`mo.toml`](mo.toml), [`src/`](src/) | Pure-Mo MoDB `v0.5.0` package (`Modb` Layer 1, `Modb.Table`, `Modb.Fts` & `Modb.Vec` Layer 2, `Modb.Ledger` & `Modb.Export` Layer 3, `Modb.Grants`/`Claims`/`World`/`Replay`/`Views`/`Policy`/`Proposals`/`Feeds`/`Taint`/`Erasure` Layer 4, `Modb.Cli`) |
+| [`mo.toml`](mo.toml), [`src/`](src/) | Pure-Mo MoDB `v0.6.0` package (`Modb` Layer 1, `Modb.Table`, `Modb.Fts` & `Modb.Vec` Layer 2, `Modb.Ledger` & `Modb.Export` Layer 3, `Modb.Grants`/`Claims`/`World`/`Replay`/`Views`/`Policy`/`Proposals`/`Feeds`/`Taint`/`Erasure` Layer 4, `Modb.Cli`) |
 | [`examples/`](examples/) | End-to-end apps: [`shop.mo`](examples/shop.mo), [`shop-api.mo`](examples/shop-api.mo), [`agent-workbench.mo`](examples/agent-workbench.mo), [`workbench-ui.mo`](examples/workbench-ui.mo) |
 | [`tools/`](tools/) | Stdio MCP server bridge ([`tools/modb_mcp_server.py`](tools/modb_mcp_server.py)) |
-| [`tests/`](tests/) | Differential, crash-simulation, layer integration, FTS & Vector/Hybrid tests, multi-process `flock`+`SIGKILL`, and live UI/MCP test suites |
+| [`tests/`](tests/) | Differential, crash-simulation, layer integration, FTS & Vector/Hybrid tests, multi-process `flock`+`SIGKILL`, and live UI/MCP/SSE test suites (`test_workbench_sse_live.py`) |
 | [`bench/`](bench/) | 100k-row storage/SQLite comparison, 1,000-doc FTS/Vector/Hybrid search benchmark (`bench-search.mo`), OS `SIGKILL` crash loop, and 8-worker concurrency & multi-agent benchmarks |
-| [`specs/`](specs/) | Milestone 1–13 architecture & implementation specifications |
+| [`specs/`](specs/) | Milestone 1–14 architecture & implementation specifications |
 | [`models/`](models/) | TLA+ formal models (`Replay.tla`, `Worlds.tla`, `Sweep.tla`) and predictions |
 | [`design.md`](design.md), [`BENCHMARKS.md`](BENCHMARKS.md), [`FRICTION.md`](FRICTION.md), [`GLOSSARY.md`](GLOSSARY.md) | Long-term design doc, verified benchmark ledger, Mo language/runtime friction log, and terminology |
 | [`wiki/`](wiki/), [`research/`](research/) | Compiled database knowledge base and primary research notes |

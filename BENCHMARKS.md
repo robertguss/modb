@@ -311,3 +311,30 @@ Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on p
 | `mo test examples/agent-workbench.mo` | 4 full HTTP + MCP + M10 + Search + Governance/Feeds + Taint/Erasures `ApiTest.send` suites | **`3.69 s`** (`4 passed, 0 failed`) |
 | `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, **`58` MCP tools** (incl. 4 M13 Taint & Erasure tools), Session Taint Monitor & Erasure Receipts UI | **`6.44 s` PASS** (`txid = 54`, `export_entries = 259`, `hash = 7f122a87...`) |
 | `bench/real_world_agent_sim.py` (`AgentWorkbench` `mo serve --workers 8`) | Full 8-worker contention, Replay, M10 Child Worlds, and `SIGKILL` survival regression check | **`23.21 s` PASS** (`verify = 261.9 ms -> post-M10 114.2 ms`, `txid = 525`, `pages = 484`) |
+
+---
+
+## 16. Milestone 14: Search Vectorization (`mo#443` / `modb#8`), Real-Time Cross-Worker SSE Change Feeds & `v0.6.0` (2026-11-26)
+
+Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on unified pure-Rust `mo` (`robertguss/mo#443` `dot_u16_be_biased`/`dot_u8_biased` + `robertguss/modb#8` zero-copy vector decoding):
+
+### 1,000-Doc Search Benchmark (`bench/bench-search.mo 1000`, vs §13 baseline)
+
+| Workload | §13 Baseline | `v0.6.0` (`mo#443` + `modb#8`) | Speedup / Notes |
+| --- | --- | --- | --- |
+| `Fts` index 1,000 docs (10 scopes) | `8,529 ms` | **`5,406 ms`** | **1.58× faster** (`529` pages / `2,116 KiB`) |
+| `Fts` queries (50× top-10) | `6,462` / `11,551` / `6,213 ms` | **`3,542` / `5,940` / `3,599 ms`** | **1.82×–1.94× faster** (1-term / 2-term / prefix) |
+| `Vec` 64-d `Q16` ingest (`128,000` payload B) | `2,188 ms` | **`1,370 ms`** | **1.60× faster** |
+| `Vec` 64-d `Q16` 20× full vs scoped(1/10) | `4,374 ms` / `451 ms` | **`2,109 ms` / `198 ms`** | **2.07× / 2.28× faster** (**`9.9 ms`/scoped q**) |
+| `Vec` 384-d `Q16` (`768,000` payload B) | `6,071 ms` put / `1,607 ms` scoped | **`5,618 ms` put / `2,162 ms` full / `278 ms` scoped** | **5.78× faster scoped cosine** (**`13.9 ms`/q**) |
+| `Vec` 384-d `Q8` (`384,000` payload B) | `4,719 ms` put / `1,834 ms` scoped | **`4,033 ms` put / `2,121 ms` full / `232 ms` scoped** | **7.91× faster scoped cosine** (**`11.6 ms`/q**) |
+| `Hybrid` BM25+ + 64-d RRF (20×) | `9,171 ms` full / `3,468 ms` scoped | **`4,339 ms` full / `1,976 ms` scoped** | **2.11× / 1.76× faster** |
+
+### Real-Time SSE Change Feeds Verification (`v0.6.0`)
+
+| Check / Suite | Scope | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/feeds.mo` | `feed_topic`, `bucket_topic`, `feed_subscribe_topics`, `commit_signal_json` + all 63 storage/ledger/feed tests | **PASS** (`63 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | All 5 HTTP + MCP + M10 + Search + Governance + Taint + M14 `ApiTest.send` SSE subscription/publish suites | **PASS** (`5 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, `58` MCP tools (`serverInfo.version == "0.6.0"`), Live `/events/stream` + `feed-stream` UI HTML | **PASS** (`tools=58`, `txid=54`) |
+| `tests/test_workbench_sse_live.py` | Live 8-worker `mo serve`: chunked HTTP/1.1 `/events/stream` + `/feeds/:id/stream`, zero `x-mo-sse-*` header leaks, cross-worker `feed.delta` push (`pushed_id=8`), and `Last-Event-ID` reconnect replay (`replayed_id=11`) | **PASS** (`tasks_delta=1`) |

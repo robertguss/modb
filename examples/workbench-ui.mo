@@ -258,8 +258,9 @@ fn page_html() : Text
         <input id="token-input" value="wb-admin" placeholder="Bearer token" style="width:115px" />
         <input id="agent-input" value="agent:ui-operator" placeholder="X-Agent-Id" style="width:135px" />
         <input id="reason-input" value="interactive workbench action" placeholder="X-Reason" style="width:170px" />
+        <span id="sse-pill" class="pill">SSE connecting...</span>
         <label class="mono muted" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-          <input id="auto-refresh" type="checkbox" checked /> Live 2s
+          <input id="auto-refresh" type="checkbox" checked /> Live 15s
         </label>
         <button id="btn-refresh">Refresh</button>
         <button id="btn-demo" class="primary">Seed Demo</button>
@@ -581,6 +582,10 @@ fn page_html() : Text
         lastVerify: null,
         initialized: false,
         lastRenderKey: null,
+        sseConnected: false,
+        sseLastId: null,
+        activeFeedStream: null,
+        liveTxid: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -1363,6 +1368,7 @@ fn page_html() : Text
               + '<td class="mono">[' + esc((f.buckets || []).join(', ') || '*') + ']</td>'
               + '<td><div class="actions-cell">'
               + '<button class="small" data-action="feed-poll" data-id="' + esc(f.id) + '">Poll</button>'
+              + '<button class="small info" data-action="feed-stream" data-id="' + esc(f.id) + '">' + (state.activeFeedStream && state.activeFeedStream.id === f.id ? 'Stop' : 'Stream') + '</button>'
               + '<button class="small success" data-action="feed-consume" data-id="' + esc(f.id) + '">Consume</button>'
               + '<button class="small danger" data-action="feed-unsub" data-id="' + esc(f.id) + '">Unsub</button>'
               + '</div></td></tr>').join('') + '</tbody></table>';
@@ -1465,6 +1471,169 @@ fn page_html() : Text
         } catch (e) { toast('Poll error: ' + e.message, 'err'); }
       }
 
+      async function openSseStream(path, opts) {
+        const { auth = false, lastEventId = null, onEvent, onStatus, signal } = opts || {};
+        const headers = { 'Accept': 'text/event-stream' };
+        if (auth) Object.assign(headers, authHeaders(false));
+        if (lastEventId) headers['Last-Event-ID'] = lastEventId;
+        const res = await fetch(path, { method: 'GET', headers, signal });
+        if (!res.ok || !res.body) {
+          const txt = await res.text().catch(() => '');
+          throw new Error('SSE HTTP ' + res.status + (txt ? (': ' + txt) : ''));
+        }
+        if (onStatus) onStatus('open');
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let evName = 'message';
+        let evId = null;
+        let dataLines = [];
+        const dispatch = () => {
+          if (dataLines.length === 0 && evId === null) {
+            evName = 'message';
+            return;
+          }
+          const payload = { id: evId, event: evName || 'message', data: dataLines.join('\n') };
+          evName = 'message';
+          evId = null;
+          dataLines = [];
+          if (onEvent) onEvent(payload);
+        };
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split(/\r\n|\n|\r/);
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line === '') {
+              dispatch();
+            } else if (line.startsWith(':')) {
+              // keepalive comment
+            } else {
+              const colon = line.indexOf(':');
+              const field = colon >= 0 ? line.slice(0, colon) : line;
+              const rawVal = colon >= 0 ? line.slice(colon + 1) : '';
+              const val = rawVal.startsWith(' ') ? rawVal.slice(1) : rawVal;
+              if (field === 'event') evName = val || 'message';
+              else if (field === 'id') evId = val;
+              else if (field === 'data') dataLines.push(val);
+            }
+          }
+        }
+        dispatch();
+      }
+
+      function updateSsePill(connected, txid = null) {
+        state.sseConnected = connected;
+        if (txid != null) state.liveTxid = txid;
+        const pill = $('sse-pill');
+        if (!pill) return;
+        if (connected) {
+          const txStr = state.liveTxid != null ? (' · tx ' + state.liveTxid) : '';
+          pill.textContent = 'LIVE SSE' + txStr;
+          pill.className = 'pill ok';
+        } else {
+          pill.textContent = 'SSE reconnecting...';
+          pill.className = 'pill warn';
+        }
+      }
+
+      async function connectWorkbenchSse() {
+        let backoff = 1000;
+        while (true) {
+          try {
+            await openSseStream('/events/stream', {
+              auth: false,
+              lastEventId: state.sseLastId,
+              onStatus: () => {
+                backoff = 1000;
+                updateSsePill(true, state.liveTxid);
+              },
+              onEvent: (ev) => {
+                if (ev.id) state.sseLastId = ev.id;
+                let parsed = null;
+                try { parsed = ev.data ? JSON.parse(ev.data) : null; } catch (_) {}
+                const tx = parsed && parsed.txid != null ? parsed.txid : null;
+                updateSsePill(true, tx);
+                if (ev.event !== 'health') {
+                  state.lastRenderKey = null;
+                  refreshAll(false);
+                } else if (parsed && parsed.status === 'ok') {
+                  refreshAll(false);
+                }
+              },
+            });
+          } catch (_) {
+            // reconnect below
+          }
+          updateSsePill(false);
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(15000, Math.round(backoff * 1.7));
+        }
+      }
+
+      function stopActiveFeedStream() {
+        if (state.activeFeedStream) {
+          state.activeFeedStream.controller.abort();
+          state.activeFeedStream = null;
+        }
+      }
+
+      async function toggleFeedStreamUi(id) {
+        if (state.activeFeedStream && state.activeFeedStream.id === id) {
+          stopActiveFeedStream();
+          toast('Stopped stream on ' + id, 'ok');
+          state.lastRenderKey = null;
+          await refreshAll(true);
+          return;
+        }
+        stopActiveFeedStream();
+        const controller = new AbortController();
+        const streamState = { id, controller, lastId: null, lines: [] };
+        state.activeFeedStream = streamState;
+        state.lastRenderKey = null;
+        await refreshAll(true);
+        $('feed-poll-out').textContent = 'Connecting SSE stream to /feeds/' + id + '/stream ...';
+        (async () => {
+          try {
+            await openSseStream('/feeds/' + encodeURIComponent(id) + '/stream', {
+              auth: true,
+              signal: controller.signal,
+              lastEventId: streamState.lastId,
+              onEvent: async (ev) => {
+                if (streamState !== state.activeFeedStream) return;
+                if (ev.id) streamState.lastId = ev.id;
+                if (ev.event === 'feed.snapshot') {
+                  let snap = ev.data;
+                  try { snap = JSON.stringify(JSON.parse(ev.data), null, 2); } catch (_) {}
+                  streamState.lines = ['=== INITIAL SNAPSHOT (feed=' + id + ') ===', snap];
+                  $('feed-poll-out').textContent = streamState.lines.join('\n');
+                  toast('Streaming live feed ' + id, 'ok');
+                } else {
+                  const tag = '[' + new Date().toLocaleTimeString() + ' #' + (ev.id || '-') + ' ' + ev.event + '] ';
+                  streamState.lines.push(tag + ev.data);
+                  try {
+                    const batch = await api('GET', '/feeds/' + encodeURIComponent(id) + '/poll', null, true);
+                    streamState.lines.push(JSON.stringify(batch, null, 2));
+                  } catch (_) {}
+                  $('feed-poll-out').textContent = streamState.lines.slice(-40).join('\n');
+                  state.lastRenderKey = null;
+                  refreshAll(false);
+                }
+              },
+            });
+          } catch (e) {
+            if (!controller.signal.aborted && state.activeFeedStream === streamState) {
+              toast('Feed stream ended: ' + e.message, 'err');
+              state.activeFeedStream = null;
+              state.lastRenderKey = null;
+              refreshAll(false);
+            }
+          }
+        })();
+      }
+
       async function consumeFeedUi(id) {
         try {
           const out = await api('POST', '/feeds/' + encodeURIComponent(id) + '/consume', null, true);
@@ -1545,6 +1714,7 @@ fn page_html() : Text
         else if (act === 'gov-approve') approveGovProposal(id);
         else if (act === 'gov-reject') rejectGovProposal(id);
         else if (act === 'feed-poll') pollFeedUi(id);
+        else if (act === 'feed-stream') toggleFeedStreamUi(id);
         else if (act === 'feed-consume') consumeFeedUi(id);
         else if (act === 'feed-unsub') unsubscribeFeedUi(id);
         else if (act === 'taint-clear') clearTaintUi(id);
@@ -1611,9 +1781,10 @@ fn page_html() : Text
       }
 
       refreshAll(true);
+      connectWorkbenchSse();
       setInterval(() => {
         if ($('auto-refresh').checked) refreshAll(false);
-      }, 2000);
+      }, 15000);
     </script>
   </body>
   </html>
