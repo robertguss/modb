@@ -26,6 +26,7 @@ use Modb.Matview
 use Modb.Policy
 use Modb.Proposals
 use Modb.Replay
+use Modb.Sync
 use Modb.Table
 use Modb.Taint
 use Modb.Vec
@@ -315,6 +316,17 @@ struct TaintUntrustedInput
   grant_id: Option(Text)
 end
 
+struct SyncInitPeerInput
+  peer_id: Text
+  include_internal: Option(Bool)
+  from_empty: Option(Bool)
+end
+
+struct SyncAckInput
+  seq: Int
+  delta_hash: Text
+end
+
 enum WorkbenchError
   Unauthenticated
   Forbidden(required: Text)
@@ -344,6 +356,8 @@ enum WorkbenchError
   TaintBlocked(detail: Text)
   ErasureBlocked(detail: Text)
   WorkBudgetBlocked(detail: Text)
+  SyncPeerMissing(id: Text)
+  SyncConflict(detail: Text)
   StorageFailed(message: Text)
 end
 
@@ -362,6 +376,13 @@ api
   get "/matviews" get_matviews
   post "/matviews/:name/refresh" post_matview_refresh
   get "/matviews/:name/query" get_matview_query
+  scope "/sync/peers"
+    get "" list_sync_peers
+    post "" http_post_sync_peer
+    post "/:id/export" http_post_sync_export
+    post "/:id/ack" http_post_sync_ack
+    delete "/:id" http_delete_sync_peer
+  end
   post "/releases/:name" post_release
   get "/reads" get_reads
   post "/search" post_search
@@ -488,6 +509,8 @@ api
   status TaintBlocked(_) = 403
   status ErasureBlocked(_) = 403
   status WorkBudgetBlocked(_) = 429
+  status SyncPeerMissing(_) = 404
+  status SyncConflict(_) = 409
   status StorageFailed(_) = 500
 end
 
@@ -1011,6 +1034,26 @@ fn map_erasure_error(err: Erasure.ErasureError) : WorkbenchError
     )
     Erasure.KeyShredded(subject_id: _): ErasureBlocked(detail: Erasure.to_text(err))
     Erasure.ErasureDenied(reason: r): Forbidden(required: r)
+  end
+end
+
+fn map_sync_error(err: Sync.SyncError) : WorkbenchError
+  case err
+    Sync.UnknownPeer(peer_id: id): SyncPeerMissing(id: id)
+    Sync.PeerAlreadyExists(peer_id: _) | Sync.AckMismatch(reason: _) | Sync.ChainMismatch(
+      expected_seq: _,
+      actual_seq: _,
+      expected_prev_hash: _,
+      actual_prev_hash: _
+    ): SyncConflict(detail: Sync.to_text(err))
+    Sync.InvalidPeerId(peer_id: _) | Sync.InvalidDelta(reason: _) | Sync.InvalidEnvelope(
+      reason: _
+    ) | Sync.InvalidKeyLength(expected: _, got: _): InvalidInput(reason: Sync.to_text(err))
+    Sync.StorageFailure(_) | Sync.TableFailure(_) | Sync.ExportFailure(_) | Sync.PinMissing(
+      pin_id: _
+    ) | Sync.DecryptionFailed | Sync.TargetExists(path: _): StorageFailed(
+      message: Sync.to_text(err)
+    )
   end
 end
 
@@ -3177,6 +3220,122 @@ fn get_matview_query(
   )
 end
 
+fn list_sync_peers(rf: ReadFiles) : Result(List(Sync.SyncPeer), WorkbenchError)
+  Sync.list_peers_locked(rf, db_path()).map_error(map_sync_error)
+end
+
+fn post_sync_peer(caller: Caller, files: Files, clock: Clock, body: SyncInitPeerInput) : Result(
+  Sync.SyncPeer,
+  WorkbenchError
+)
+  try require_admin(caller)
+  inc? = body.include_internal or false
+  empty? = body.from_empty or false
+  Sync.init_peer_locked(files, db_path(), body.peer_id, inc?, empty?, clock.now).map_error(
+    map_sync_error
+  )
+end
+
+fn http_post_sync_peer(caller: Caller, files: Files, clock: Clock, body: SyncInitPeerInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  peer = try post_sync_peer(caller, files, clock, body)
+  Ok(
+    Api.with_sse_publish_json(
+      Api.json_response(200, peer),
+      "workbench",
+      "sync.peer_created",
+      peer.to_json
+    )
+  )
+end
+
+fn post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Sync.SyncDelta,
+  WorkbenchError
+)
+  try require_admin(caller)
+  Sync.export_delta_locked(files, db_path(), id, clock.now).map_error(map_sync_error)
+end
+
+fn http_post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  delta = try post_sync_export(caller, files, clock, id)
+  resp = Api.response(
+    200,
+    [("content-type", "application/json")],
+    Sync.encode_delta_json(delta).bytes
+  )
+  Ok(
+    Api.with_sse_publish_json(
+      resp,
+      "workbench",
+      "sync.delta_exported",
+      Json.Object({
+        "peer_id": Json.String(delta.peer_id),
+        "seq": Json.int(delta.seq),
+        "delta_hash": Json.String(delta.delta_hash),
+        "op_count": Json.int(delta.op_count)
+      })
+    )
+  )
+end
+
+fn post_sync_ack(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: SyncAckInput
+) : Result(Sync.SyncPeer, WorkbenchError)
+  try require_admin(caller)
+  Sync.ack_peer_locked(files, db_path(), id, body.seq, body.delta_hash, clock.now).map_error(
+    map_sync_error
+  )
+end
+
+fn http_post_sync_ack(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: SyncAckInput
+) : Result(Api.Response, WorkbenchError)
+  peer = try post_sync_ack(caller, files, clock, id, body)
+  Ok(
+    Api.with_sse_publish_json(
+      Api.json_response(200, peer),
+      "workbench",
+      "sync.peer_acked",
+      peer.to_json
+    )
+  )
+end
+
+fn delete_sync_peer(caller: Caller, files: Files, id: Text) : Result(OkStatus, WorkbenchError)
+  try require_admin(caller)
+  _ = try Sync.remove_peer_locked(files, db_path(), id).map_error(map_sync_error)
+  Ok(OkStatus(ok: true))
+end
+
+fn http_delete_sync_peer(caller: Caller, files: Files, id: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  st = try delete_sync_peer(caller, files, id)
+  Ok(
+    Api.with_sse_publish_json(
+      Api.json_response(200, st),
+      "workbench",
+      "sync.peer_removed",
+      Json.Object({"peer_id": Json.String(id)})
+    )
+  )
+end
+
 fn post_release(caller: Caller, files: Files, clock: Clock, name: Text, body: ReleaseRequest) : Result(
   Views.ReleaseResult,
   WorkbenchError
@@ -5030,6 +5189,46 @@ fn mcp_tools_list() : Json
           },
           ["name"]
         )
+      ),
+      mcp_tool_def(
+        "modb_sync_peers",
+        "List registered incremental CoW sync replication peers and their acked/pending cursors.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_sync_init_peer",
+        "Register an incremental CoW sync replication peer pinned at the current committed root (admin).",
+        mcp_schema(
+          {
+            "peer_id": mcp_prop("string", "Unique sync peer ID ([A-Za-z0-9._-])"),
+            "include_internal": mcp_prop("boolean", "Include internal _modb_* buckets (default false)"),
+            "from_empty": mcp_prop("boolean", "Start next export from empty root 0 (default false)"),
+            "reason": reason_p
+          },
+          ["peer_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_sync_export",
+        "Export the next signed hash-chained incremental CoW delta for a sync peer (admin).",
+        mcp_schema({"peer_id": mcp_prop("string", "Sync peer ID")}, ["peer_id"])
+      ),
+      mcp_tool_def(
+        "modb_sync_ack",
+        "Acknowledge delivery of an incremental sync delta and advance the peer's persistent CoW root pin (admin).",
+        mcp_schema(
+          {
+            "peer_id": mcp_prop("string", "Sync peer ID"),
+            "seq": mcp_prop("integer", "Delivered delta sequence number"),
+            "delta_hash": mcp_prop("string", "SHA-256 delta_hash of the delivered delta")
+          },
+          ["peer_id", "seq", "delta_hash"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_sync_remove_peer",
+        "Remove a sync replication peer and unpin both its active and pending CoW root pins (admin).",
+        mcp_schema({"peer_id": mcp_prop("string", "Sync peer ID")}, ["peer_id"])
       )
     ])
   })
@@ -5373,6 +5572,47 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Ok(mname): mcp_encode_result(get_matview_query(files, mname, args.int_at("min_k")))
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
+    "modb_sync_peers": mcp_encode_result(list_sync_peers(rf))
+    "modb_sync_init_peer":
+      case mcp_req_text(args, "peer_id")
+        Ok(pid): mcp_encode_result(
+          post_sync_peer(
+            eff,
+            files,
+            clock,
+            SyncInitPeerInput(
+              peer_id: pid,
+              include_internal: args.bool_at("include_internal"),
+              from_empty: args.bool_at("from_empty")
+            )
+          )
+        )
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_sync_export":
+      case mcp_req_text(args, "peer_id")
+        Ok(pid):
+          case post_sync_export(eff, files, clock, pid)
+            Ok(delta): mcp_tool_result(Sync.encode_delta_json(delta), false)
+            Error(err): mcp_tool_result(Json.encode(err), true)
+          end
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_sync_ack":
+      case (mcp_req_text(args, "peer_id"), args.int_at("seq"), mcp_req_text(args, "delta_hash"))
+        (Ok(pid), Some(seq), Ok(dh)): mcp_encode_result(
+          post_sync_ack(eff, files, clock, pid, SyncAckInput(seq: seq, delta_hash: dh))
+        )
+        _: mcp_tool_result(
+          "modb_sync_ack requires peer_id (string), seq (int), and delta_hash (string)",
+          true
+        )
+      end
+    "modb_sync_remove_peer":
+      case mcp_req_text(args, "peer_id")
+        Ok(pid): mcp_encode_result(delete_sync_peer(eff, files, pid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -5398,7 +5638,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.7.0")
+              "version": Json.String("0.8.0")
             })
           })
         )
@@ -7117,4 +7357,51 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
     env
   )
   assert mv_q.status == 200 and mv_q.text.contains?("infra")
+
+  # Milestone 16: Incremental Sync peer lifecycle (/sync/peers*)
+  sy_init = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers").with_bearer("tok-admin").with_json(
+      SyncInitPeerInput(peer_id: "wb-mirror", include_internal: Some(false), from_empty: Some(false))
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sy_init.status == 200 and sy_init.text.contains?("\"peer_id\":\"wb-mirror\"")
+
+  sy_exp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers/wb-mirror/export").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sy_exp.status == 200
+  assert Json.decode[Sync.SyncDelta](sy_exp.text.bytes) is Ok(wb_d1)
+  assert wb_d1.seq == 1
+
+  sy_ack = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers/wb-mirror/ack").with_bearer("tok-admin").with_json(
+      SyncAckInput(seq: wb_d1.seq, delta_hash: wb_d1.delta_hash)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sy_ack.status == 200 and sy_ack.text.contains?("\"acked_seq\":1")
+
+  sy_del = ApiTest.send(
+    AgentWorkbench,
+    Api.delete("/sync/peers/wb-mirror").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sy_del.status == 200 and sy_del.text.contains?("\"ok\":true")
 end

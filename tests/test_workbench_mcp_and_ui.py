@@ -116,7 +116,7 @@ def main() -> int:
             send_rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             init_resp = read_json_line(proc)
             assert init_resp["result"]["serverInfo"]["name"] == "modb-agent-workbench", init_resp
-            assert init_resp["result"]["serverInfo"]["version"] == "0.7.0", init_resp
+            assert init_resp["result"]["serverInfo"]["version"] == "0.8.0", init_resp
             assert init_resp["result"]["protocolVersion"] == "2025-03-26", init_resp
 
             send_rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -130,7 +130,7 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 62, len(tools)
+            assert len(tools) >= 67, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_search",
@@ -618,6 +618,33 @@ def main() -> int:
             is_err, mv_q = call_tool(proc, 141, "modb_matview_query", {"name": "tasks_by_project"})
             assert not is_err and mv_q["returned_groups"] >= 2, (is_err, mv_q)
 
+            # Milestone 16: Incremental Sync replication lifecycle via MCP
+            is_err, sy_i = call_tool(
+                proc, 142, "modb_sync_init_peer", {"peer_id": "mcp-mirror"}
+            )
+            assert not is_err and sy_i["peer_id"] == "mcp-mirror", (is_err, sy_i)
+
+            is_err, sy_l = call_tool(proc, 143, "modb_sync_peers", {})
+            assert not is_err and any(p["peer_id"] == "mcp-mirror" for p in sy_l), (is_err, sy_l)
+
+            is_err, sy_e = call_tool(
+                proc, 144, "modb_sync_export", {"peer_id": "mcp-mirror"}
+            )
+            assert not is_err and sy_e["seq"] == 1 and sy_e["delta_hash"], (is_err, sy_e)
+
+            is_err, sy_a = call_tool(
+                proc,
+                145,
+                "modb_sync_ack",
+                {"peer_id": "mcp-mirror", "seq": 1, "delta_hash": sy_e["delta_hash"]},
+            )
+            assert not is_err and sy_a["acked_seq"] == 1, (is_err, sy_a)
+
+            is_err, sy_rm = call_tool(
+                proc, 146, "modb_sync_remove_peer", {"peer_id": "mcp-mirror"}
+            )
+            assert not is_err and sy_rm["ok"] is True, (is_err, sy_rm)
+
             is_err, ver3 = call_tool(proc, 133, "modb_verify", {})
             assert not is_err and ver3["ok"] is True, (is_err, ver3)
 
@@ -654,6 +681,7 @@ def main() -> int:
                 "/feeds",
                 "/matviews",
                 "/matviews/tasks_by_status/query",
+                "/sync/peers",
                 "/taint/sessions",
                 "/erasures",
                 "/audit",

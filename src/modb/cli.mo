@@ -1,8 +1,9 @@
 ## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `fts`, `vec`,
-## `policy`, `proposals`, `feeds`, `matviews`, `taint`, `erasures`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
+## `policy`, `proposals`, `feeds`, `matviews`, `taint`, `erasures`, `sync`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
 ## `.modb` database file safely using advisory `flock` coordination and read-only `ReadFiles`.
 module Modb.Cli
 expose run_cli,
+run_cli_with,
 main
 use Json
 use Modb{Store}
@@ -18,6 +19,7 @@ use Modb.Matview
 use Modb.Pager{from_file}
 use Modb.Policy
 use Modb.Proposals
+use Modb.Sync{SealedEnvelope, SyncDelta}
 use Modb.Table
 use Modb.Taint
 use Modb.Tree{KeyDiff}
@@ -45,6 +47,14 @@ fn print_usage(console: Console) : Unit
       "  modb matviews <db.modb> [list|refresh <name>|rebuild <name>|query <name>] [--min-k N] [--json]",
       "  modb taint <db.modb> [--json]",
       "  modb erasures <db.modb> [--json]",
+      "  modb sync <db.modb> init-peer <peer_id> [--include-internal] [--from-empty] [--json]",
+      "  modb sync <db.modb> peers [--json]",
+      "  modb sync <db.modb> base-snapshot <peer_id> <out.json> [--encrypt] [--key-file <p>|--key-env <V>] [--key-id <id>] [--aad <t>]",
+      "  modb sync <db.modb> export <peer_id> <out.json> [--encrypt] [--key-file <p>|--key-env <V>] [--key-id <id>] [--aad <t>] [--json]",
+      "  modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex> [--json]",
+      "  modb sync <db.modb> apply <delta.json> [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>] [--json]",
+      "  modb sync <db.modb> remove-peer <peer_id>",
+      "  modb sync <dst.modb> restore --base <snap.json> [<delta1.json> ...] [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>] [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
       "  modb export <src.modb> <out.json> [--include-internal]",
       "  modb restore <in.json> <dst.modb>",
@@ -69,6 +79,16 @@ struct ParsedFlags
   scope_opt: Option(Text)
   status_opt: Option(Text)
   prefix?: Bool
+  key_file_opt: Option(Text)
+  key_env_opt: Option(Text)
+  key_id_opt: Option(Text)
+  aad_opt: Option(Text)
+  encrypt?: Bool
+  decrypt?: Bool
+  from_empty?: Bool
+  base_opt: Option(Text)
+  seq_opt: Option(Int)
+  hash_opt: Option(Text)
 end
 
 fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
@@ -85,6 +105,16 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var scope_opt = None
   var status_opt = None
   var prefix? = false
+  var key_file_opt = None
+  var key_env_opt = None
+  var key_id_opt = None
+  var aad_opt = None
+  var encrypt? = false
+  var decrypt? = false
+  var from_empty? = false
+  var base_opt = None
+  var seq_opt = None
+  var hash_opt = None
   var i = 0
   while i < rest.size
     tok = rest.get(i) or ""
@@ -93,6 +123,15 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       i += 1
     else if tok == "--include-internal"
       include_internal? = true
+      i += 1
+    else if tok == "--encrypt"
+      encrypt? = true
+      i += 1
+    else if tok == "--decrypt"
+      decrypt? = true
+      i += 1
+    else if tok == "--from-empty"
+      from_empty? = true
       i += 1
     else if tok == "--fast"
       fast? = true
@@ -117,6 +156,11 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       n = try val.to_int.or_fail("invalid --min-k integer: #{val}")
       min_k_opt = Some(n)
       i += 2
+    else if tok == "--seq"
+      val = try rest.get(i + 1).or_fail("--seq requires a value")
+      n = try val.to_int.or_fail("invalid --seq integer: #{val}")
+      seq_opt = Some(n)
+      i += 2
     else if tok == "--principal"
       val = try rest.get(i + 1).or_fail("--principal requires a value")
       principal_opt = Some(val)
@@ -140,6 +184,30 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
     else if tok == "--prefix"
       prefix? = true
       i += 1
+    else if tok == "--key-file"
+      val = try rest.get(i + 1).or_fail("--key-file requires a value")
+      key_file_opt = Some(val)
+      i += 2
+    else if tok == "--key-env"
+      val = try rest.get(i + 1).or_fail("--key-env requires a value")
+      key_env_opt = Some(val)
+      i += 2
+    else if tok == "--key-id"
+      val = try rest.get(i + 1).or_fail("--key-id requires a value")
+      key_id_opt = Some(val)
+      i += 2
+    else if tok == "--aad"
+      val = try rest.get(i + 1).or_fail("--aad requires a value")
+      aad_opt = Some(val)
+      i += 2
+    else if tok == "--base"
+      val = try rest.get(i + 1).or_fail("--base requires a value")
+      base_opt = Some(val)
+      i += 2
+    else if tok == "--hash"
+      val = try rest.get(i + 1).or_fail("--hash requires a value")
+      hash_opt = Some(val)
+      i += 2
     else if tok.starts_with?("--")
       return Error("unknown flag: #{tok}")
     else
@@ -161,7 +229,17 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       pin_opt: pin_opt,
       scope_opt: scope_opt,
       status_opt: status_opt,
-      prefix?: prefix?
+      prefix?: prefix?,
+      key_file_opt: key_file_opt,
+      key_env_opt: key_env_opt,
+      key_id_opt: key_id_opt,
+      aad_opt: aad_opt,
+      encrypt?: encrypt?,
+      decrypt?: decrypt?,
+      from_empty?: from_empty?,
+      base_opt: base_opt,
+      seq_opt: seq_opt,
+      hash_opt: hash_opt
     )
   )
 end
@@ -1491,8 +1569,404 @@ fn cmd_erasures(console: Console, files: Files, f: ParsedFlags) : Int
   end
 end
 
-## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, and `Clock`.
-fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
+fn decode_sync_key_bytes(raw: Bytes) : Result(Bytes, Text)
+  case raw.decode_utf8
+    Some(s):
+      trimmed = s.trim
+      if trimmed.byte_count == 64
+        case Bytes.from_hex(trimmed)
+          Some(kb) if kb.size == 32: return Ok(kb)
+          Some(_) | None: Unit
+        end
+      end
+      if trimmed.starts_with?("b64:")
+        b64 = trimmed.drop_prefix("b64:") or ""
+        case Bytes.from_base64url(b64)
+          Some(kb) if kb.size == 32: return Ok(kb)
+          Some(_) | None: Unit
+        end
+      end
+    None: Unit
+  end
+  return Ok(raw) if raw.size == 32
+  Error(
+    "encryption key must be 32 raw bytes, 64 hex chars, or b64:<base64url> decoding to 32 bytes"
+  )
+end
+
+fn load_sync_key(rf: ReadFiles, env_opt: Option(Env), f: ParsedFlags) : Result(Bytes, Text)
+  case f.key_file_opt
+    Some(kpath):
+      raw = try rf.read_bytes(kpath).map_error(fn(e) e.to_text end)
+      decode_sync_key_bytes(raw)
+    None:
+      env = try env_opt.or_fail("no Env capability available to read encryption key env var")
+      env_var = case f.key_env_opt
+        Some(v) if not v.trim.empty?: v.trim
+        Some(_) | None: "MODB_BACKUP_KEY_HEX"
+      end
+      raw_txt = try env.get(env_var).or_fail(
+        "encryption requested but neither --key-file nor #{env_var} is set"
+      )
+      decode_sync_key_bytes(raw_txt.bytes)
+  end
+end
+
+fn has_key_flag?(f: ParsedFlags) : Bool
+  f.key_file_opt is Some(_) or f.key_env_opt is Some(_)
+end
+
+fn cmd_sync(
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env_opt: Option(Env),
+  srng_opt: Option(SecureRandom),
+  f: ParsedFlags
+) : Int
+  p0 = (f.positional.get(0) or "").trim
+  p1 = (f.positional.get(1) or "").trim
+  if p0 == "restore" or p1 == "restore"
+    dst_path = if p0 == "restore": p1 else: p0
+    if dst_path.empty?
+      return fail_msg(
+        console,
+        "usage: modb sync <dst.modb> restore --base <snap.json> [<delta1.json> ...] [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>]"
+      )
+    end
+    base_path = case f.base_opt
+      Some(b) if not b.trim.empty?: b.trim
+      Some(_) | None: return fail_msg(console, "--base <snap.json> is required for sync restore")
+    end
+    base_raw = case files.read_only.read_text(base_path)
+      Ok(s): s
+      Error(fe): return fail_msg(console, fe.to_text)
+    end
+    use_dec? = f.decrypt? or has_key_flag?(f) or base_raw.contains?("\"ciphertext_b64\"")
+    aad = f.aad_opt or ""
+    delta_paths = f.positional.drop(2)
+    rep = if use_dec?
+      key = case load_sync_key(files.read_only, env_opt, f)
+        Ok(k): k
+        Error(msg): return fail_msg(console, msg)
+      end
+      sealed_base = case Json.decode[SealedEnvelope](base_raw)
+        Ok(e): e
+        Error(je): return fail_msg(console, "invalid sealed base snapshot JSON: #{je}")
+      end
+      var sealed_deltas = []
+      for dpath in delta_paths
+        draw = case files.read_only.read_text(dpath)
+          Ok(s): s
+          Error(fe): return fail_msg(console, fe.to_text)
+        end
+        senv = case Json.decode[SealedEnvelope](draw)
+          Ok(e): e
+          Error(je): return fail_msg(console, "invalid sealed delta '#{dpath}': #{je}")
+        end
+        sealed_deltas = sealed_deltas.append(senv)
+      end
+      case Sync.restore_sealed_chain(files, dst_path, sealed_base, sealed_deltas, key, aad)
+        Ok(r): r
+        Error(se): return fail_msg(console, Sync.to_text(se))
+      end
+    else
+      base_snap = case Json.decode[PortableSnapshot](base_raw)
+        Ok(s): s
+        Error(je): return fail_msg(console, "invalid base snapshot JSON: #{je}")
+      end
+      var deltas = []
+      for dpath in delta_paths
+        draw = case files.read_only.read_text(dpath)
+          Ok(s): s
+          Error(fe): return fail_msg(console, fe.to_text)
+        end
+        d = case Json.decode[SyncDelta](draw)
+          Ok(v): v
+          Error(je): return fail_msg(console, "invalid delta JSON '#{dpath}': #{je}")
+        end
+        deltas = deltas.append(d)
+      end
+      case Sync.restore_chain(files, dst_path, base_snap, deltas)
+        Ok(r): r
+        Error(se): return fail_msg(console, Sync.to_text(se))
+      end
+    end
+    if f.json?
+      console.print(Json.encode(rep.to_json))
+    else
+      console.print(
+        "MoDB sync restore ok dst=#{rep.dst_path} base_tx=#{rep.base_txid} final_tx=#{rep
+          .final_txid} deltas=#{rep.deltas_applied} puts=#{rep.puts_applied} dels=#{rep
+          .deletes_applied} pages=#{rep.page_count}"
+      )
+    end
+    return 0
+  end
+
+  if p0.empty? or p1.empty?
+    return fail_msg(
+      console,
+      "usage: modb sync <db.modb> <init-peer|peers|base-snapshot|export|ack|apply|remove-peer|restore> ..."
+    )
+  end
+  now = clock.now
+  if p1 == "peers"
+    return case Sync.list_peers_locked(files.read_only, p0)
+      Error(se): fail_msg(console, Sync.to_text(se))
+      Ok(peers):
+        if f.json?
+          console.print(Json.encode(peers.to_json))
+        else if peers.empty?
+          console.print("sync peers=0")
+        else
+          console.print("sync peers=#{peers.size}")
+          for p in peers
+            pend = case p.pending_seq
+              Some(ps): " pending=#{ps}"
+              None: ""
+            end
+            console.print(
+              "  #{p.peer_id} acked_seq=#{p.acked_seq} acked_tx=#{p.acked_txid} internal=#{p
+                .include_internal?}#{pend}"
+            )
+          end
+        end
+        0
+    end
+  else if p1 == "init-peer"
+    peer_id = (f.positional.get(2) or "").trim
+    if peer_id.empty?
+      return fail_msg(
+        console,
+        "usage: modb sync <db.modb> init-peer <peer_id> [--include-internal] [--from-empty] [--json]"
+      )
+    end
+    return case Sync.init_peer_locked(files, p0, peer_id, f.include_internal?, f.from_empty?, now)
+      Error(se): fail_msg(console, Sync.to_text(se))
+      Ok(peer):
+        if f.json?
+          console.print(Json.encode(peer.to_json))
+        else
+          console.print(
+            "MoDB sync init-peer ok peer=#{peer.peer_id} acked_tx=#{peer.acked_txid} internal=#{peer
+              .include_internal?} from_empty=#{peer.from_empty?}"
+          )
+        end
+        0
+    end
+  else if p1 == "base-snapshot"
+    peer_id = (f.positional.get(2) or "").trim
+    out_path = (f.positional.get(3) or "").trim
+    if peer_id.empty? or out_path.empty?
+      return fail_msg(
+        console,
+        "usage: modb sync <db.modb> base-snapshot <peer_id> <out.json> [--encrypt] [--key-file <p>|--key-env <V>]"
+      )
+    end
+    snap = case Sync.export_peer_base_snapshot_locked(files.read_only, p0, peer_id, now)
+      Ok(s): s
+      Error(se): return fail_msg(console, Sync.to_text(se))
+    end
+    payload = if f.encrypt?
+      key = case load_sync_key(files.read_only, env_opt, f)
+        Ok(k): k
+        Error(msg): return fail_msg(console, msg)
+      end
+      srng = case srng_opt
+        Some(r): r
+        None: return fail_msg(console, "no SecureRandom capability available for encryption")
+      end
+      key_id = f.key_id_opt or "default"
+      aad = f.aad_opt or ""
+      senv = case Sync.seal_snapshot(srng, key, key_id, aad, snap, now)
+        Ok(e): e
+        Error(se): return fail_msg(console, Sync.to_text(se))
+      end
+      Sync.encode_sealed_json(senv)
+    else
+      Export.encode_snapshot_json(snap)
+    end
+    return case files.write_text(out_path, payload)
+      Error(fe): fail_msg(console, fe.to_text)
+      Ok(Unit):
+        if f.json?
+          console.print(
+            Json.encode(
+              Json.Object({
+                "ok": Json.Boolean(true),
+                "peer_id": Json.String(peer_id),
+                "out": Json.String(out_path),
+                "encrypted": Json.Boolean(f.encrypt?),
+                "txid": Json.int(snap.source_txid),
+                "entries": Json.int(snap.entry_count)
+              })
+            )
+          )
+        else
+          console.print(
+            "MoDB sync base-snapshot ok peer=#{peer_id} out=#{out_path} encrypted=#{f.encrypt?} tx=#{snap
+              .source_txid} entries=#{snap.entry_count}"
+          )
+        end
+        0
+    end
+  else if p1 == "export"
+    peer_id = (f.positional.get(2) or "").trim
+    out_path = (f.positional.get(3) or "").trim
+    if peer_id.empty? or out_path.empty?
+      return fail_msg(
+        console,
+        "usage: modb sync <db.modb> export <peer_id> <out.json> [--encrypt] [--key-file <p>|--key-env <V>]"
+      )
+    end
+    delta = case Sync.export_delta_locked(files, p0, peer_id, now)
+      Ok(d): d
+      Error(se): return fail_msg(console, Sync.to_text(se))
+    end
+    payload = if f.encrypt?
+      key = case load_sync_key(files.read_only, env_opt, f)
+        Ok(k): k
+        Error(msg): return fail_msg(console, msg)
+      end
+      srng = case srng_opt
+        Some(r): r
+        None: return fail_msg(console, "no SecureRandom capability available for encryption")
+      end
+      key_id = f.key_id_opt or "default"
+      aad = f.aad_opt or ""
+      senv = case Sync.seal_delta(srng, key, key_id, aad, delta, now)
+        Ok(e): e
+        Error(se): return fail_msg(console, Sync.to_text(se))
+      end
+      Sync.encode_sealed_json(senv)
+    else
+      Sync.encode_delta_json(delta)
+    end
+    return case files.write_text(out_path, payload)
+      Error(fe): fail_msg(console, fe.to_text)
+      Ok(Unit):
+        if f.json?
+          console.print(
+            Json.encode(
+              Json.Object({
+                "ok": Json.Boolean(true),
+                "peer_id": Json.String(peer_id),
+                "seq": Json.int(delta.seq),
+                "delta_hash": Json.String(delta.delta_hash),
+                "ops": Json.int(delta.op_count),
+                "out": Json.String(out_path),
+                "encrypted": Json.Boolean(f.encrypt?)
+              })
+            )
+          )
+        else
+          console.print(
+            "MoDB sync export ok peer=#{peer_id} seq=#{delta.seq} ops=#{delta.op_count} encrypted=#{f
+              .encrypt?} hash=#{delta.delta_hash}"
+          )
+        end
+        0
+    end
+  else if p1 == "ack"
+    peer_id = (f.positional.get(2) or "").trim
+    seq = case f.seq_opt
+      Some(n): n
+      None: return fail_msg(console, "usage: modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex>")
+    end
+    dhash = case f.hash_opt
+      Some(h) if not h.trim.empty?: h.trim
+      Some(_) | None: return fail_msg(
+        console,
+        "usage: modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex>"
+      )
+    end
+    if peer_id.empty?
+      return fail_msg(console, "usage: modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex>")
+    end
+    return case Sync.ack_peer_locked(files, p0, peer_id, seq, dhash, now)
+      Error(se): fail_msg(console, Sync.to_text(se))
+      Ok(peer):
+        if f.json?
+          console.print(Json.encode(peer.to_json))
+        else
+          console.print("MoDB sync ack ok peer=#{peer.peer_id} acked_seq=#{peer.acked_seq}")
+        end
+        0
+    end
+  else if p1 == "apply"
+    dpath = (f.positional.get(2) or "").trim
+    if dpath.empty?
+      return fail_msg(
+        console,
+        "usage: modb sync <db.modb> apply <delta.json> [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>]"
+      )
+    end
+    draw = case files.read_only.read_text(dpath)
+      Ok(s): s
+      Error(fe): return fail_msg(console, fe.to_text)
+    end
+    use_dec? = f.decrypt? or has_key_flag?(f) or draw.contains?("\"ciphertext_b64\"")
+    delta = if use_dec?
+      key = case load_sync_key(files.read_only, env_opt, f)
+        Ok(k): k
+        Error(msg): return fail_msg(console, msg)
+      end
+      aad = f.aad_opt or ""
+      senv = case Json.decode[SealedEnvelope](draw)
+        Ok(e): e
+        Error(je): return fail_msg(console, "invalid sealed delta JSON: #{je}")
+      end
+      case Sync.open_delta(key, aad, senv)
+        Ok(d): d
+        Error(se): return fail_msg(console, Sync.to_text(se))
+      end
+    else
+      case Json.decode[SyncDelta](draw)
+        Ok(d): d
+        Error(je): return fail_msg(console, "invalid delta JSON: #{je}")
+      end
+    end
+    return case Sync.apply_delta_tracked_locked(files, p0, delta, now)
+      Error(se): fail_msg(console, Sync.to_text(se))
+      Ok(rep):
+        if f.json?
+          console.print(Json.encode(rep.to_json))
+        else
+          console.print(
+            "MoDB sync apply ok peer=#{rep.peer_id} seq=#{rep.seq} puts=#{rep.puts_applied} dels=#{rep
+              .deletes_applied} tx=#{rep.after_txid}"
+          )
+        end
+        0
+    end
+  else if p1 == "remove-peer"
+    peer_id = (f.positional.get(2) or "").trim
+    if peer_id.empty?
+      return fail_msg(console, "usage: modb sync <db.modb> remove-peer <peer_id>")
+    end
+    return case Sync.remove_peer_locked(files, p0, peer_id)
+      Error(se): fail_msg(console, Sync.to_text(se))
+      Ok(Unit):
+        console.print("MoDB sync remove-peer ok peer=#{peer_id}")
+        0
+    end
+  end
+  fail_msg(
+    console,
+    "unknown sync subcommand '#{p1}' (use init-peer|peers|base-snapshot|export|ack|apply|remove-peer|restore)"
+  )
+end
+
+## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, `Clock`, `Env`, and `SecureRandom`.
+fn run_cli_with_opts(
+  argv: List(Text),
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env_opt: Option(Env),
+  srng_opt: Option(SecureRandom)
+) : Int
   head = (argv.first or "").trim
   if head.empty? or head == "help" or head == "--help" or head == "-h"
     print_usage(console)
@@ -1515,6 +1989,7 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   return cmd_matviews(console, files, f) if head == "matviews"
   return cmd_taint(console, files, f) if head == "taint"
   return cmd_erasures(console, files, f) if head == "erasures"
+  return cmd_sync(console, files, clock, env_opt, srng_opt, f) if head == "sync"
   return cmd_backup(console, files, clock, f) if head == "backup"
   return cmd_export(console, files, clock, f) if head == "export"
   return cmd_restore(console, files, f) if head == "restore"
@@ -1525,8 +2000,32 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   2
 end
 
-fn main(args: Args, console: Console, files: Files, clock: Clock) : Int
-  run_cli(args.list, console, files, clock)
+## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, `Clock`, `Env`, and `SecureRandom`.
+fn run_cli_with(
+  argv: List(Text),
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env: Env,
+  srng: SecureRandom
+) : Int
+  run_cli_with_opts(argv, console, files, clock, Some(env), Some(srng))
+end
+
+## Runs the standalone `modb` CLI without `Env`/`SecureRandom` (non-encrypted subcommands).
+fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
+  run_cli_with_opts(argv, console, files, clock, None, None)
+end
+
+fn main(
+  args: Args,
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env: Env,
+  srng: SecureRandom
+) : Int
+  run_cli_with(args.list, console, files, clock, env, srng)
 end
 
 struct NoteRec
@@ -1790,4 +2289,114 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   assert run_cli(["matviews", "app.modb", "query", "notes_by_body", "--json"], c_mvq, files, clock) ==
     0
   assert c_mvq.printed.join("\n").contains?("\"returned_groups\":")
+
+  ## Milestone 16 CLI: encrypted & plain `modb sync` lifecycle + restore
+  env_key = Env.of({
+    "TEST_SYNC_KEY": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+  })
+  srng = SecureRandom.seeded(42)
+
+  c_si = Console.fake()
+  assert run_cli_with(["sync", "app.modb", "init-peer", "cli-bak", "--include-internal", "--json"], c_si, files, clock, env_key, srng) ==
+    0
+  assert c_si.printed.join("\n").contains?("\"peer_id\":\"cli-bak\"")
+
+  c_sp = Console.fake()
+  assert run_cli_with(["sync", "app.modb", "peers", "--json"], c_sp, files, clock, env_key, srng) ==
+    0
+  assert c_sp.printed.join("\n").contains?("cli-bak")
+
+  c_sb = Console.fake()
+  assert run_cli_with(
+    [
+      "sync",
+      "app.modb",
+      "base-snapshot",
+      "cli-bak",
+      "cli-base.enc.json",
+      "--encrypt",
+      "--key-env",
+      "TEST_SYNC_KEY",
+      "--aad",
+      "cli-aad",
+      "--json"
+    ],
+    c_sb,
+    files,
+    clock,
+    env_key,
+    srng
+  ) == 0
+  assert c_sb.printed.join("\n").contains?("\"encrypted\":true")
+
+  assert Ledger.open(files, "app.modb", sc, t0) is Ok(db_s1)
+  assert Ledger.write(db_s1, meta, "put n5", Json.Null, fn(tx)
+    Table.put(tx, tbl, "n5", NoteRec(body: "epsilon"))
+  end) is
+    Ok(_)
+
+  c_se = Console.fake()
+  assert run_cli_with(
+    [
+      "sync",
+      "app.modb",
+      "export",
+      "cli-bak",
+      "cli-d1.enc.json",
+      "--encrypt",
+      "--key-env",
+      "TEST_SYNC_KEY",
+      "--aad",
+      "cli-aad",
+      "--json"
+    ],
+    c_se,
+    files,
+    clock,
+    env_key,
+    srng
+  ) == 0
+  se_txt = c_se.printed.join("\n")
+  assert Json.decode[Json](se_txt) is Ok(se_json)
+  dhash = se_json.text_at("delta_hash") or ""
+  assert not dhash.empty?
+
+  c_sa = Console.fake()
+  assert run_cli_with(
+    ["sync", "app.modb", "ack", "cli-bak", "--seq", "1", "--hash", dhash, "--json"],
+    c_sa,
+    files,
+    clock,
+    env_key,
+    srng
+  ) == 0
+  assert c_sa.printed.join("\n").contains?("\"acked_seq\":1")
+
+  c_sr = Console.fake()
+  assert run_cli_with(
+    [
+      "sync",
+      "app-sync-restored.modb",
+      "restore",
+      "--base",
+      "cli-base.enc.json",
+      "cli-d1.enc.json",
+      "--decrypt",
+      "--key-env",
+      "TEST_SYNC_KEY",
+      "--aad",
+      "cli-aad",
+      "--json"
+    ],
+    c_sr,
+    files,
+    clock,
+    env_key,
+    srng
+  ) == 0
+  assert c_sr.printed.join("\n").contains?("\"deltas_applied\":1")
+  assert run_cli(["verify", "app-sync-restored.modb"], Console.fake(), files, clock) == 0
+
+  assert run_cli_with(["sync", "app.modb", "remove-peer", "cli-bak"], Console.fake(), files, clock, env_key, srng) ==
+    0
 end

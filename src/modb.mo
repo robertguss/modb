@@ -50,6 +50,7 @@ tx_put,
 tx_delete,
 tx_delete_bucket,
 commit,
+commit_at_least,
 rollback,
 write_tx,
 snapshot,
@@ -1121,18 +1122,26 @@ fn partition_deferred_for_commit(
   (graduated, kept)
 end
 
-## Atomically commits a `WriteTx`:
+## Atomically commits a `WriteTx`, advancing `txid` to at least `min_txid` while preserving
+## alternating meta-page parity (`new_txid % 2 != tx.base.meta.txid % 2`).
 ## 1. Stages freelist pages (ready + pin-protected deferred chunks) without overwriting old freelist.
 ## 2. Writes all staged CoW pages and calls `sync`.
 ## 3. Writes the alternating meta-page (`new_txid % 2`) and calls `sync`.
-fn commit(tx: WriteTx) : Result(Store, ModbError)
+fn commit_at_least(tx: WriteTx, min_txid: Int) : Result(Store, ModbError)
   if tx.speculative
     return Error(
       InvalidArgument(reason: "cannot commit a speculative WriteTx rooted at a pinned snapshot")
     )
   end
-  return Ok(tx.base) if not tx.dirty
-  new_txid = tx.base.meta.txid + 1
+  return Ok(tx.base) if not tx.dirty and min_txid <= tx.base.meta.txid
+  var new_txid = if tx.base.meta.txid + 1 >= min_txid
+    tx.base.meta.txid + 1
+  else
+    min_txid
+  end
+  if (new_txid % 2) == (tx.base.meta.txid % 2)
+    new_txid += 1
+  end
 
   (a_dirty, final_catalog_root) = try finalize_tx_pages(tx)
   next_pins = try effective_pins(tx)
@@ -1185,6 +1194,11 @@ fn commit(tx: WriteTx) : Result(Store, ModbError)
       next_snapshot_id: tx.base.next_snapshot_id
     )
   )
+end
+
+## Atomically commits a `WriteTx`.
+fn commit(tx: WriteTx) : Result(Store, ModbError)
+  commit_at_least(tx, 0)
 end
 
 ## Convenience wrapper executing a pure transaction callback atomically.

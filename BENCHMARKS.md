@@ -352,3 +352,19 @@ Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on u
 | `mo test src/modb/cli.mo` | Standalone schema-less `modb` CLI including `matviews list \| refresh \| rebuild \| query` | **`2.87 s`** (`69 passed, 0 failed`) |
 | `mo test examples/agent-workbench.mo` | All 5 Workbench HTTP + MCP + M15 `POST /views/explain` (`index_eq`) + `/matviews*` suites | **`3.19 s`** (`5 passed, 0 failed`) |
 | `tests/test_workbench_mcp_and_ui.py` | Live 8-worker `mo serve`: **`62` MCP tools** (`serverInfo.version == "0.7.0"`), `modb_explain_view` (`project_id` `index_eq`), `modb_matviews_list`, `modb_matview_refresh`, `modb_matview_query`, and HTTP `/matviews*` | **`7.95 s` PASS** (`tools=62`, `txid=58`, `export_entries=259`, `hash=494c0fec...`) |
+
+---
+
+## 18. Milestone 16: Signed Incremental CoW Sync Replication & AES-256-GCM Off-Host Backup (`v0.8.0`, 2026-11-26)
+
+| Check / Suite | Scope | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb.mo` | Core CoW B+Tree + alternating meta-page parity `commit_at_least` | **`0.37 s`** (`10 passed, 0 failed`) |
+| `mo test src/modb/sync.mo` | `Modb.Sync` two-phase pins (`sync:` / `sync_pending:`), `encode_delta_json`, `seal_snapshot` / `seal_delta` AES-256-GCM AAD checks, `restore_chain`, + storage/ledger deps | **`0.79 s`** (`17 passed, 0 failed`) |
+| `mo test tests/test-sync-replication.mo` | 5-delta parity + secondary indexes, batched Ledger `--include-internal` `Ledger.verify_all`, retry/concurrent-write safety, `from_empty` bootstrap, `restore_sealed_chain`, + 7 negative controls | **`0.53 s`** (`5 passed, 0 failed`) |
+| `mo test src/modb/cli.mo` | Standalone `modb` CLI including `modb sync init-peer \| peers \| base-snapshot \| export \| ack \| apply \| remove-peer \| restore` (plain + `--encrypt`/`--decrypt`) | **`2.97 s`** (`70 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | Full HTTP + MCP + M10–M16 `ApiTest.send` suites incl. `/sync/peers*` lifecycle | **`3.37 s`** (`5 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` | Live 8-worker `mo serve`: **`67` MCP tools** (`serverInfo.version == "0.8.0"`), `modb_sync_*` lifecycle & `GET /sync/peers` | **`6.46 s` PASS** (`tools=67`, `txid=62`, `export_entries=259`, `hash=d36492d30dbd7c99...`) |
+| `tests/test_workbench_sse_live.py` | Live 8-worker chunked SSE push & `Last-Event-ID` reconnect replay | **`4.05 s` PASS** (`pushed_id=8`, `replayed_id=11`) |
+| `tests/test_shop_api_live.py` | Live 8-worker `ShopApi` concurrency, Worlds, Replay/Export & `3× SIGKILL` | **`17.83 s` PASS** (`txid=334`, `audit_entries=80`) |
+| Full `tests/test-*.mo` + `examples/{shop,shop-api}.mo` | All 15 `tests/test-*.mo` suites + examples on `v0.8.0` | **All PASS (`0 failed`)** (e.g., `test-modb` `7.05 s`, `test-ledger` `12.24 s`, `test-pins-diff` `4.53 s`, `test-worlds` `124.39 s`, `test-replay-export` `13.79 s`, `test-compact-backup` `3.08 s`, `test-matview-planner` `1.46 s`) |
