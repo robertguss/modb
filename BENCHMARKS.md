@@ -255,3 +255,25 @@ Measured on disk via pure-Rust `mo` (`4 KiB` synced B+Tree pages) after `398` au
 | `bench/real_world_agent_sim.py` Phase 4A (`scan_tasks_range`) | 4 concurrent Worlds sharing base snapshot, disjoint ranges `[501..521)` | **`range_key_skips = 3`** (`p50 = 173.5 ms`, `0` retries) |
 | `bench/real_world_agent_sim.py` Phase 4B (Starvation fairness rescue) | `PriorityTicket` (`hold = 20 s`) vs 3 concurrent competitors (`land-fair`) | **`deferrals = 3`**, **`rescued = 1`** (`rescue = 62.6 ms`) |
 | `bench/real_world_agent_sim.py` Phase 4C (Concurrent Nested Child Worlds) | 2 concurrent sibling Child Worlds (`w-m10-kid-a`, `w-m10-kid-b`) -> parent land | **`child_worlds_merged = 2`** (`child p50 = 91.9 ms`, `parent_land = 93.3 ms`; `/admin/verify = 244.1 ms`, `txid = 529`) |
+
+---
+
+## 13. Milestone 11B: Pure-Mo Vector (`Modb.Vec`), Hybrid RRF Search & `v0.3.0` (2026-11-26)
+
+Measured on disk via pure-Rust `mo` (`4 KiB` synced CoW pages) using the 14-byte inline binary header (`Quantized16` / `Quantized8`) and zero-`Table.get` vector scanning in [`bench/bench-search.mo`](bench/bench-search.mo) (`1,000` documents across `10` scopes) and end-to-end suites:
+
+| Suite / Benchmark | Scope / Workload | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/fts.mo` | 32 unit/example/promise tests | **`429.4 ms`** (`32 passed, 0 failed`) |
+| `mo test src/modb/vec.mo` | 52 unit/example/promise tests (`l2_norm`, `normalize`, `cosine_similarity`, `euclidean_distance`, `text_sketch_embedding`, `encode_scale`/`decode_scale`, `Q16`/`Q8`, `Cosine`/`DotProduct`/`Euclidean`, cross-scope moves, `hybrid_search`) | **`574.4 ms`** (`52 passed, 0 failed`) |
+| `mo test src/modb/cli.mo` | 61 unit/embedded tests including `modb fts` & `modb vec` | **`1,945.3 ms`** (`61 passed, 0 failed`) |
+| `mo test tests/test-fts.mo` | 6 FTS differential & `commit_and_crash` fault-injection suites | **`2,675.6 ms`** (`6 passed, 0 failed`) |
+| `mo test tests/test-vec-hybrid.mo` | 6 Vector/Hybrid suites (Q16/Q8 precision, cross-scope cleanup, `allow_doc` ACL isolation, 120-step float64 differential, Hybrid RRF, `commit_and_crash` + `Replay`/`Export`/`compact_db`) | **`1,440.8 ms`** (`6 passed, 0 failed`) |
+| `mo test tests/test-m10-worlds-cli.mo` | 5 M10 World & CLI integration suites | **`1,614.5 ms`** (`5 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | 3 full HTTP + MCP + M10 + Search integration suites (`ApiTest.send`) | **`3 passed, 0 failed`** |
+| `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, **`43` MCP tools** (incl. `modb_search`, `modb_search_stats`), Live Search Inspector UI tab, `255` export entries | **PASS** (`reads_skipped = 1`, `key_skips = 1`, `child_landed = 1`, `txid = 42`) |
+| `bench/real_world_agent_sim.py` (`AgentWorkbench` w/ live FTS+16d Q8 Vec) | `mo serve --workers 8`, 6W+2R swarm, 82-call rogue-undo & 0%-overhead Replay (`sim = 1,589.6 ms` / `1,666.2 ms`), `27` buckets / `1,683` export entries (`74.8 ms`), M10 Child Worlds, & `SIGKILL` survival | **PASS** (`Phase 1B stale = 0, key_skips = 15`; `txid = 517`, `verify = 294.5 ms`) |
+| `bench/bench-search.mo 1000` (`Fts` BM25+) | Atomic 1,000-doc batch index (`529` pages / `2,116 KiB`); 50× top-10 queries | **`8,529 ms`** index · `50×`: `6,462 ms` (1-term) / `11,551 ms` (2-term) / `6,213 ms` (prefix) |
+| `bench/bench-search.mo 1000` (`Vec` 64-d `Quantized16`) | 1,000 × 64-d `Q16` ingest (`128,000` payload bytes); 20× top-10 Cosine queries | **`2,188 ms`** put · `20× full`: **`4,374 ms`** (`218.7 ms`/q) · `20× scoped(1/10)`: **`451 ms`** (**`22.6 ms`/q**, **9.7× faster**) |
+| `bench/bench-search.mo 1000` (`Vec` 384-d `Quantized16` vs `Quantized8`) | 1,000 × 384-d `Q16` (`768 KiB`) vs `Q8` (`384 KiB`) ingest & 20× Cosine queries | `Q16`: **`6,071 ms`** put, `20× scoped = 1,607 ms` (**`80.4 ms`/q**) · `Q8`: **`4,719 ms`** put, `20× scoped = 1,834 ms` |
+| `bench/bench-search.mo 1000` (`Hybrid` BM25+ + 64-d RRF) | 20× top-10 combined BM25+ & `Q16` Cosine RRF queries over 1,000 docs | `20× full`: **`9,171 ms`** · `20× scoped(1/10)`: **`3,468 ms`** (`173.4 ms`/q) |

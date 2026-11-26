@@ -14,7 +14,7 @@ right-edge splitting, raw binary-search reads/scans, lock-free optimistic CoW re
 incremental invariants), Milestone 6 (real-world 8-worker multi-agent `AgentWorkbench` +
 empirical coarse-vs-fine needless send-back, replay recovery, and `SIGKILL` simulation), and
 Milestone 7 (live zero-CDN `WorkbenchUi` browser Inspector, native Streamable HTTP `POST /mcp`
-server with 41 tools, and zero-dependency Python stdio MCP bridge `tools/modb_mcp_server.py`),
+server with 43 tools, and zero-dependency Python stdio MCP bridge `tools/modb_mcp_server.py`),
 Milestone 8 (Grant-scoped hierarchical `Views` & k-anonymous `Releases`, zero-approval
 sandboxed ad-hoc `ReadPrograms` with static field gating & read provenance log, stateless agent
 self-onboarding `OnboardingManifest`, and O(1) CoW-diff incremental World read re-validation),
@@ -24,8 +24,9 @@ and Milestone 9 (first-class online `Export.backup_db`, atomic `Export.compact_d
 Milestone 10 (`v0.2.0`: key-level & range-level `O(diff)` World read skipping, bounded-TTL
 starvation fairness `PriorityTickets`, Nested Child Worlds with hierarchical attribution &
 excision, schema-less ledger verification, and the standalone `modb` CLI in `src/modb/cli.mo`),
-and Milestone 11A (`Modb.Fts` transactional pure-Mo BM25+ full-text search index in
-`src/modb/fts.mo` and `tests/test-fts.mo`)
+and Milestone 11 (`v0.3.0`: `Modb.Fts` transactional pure-Mo BM25+ full-text search index in
+`src/modb/fts.mo` & `tests/test-fts.mo`, `Modb.Vec` quantized CoW vector & Hybrid RRF search in
+`src/modb/vec.mo` & `tests/test-vec-hybrid.mo`, Workbench `/search` + `modb fts`/`modb vec` CLI)
 live in `src/`, `tools/`, verified in `tests/` and `bench/` and demonstrated in `examples/shop.mo`,
 `examples/shop-api.mo`, `examples/agent-workbench.mo`, and `examples/workbench-ui.mo`.
 `specs/` holds active build specs, `design.md` holds the broader long-term design, and `map.md` is
@@ -35,12 +36,12 @@ the earlier wayfinder map that Robert stopped on 2026-11-14.
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `mo.toml`, `src/` | Pure-Mo MoDB `v0.2.0` package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables, secondary indexes & transactional BM25 full-text search (`table.mo`, `fts.mo`), Layer 3 accountable ledger, invariants, migrations & portable export/compaction (`ledger.mo`, `export.mo`), Layer 4 multi-agent coordination, views/read programs, child worlds, fairness & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`), and standalone schema-less `modb` CLI (`cli.mo`) | Active build sessions |
-| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, BM25 FTS tests (`test-fts.mo`), Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests, Milestone 9 backup/compaction tests (`test-compact-backup.mo`), Milestone 10 key/range O(diff), fairness, nested child-world & CLI tests (`test-m10-worlds-cli.mo`) (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
-| `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo, `shop-api.mo` e-commerce HTTP `api` server, `agent-workbench.mo` multi-agent project/task/budget/views/replay/MCP HTTP `api` server, and `workbench-ui.mo` self-contained live browser Inspector UI) | Active build sessions |
+| `mo.toml`, `src/` | Pure-Mo MoDB `v0.3.0` package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables, secondary indexes, transactional BM25+ FTS & quantized Vector/Hybrid RRF search (`table.mo`, `fts.mo`, `vec.mo`), Layer 3 accountable ledger, invariants, migrations & portable export/compaction (`ledger.mo`, `export.mo`), Layer 4 multi-agent coordination, views/read programs, child worlds, fairness & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`), and standalone schema-less `modb` CLI (`cli.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, BM25 FTS & Vector/Hybrid tests (`test-fts.mo`, `test-vec-hybrid.mo`), Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests, Milestone 9 backup/compaction tests (`test-compact-backup.mo`), Milestone 10 key/range O(diff), fairness, nested child-world & CLI tests (`test-m10-worlds-cli.mo`) (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
+| `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo, `shop-api.mo` e-commerce HTTP `api` server, `agent-workbench.mo` multi-agent project/task/budget/views/search/replay/MCP HTTP `api` server, and `workbench-ui.mo` self-contained live browser Inspector UI) | Active build sessions |
 | `tools/` | Zero-dependency Python 3 stdio MCP server bridge (`modb_mcp_server.py`) connecting MCP clients (Claude Desktop, Cursor, T3 Code) to live `AgentWorkbench` (`mo serve --workers 8`) | Active build sessions |
-| `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`), real OS `SIGKILL` crash loop (`kill_loop.py`), 8-worker HTTP concurrency benchmark (`bench_shop_api.py`), and 8-worker real-world multi-agent simulation (`real_world_agent_sim.py`) | Active build sessions |
-| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-10-key-diff-child-worlds-and-cli.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`), 1,000-doc FTS/Vector/Hybrid search benchmark (`bench-search.mo`), real OS `SIGKILL` crash loop (`kill_loop.py`), 8-worker HTTP concurrency benchmark (`bench_shop_api.py`), and 8-worker real-world multi-agent simulation (`real_world_agent_sim.py`) | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-11-fts-vec-and-hybrid-search.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
 | `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
@@ -65,6 +66,7 @@ Using the pure-Rust `mo` release binary (`~/code/mo/target/release/mo` or `mo` o
 mo test src/modb.mo
 mo test src/modb/table.mo
 mo test src/modb/fts.mo
+mo test src/modb/vec.mo
 mo test src/modb/ledger.mo
 mo test src/modb/export.mo
 mo test src/modb/grants.mo
@@ -76,6 +78,7 @@ mo test src/modb/cli.mo
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
 mo test tests/test-fts.mo
+mo test tests/test-vec-hybrid.mo
 mo test tests/test-ledger.mo
 mo test tests/test-pins-diff.mo
 mo test tests/test-worlds.mo
@@ -91,6 +94,7 @@ python3 tests/test_workbench_mcp_and_ui.py "$(command -v mo || echo ~/code/mo/ta
 python3 bench/real_world_agent_sim.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 python3 bench/bench_shop_api.py "$(command -v mo || echo ~/code/mo/target/release/mo)"
 python3 bench/kill_loop.py "$(command -v mo || echo ~/code/mo/target/release/mo)" 100
+TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-search.mo 1000 && rm -rf "$TMP"
 TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-modb.mo 100000 && rm -rf "$TMP"
 ```
 
