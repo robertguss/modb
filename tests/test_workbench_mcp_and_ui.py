@@ -129,9 +129,11 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 41, len(tools)
+            assert len(tools) >= 43, len(tools)
             for req in (
                 "modb_seed_demo",
+                "modb_search",
+                "modb_search_stats",
                 "modb_list_grants",
                 "modb_list_worlds",
                 "modb_world_diff",
@@ -156,6 +158,21 @@ def main() -> int:
             # 3. Seed demo & drive Grants / Claims / Worlds / CoW Diff / Views / Releases / Replay via MCP!
             is_err, seeded = call_tool(proc, 10, "modb_seed_demo", {"reason": "e2e MCP demo"})
             assert not is_err and seeded["ok"] is True, (is_err, seeded)
+
+            # Milestone 11B: Transactional BM25 + Vector + Hybrid RRF search over demo tasks
+            is_err, s_stats = call_tool(proc, 97, "modb_search_stats", {})
+            assert not is_err and s_stats["fts"]["doc_count"] >= 6 and s_stats["vec"]["doc_count"] == s_stats["fts"]["doc_count"], (
+                is_err,
+                s_stats,
+            )
+            is_err, s_fts = call_tool(
+                proc, 98, "modb_search", {"query": "failov", "mode": "fts", "project_id": "infra"}
+            )
+            assert not is_err and s_fts["hits"] and s_fts["hits"][0]["doc_id"] == "task:303", (is_err, s_fts)
+            is_err, s_hyb = call_tool(
+                proc, 99, "modb_search", {"query": "ledger reconciliation", "mode": "hybrid", "limit": 5}
+            )
+            assert not is_err and s_hyb["hits"] and s_hyb["hits"][0]["doc_id"] == "task:401", (is_err, s_hyb)
 
             # Milestone 8: Stateless agent onboarding (`modb_describe`), View field hiding, & k-anonymous Release
             is_err, desc_rogue = call_tool(proc, 101, "modb_describe", {"grant_id": "g-rogue-sub"})
@@ -443,6 +460,7 @@ def main() -> int:
             st_ui, html = http_get(f"{base_url}/")
             assert st_ui == 200 and "MoDB AgentWorkbench" in html and "Replay Studio" in html
             assert "scan_tasks_range" in html and "Fork Child World" in html
+            assert "Search (FTS / Hybrid)" in html and "/search/stats" in html
             st_ui2, html2 = http_get(f"{base_url}/ui")
             assert st_ui2 == 200 and html2 == html
 
@@ -454,6 +472,7 @@ def main() -> int:
                 "/worlds/metrics",
                 "/worlds/telemetry",
                 "/reads",
+                "/search/stats",
                 "/audit",
                 "/admin/replay/calls",
                 "/admin/replay/proposals",
@@ -463,7 +482,7 @@ def main() -> int:
                 json.loads(body)
 
             print(
-                f"PASS: Milestone 7+8+10 stdio MCP + Live Inspector UI verified "
+                f"PASS: Milestone 7+8+10+11 stdio MCP + Live Inspector UI verified "
                 f"(tools={len(tools)}, ui={base_url}/, reads_skipped={landed['reads_skipped']}, "
                 f"key_skips={tcounts['key_level_reads_skipped']}, child_landed={tcounts['child_worlds_landed']}, "
                 f"infra_spent=20000c, payments_spent=8000c, "

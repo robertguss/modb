@@ -281,6 +281,7 @@ fn page_html() : Text
 
       <nav class="tabs" id="tabs">
         <button class="tab active" data-tab="projects">Projects &amp; Tasks</button>
+        <button class="tab" data-tab="search">Search (FTS / Hybrid)</button>
         <button class="tab" data-tab="grants">Grants &amp; Claims</button>
         <button class="tab" data-tab="worlds">Speculative Worlds &amp; Diffs</button>
         <button class="tab" data-tab="views">Views, Reads &amp; Onboarding</button>
@@ -310,6 +311,24 @@ fn page_html() : Text
             </div>
             <div id="tasks-list" class="muted">Select a project on the left to inspect tasks &amp; artifacts.</div>
           </div>
+        </div>
+      </section>
+
+      <section id="tab-search" class="tab-panel hidden">
+        <div class="card">
+          <h2>BM25+ Full-Text, Vector &amp; Hybrid RRF Search <span id="search-stats-pill" class="pill info">0 docs</span></h2>
+          <div class="form-row">
+            <input id="s-query" placeholder="Search tasks &amp; artifacts (e.g. failover drill, tls, patched)" style="min-width:260px;flex:1" />
+            <select id="s-mode">
+              <option value="hybrid">hybrid (BM25 + Vec RRF)</option>
+              <option value="fts">fts (BM25+ only)</option>
+              <option value="vec">vec (Quantized16 Cosine)</option>
+            </select>
+            <input id="s-scope" placeholder="project_id (optional)" />
+            <input id="s-limit" type="number" value="10" style="max-width:75px" />
+            <button class="primary" onclick="runSearch()">Search</button>
+          </div>
+          <div id="search-results" class="muted">Enter a query above (or Seed Demo first) to inspect live ranked BM25 + Vector RRF hits.</div>
         </div>
       </section>
 
@@ -896,6 +915,46 @@ fn page_html() : Text
         }
       }
 
+      function renderSearchStats(st) {
+        if (!st || !st.fts || !st.vec) return;
+        $('search-stats-pill').textContent = st.fts.doc_count + ' FTS · ' + st.vec.doc_count + ' Vec (' + st.vec.dimensions + 'd, ' + st.vec.total_bytes + 'B)';
+      }
+
+      async function runSearch() {
+        try {
+          const query = $('s-query').value.trim();
+          const mode = $('s-mode').value;
+          const pid = $('s-scope').value.trim();
+          const limit = Number($('s-limit').value) || 10;
+          const res = await api('POST', '/search', {
+            query,
+            mode,
+            project_id: pid || null,
+            limit,
+            prefix_last_term: true,
+            vector: null,
+          });
+          const hits = res.hits || [];
+          if (!hits.length) {
+            $('search-results').innerHTML = '<div class="muted">No matching tasks or artifacts for "' + esc(query) + '" (' + esc(mode) + ').</div>';
+            return;
+          }
+          $('search-results').innerHTML = '<table><thead><tr><th>Doc ID</th><th>Scope</th><th>Score</th><th>FTS Rank / Score</th><th>Vec Rank / Score</th><th>Matched Terms / Fields</th></tr></thead><tbody>'
+            + hits.map((h) => {
+              const fr = h.fts_rank != null ? ('#' + h.fts_rank + ' (' + Number(h.fts_score || 0).toFixed(3) + ')') : '-';
+              const vr = h.vec_rank != null ? ('#' + h.vec_rank + ' (' + Number(h.vec_score || 0).toFixed(3) + ')') : '-';
+              const terms = (h.matched_terms || []).join(', ');
+              const fields = (h.matched_fields || []).join(', ');
+              return '<tr><td class="mono"><strong>' + esc(h.doc_id) + '</strong></td>'
+                + '<td class="mono">' + esc(h.scope) + '</td>'
+                + '<td class="mono">' + Number(h.score || 0).toFixed(4) + '</td>'
+                + '<td class="mono">' + esc(fr) + '</td>'
+                + '<td class="mono">' + esc(vr) + '</td>'
+                + '<td class="mono muted">' + esc(terms) + (fields ? ' [' + esc(fields) + ']' : '') + '</td></tr>';
+            }).join('') + '</tbody></table>';
+        } catch (e) { toast('Search failed: ' + e.message, 'err'); }
+      }
+
       function renderReads(entries) {
         $('reads-count').textContent = String(entries.length);
         if (!entries.length) {
@@ -1256,7 +1315,7 @@ fn page_html() : Text
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
 
-          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads] = await Promise.all([
+          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads, searchStats] = await Promise.all([
             api('GET', '/projects'),
             api('GET', '/grants'),
             api('GET', '/claims'),
@@ -1267,6 +1326,7 @@ fn page_html() : Text
             api('GET', '/admin/replay/proposals'),
             api('GET', auditPath),
             api('GET', '/reads?limit=50'),
+            api('GET', '/search/stats'),
           ]);
           renderProjects(projects);
           await refreshTasks();
@@ -1277,6 +1337,7 @@ fn page_html() : Text
           renderProposals(proposals);
           renderAudit(audit);
           renderReads(reads);
+          renderSearchStats(searchStats);
         } catch (e) {
           if (explicit) toast('Refresh error: ' + e.message, 'err');
         }

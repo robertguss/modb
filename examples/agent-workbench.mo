@@ -2,6 +2,7 @@
 ## Exercises every MoDB layer end-to-end under `mo serve --workers 8`:
 ## - Layer 1: CoW B+Tree, persistent root pins, O(diff), lock-free optimistic reads, crash safety
 ## - Layer 2: Typed tables (`projects`, `tasks`, `artifacts`) with atomic secondary indexes
+##            + transactional BM25+ `Modb.Fts` & quantized `Modb.Vec` hybrid search indexes
 ## - Layer 3: Hash-chained audit ledger, O(touched) incremental commit-time invariants, migrations
 ## - Layer 4: Attenuated Grants, Claims/leases, speculative Worlds + needless send-back telemetry,
 ##            upgrade-aware Replay (selective undo + NowAccepted + bug-fix override), & Export
@@ -16,10 +17,12 @@ use Json
 use Modb
 use Modb.Claims
 use Modb.Export
+use Modb.Fts
 use Modb.Grants
 use Modb.Ledger
 use Modb.Replay
 use Modb.Table
+use Modb.Vec
 use Modb.Views
 use Modb.World
 use WorkbenchUi
@@ -225,6 +228,27 @@ struct DemoResponse
   txid: Int
 end
 
+struct SearchRequest
+  query: Text
+  mode: Option(Text)
+  project_id: Option(Text)
+  limit: Option(Int)
+  prefix_last_term: Option(Bool)
+  vector: Option(List(Float))
+end
+
+struct SearchStatsResponse
+  fts: Fts.FtsStats
+  vec: Vec.VecStats
+end
+
+struct SearchResponse
+  mode: Text
+  query: Text
+  project_id: Option(Text)
+  hits: List(Vec.HybridHit)
+end
+
 enum WorkbenchError
   Unauthenticated
   Forbidden(required: Text)
@@ -263,6 +287,8 @@ api
   post "/views/query" post_view_query
   post "/releases/:name" post_release
   get "/reads" get_reads
+  post "/search" post_search
+  get "/search/stats" get_search_stats
   post "/mcp" post_mcp
 
   scope "/projects"
@@ -397,6 +423,85 @@ end
 
 fn artifacts_table() : Table.Table(Text, Artifact)
   Table.text_key[Artifact]("artifacts").with_index(artifacts_by_task_index())
+end
+
+fn workbench_fts_index() : Fts.FtsIndex
+  Fts.index("workbench")
+end
+
+fn workbench_vec_index() : Vec.VecIndex
+  Vec.index("workbench", 32)
+end
+
+fn wrap_search_table_err(e: Fts.FtsError) : Table.TableError
+  case e
+    Fts.Storage(me): Table.Storage(me)
+    Fts.TableFailure(te): te
+    Fts.InvalidConfig(reason: r) | Fts.InvalidDocument(reason: r): Table.DecodeKey(reason: r)
+  end
+end
+
+fn wrap_vec_table_err(e: Vec.VecError) : Table.TableError
+  case e
+    Vec.Storage(me): Table.Storage(me)
+    Vec.TableFailure(te): te
+    Vec.FtsFailure(fe): wrap_search_table_err(fe)
+    Vec.InvalidConfig(reason: r) | Vec.InvalidVector(reason: r): Table.DecodeKey(reason: r)
+    Vec.DimensionMismatch(expected: exp, actual: act): Table.DecodeKey(
+      reason: "vector dimension mismatch: #{exp} vs #{act}"
+    )
+  end
+end
+
+fn tx_index_workbench_task(tx: Modb.WriteTx, task_id: Int, task: Task) : Result(
+  Modb.WriteTx,
+  Table.TableError
+)
+  doc_id = "task:#{task_id}"
+  asg = task.assignee or ""
+  st_label = task_status_label(task.status)
+  fdoc = Fts.DocumentInput(
+    doc_id: doc_id,
+    scope: task.project_id,
+    fields: [
+      Fts.FieldInput(name: "title", text: task.title, weight: 3),
+      Fts.FieldInput(name: "project_id", text: task.project_id, weight: 1),
+      Fts.FieldInput(name: "status", text: st_label, weight: 1),
+      Fts.FieldInput(name: "assignee", text: asg, weight: 1)
+    ]
+  )
+  t1 = try Fts.tx_index_document(tx, workbench_fts_index(), fdoc).map_error(wrap_search_table_err)
+  sketch = Vec.text_sketch_embedding("#{task.title} #{task.project_id} #{st_label} #{asg}", 32)
+  Vec.tx_put_vector(
+    t1,
+    workbench_vec_index(),
+    Vec.VectorInput(doc_id: doc_id, scope: task.project_id, values: sketch)
+  ).map_error(wrap_vec_table_err)
+end
+
+fn tx_index_workbench_artifact(
+  tx: Modb.WriteTx,
+  art_id: Text,
+  project_id: Text,
+  art: Artifact
+) : Result(Modb.WriteTx, Table.TableError)
+  doc_id = "artifact:#{art_id}"
+  fdoc = Fts.DocumentInput(
+    doc_id: doc_id,
+    scope: project_id,
+    fields: [
+      Fts.FieldInput(name: "summary", text: art.summary, weight: 3),
+      Fts.FieldInput(name: "author", text: art.author, weight: 1),
+      Fts.FieldInput(name: "id", text: art_id, weight: 1)
+    ]
+  )
+  t1 = try Fts.tx_index_document(tx, workbench_fts_index(), fdoc).map_error(wrap_search_table_err)
+  sketch = Vec.text_sketch_embedding("#{art.summary} #{art.author} #{art_id}", 32)
+  Vec.tx_put_vector(
+    t1,
+    workbench_vec_index(),
+    Vec.VectorInput(doc_id: doc_id, scope: project_id, values: sketch)
+  ).map_error(wrap_vec_table_err)
 end
 
 fn project_to_row(id: Text, p: Project) : ProjectRow
@@ -577,6 +682,24 @@ fn map_table_error(err: Table.TableError) : WorkbenchError
   map_ledger_error(Ledger.TableFailure(err))
 end
 
+fn map_fts_error(err: Fts.FtsError) : WorkbenchError
+  case err
+    Fts.Storage(me): StorageFailed(message: me.to_text)
+    Fts.TableFailure(te): map_table_error(te)
+    Fts.InvalidConfig(reason: r) | Fts.InvalidDocument(reason: r): InvalidInput(reason: r)
+  end
+end
+
+fn map_vec_error(err: Vec.VecError) : WorkbenchError
+  case err
+    Vec.Storage(me): StorageFailed(message: me.to_text)
+    Vec.TableFailure(te): map_table_error(te)
+    Vec.FtsFailure(fe): map_fts_error(fe)
+    Vec.InvalidConfig(reason: r) | Vec.InvalidVector(reason: r): InvalidInput(reason: r)
+    Vec.DimensionMismatch(expected: _, actual: _): InvalidInput(reason: Vec.to_text(err))
+  end
+end
+
 fn map_grant_error(err: Grants.GrantError) : WorkbenchError
   case err
     Grants.LedgerFailure(le): map_ledger_error(le)
@@ -720,7 +843,8 @@ fn action_create_task() : fn(Modb.WriteTx, Json) : Result((Modb.WriteTx, Json), 
       status: Open
     )
     t1 = try Table.put(tx, tasks, body.id, task).map_error(fn(e) e.to_text end)
-    Ok((t1, task_to_row(body.id, task).to_json))
+    t2 = try tx_index_workbench_task(t1, body.id, task).map_error(fn(e) e.to_text end)
+    Ok((t2, task_to_row(body.id, task).to_json))
   end
 end
 
@@ -762,16 +886,15 @@ fn action_complete_task(overhead_pct: Int) : fn(Modb.WriteTx, Json) : Result(
     next_task.status = Done
     t1 = try Table.put(tx, projs, task.project_id, next_proj).map_error(fn(e) e.to_text end)
     t2 = try Table.put(t1, tasks, body.task_id, next_task).map_error(fn(e) e.to_text end)
-    t3 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
-      (Some(aid), Some(sum), Some(sha)): try Table.put(
-        t2,
-        arts,
-        aid,
-        Artifact(task_id: body.task_id, author: body.assignee, summary: sum, sha256: sha)
-      ).map_error(fn(e) e.to_text end)
-      _: t2
+    t3 = try tx_index_workbench_task(t2, body.task_id, next_task).map_error(fn(e) e.to_text end)
+    t4 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
+      (Some(aid), Some(sum), Some(sha)):
+        art = Artifact(task_id: body.task_id, author: body.assignee, summary: sum, sha256: sha)
+        ta = try Table.put(t3, arts, aid, art).map_error(fn(e) e.to_text end)
+        try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(fn(e) e.to_text end)
+      _: t3
     end
-    Ok((t3, task_to_row(body.task_id, next_task).to_json))
+    Ok((t4, task_to_row(body.task_id, next_task).to_json))
   end
 end
 
@@ -1348,8 +1471,9 @@ fn post_task(caller: Caller, files: Files, clock: Clock, body: CreateTaskInput) 
           )
           row = task_to_row(body.id, t)
           t1 = try Table.put(tx, tasks, body.id, t).map_error(map_table_error)
-          (t2, _rec) = try Replay.tx_record_call(
-            t1,
+          t2 = try tx_index_workbench_task(t1, body.id, t).map_error(map_table_error)
+          (t3, _rec) = try Replay.tx_record_call(
+            t2,
             sc_ver,
             Some(aseq),
             meta.principal,
@@ -1362,7 +1486,7 @@ fn post_task(caller: Caller, files: Files, clock: Clock, body: CreateTaskInput) 
             meta.at,
             Replay.OrigOk(reply: row.to_json)
           ).map_error(map_table_error)
-          Ok((t2, row))
+          Ok((t3, row))
         end
       )
       Ok(row)
@@ -1435,17 +1559,18 @@ fn post_complete_task(caller: Caller, files: Files, clock: Clock, id: Int, body:
           row = task_to_row(id, next_task)
           t1 = try Table.put(tx, projs, task.project_id, next_proj).map_error(map_table_error)
           t2 = try Table.put(t1, tasks, id, next_task).map_error(map_table_error)
-          t3 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
-            (Some(aid), Some(sum), Some(sha)): try Table.put(
-              t2,
-              arts,
-              aid,
-              Artifact(task_id: id, author: body.assignee, summary: sum, sha256: sha)
-            ).map_error(map_table_error)
-            _: t2
+          t3 = try tx_index_workbench_task(t2, id, next_task).map_error(map_table_error)
+          t4 = case (body.artifact_id, body.artifact_summary, body.artifact_sha256)
+            (Some(aid), Some(sum), Some(sha)):
+              art = Artifact(task_id: id, author: body.assignee, summary: sum, sha256: sha)
+              ta = try Table.put(t3, arts, aid, art).map_error(map_table_error)
+              try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(
+                map_table_error
+              )
+            _: t3
           end
-          (t4, _rec) = try Replay.tx_record_call(
-            t3,
+          (t5, _rec) = try Replay.tx_record_call(
+            t4,
             sc_ver,
             Some(aseq),
             meta.principal,
@@ -1458,7 +1583,7 @@ fn post_complete_task(caller: Caller, files: Files, clock: Clock, id: Int, body:
             meta.at,
             Replay.OrigOk(reply: row.to_json)
           ).map_error(map_table_error)
-          Ok((t4, row))
+          Ok((t5, row))
         end
       )
       case res
@@ -1890,6 +2015,127 @@ fn get_audit(
       else
         Ok(entries)
       end
+    end
+  )
+end
+
+fn get_search_stats(rf: ReadFiles) : Result(SearchStatsResponse, WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      fst = try Fts.stats(st, workbench_fts_index()).map_error(map_fts_error)
+      vst = try Vec.stats(st, workbench_vec_index()).map_error(map_vec_error)
+      Ok(SearchStatsResponse(fts: fst, vec: vst))
+    end
+  )
+end
+
+fn post_search(rf: ReadFiles, body: SearchRequest) : Result(SearchResponse, WorkbenchError)
+  raw_mode = (body.mode or "hybrid").trim
+  mode = if raw_mode == "fts" or raw_mode == "vec" or raw_mode == "hybrid"
+    raw_mode
+  else
+    return Error(InvalidInput(reason: "search mode must be 'hybrid', 'fts', or 'vec'"))
+  end
+  proj_opt = case body.project_id
+    Some(p) if not p.trim.empty?: Some(p.trim)
+    Some(_) | None: None
+  end
+  raw_lim = body.limit or 10
+  cap = if raw_lim > 0 and raw_lim <= 50: raw_lim else: 10
+  prefix? = body.prefix_last_term or true
+
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      f_idx = workbench_fts_index()
+      v_idx = workbench_vec_index()
+      hits = if mode == "fts"
+        fh = try Fts.search(
+          st,
+          f_idx,
+          body.query,
+          Fts.SearchOptions(limit: cap, prefix_last_term?: prefix?, required_scope: proj_opt)
+        ).map_error(map_fts_error)
+        fh.enumerate.map(fn(p)
+          rank = p.0 + 1
+          h = p.1
+          Vec.HybridHit(
+            doc_id: h.doc_id,
+            scope: h.scope,
+            score: h.score,
+            fts_rank: Some(rank),
+            fts_score: Some(h.score),
+            vec_rank: None,
+            vec_score: None,
+            matched_terms: h.matched_terms,
+            matched_fields: h.matched_fields
+          )
+        end)
+      else if mode == "vec"
+        qv = case body.vector
+          Some(v): v
+          None: Vec.text_sketch_embedding(body.query, 32)
+        end
+        vh = try Vec.search(
+          st,
+          v_idx,
+          qv,
+          Vec.VecSearchOptions(limit: cap, required_scope: proj_opt, min_score: None)
+        ).map_error(map_vec_error)
+        vh.enumerate.map(fn(p)
+          rank = p.0 + 1
+          h = p.1
+          Vec.HybridHit(
+            doc_id: h.doc_id,
+            scope: h.scope,
+            score: h.score,
+            fts_rank: None,
+            fts_score: None,
+            vec_rank: Some(rank),
+            vec_score: Some(h.score),
+            matched_terms: [],
+            matched_fields: []
+          )
+        end)
+      else
+        qv_opt = case body.vector
+          Some(v): Some(v)
+          None:
+            if body.query.trim.empty?
+              None
+            else
+              Some(Vec.text_sketch_embedding(body.query, 32))
+            end
+        end
+        cand = if cap * 4 > 20: cap * 4 else: 20
+        try Vec.hybrid_search(
+          st,
+          f_idx,
+          v_idx,
+          body.query,
+          qv_opt,
+          Vec.HybridOptions(
+            limit: cap,
+            prefix_last_term?: prefix?,
+            required_scope: proj_opt,
+            rrf_k: 60,
+            fts_weight: 1.0.to_float,
+            vec_weight: 1.0.to_float,
+            candidate_limit: cand,
+            min_vec_score: None
+          )
+        ).map_error(map_vec_error)
+      end
+      Ok(SearchResponse(mode: mode, query: body.query, project_id: proj_opt, hits: hits))
     end
   )
 end
@@ -2837,6 +3083,24 @@ fn mcp_tools_list() : Json
         "modb_read_log",
         "List persisted Read Provenance entries from _modb_read_log (ad-hoc ReadPrograms and Releases).",
         mcp_schema({"limit": mcp_prop("integer", "Max entries to return (default 50)")}, [])
+      ),
+      mcp_tool_def(
+        "modb_search",
+        "Search tasks and artifacts via transactional BM25+ full-text (`fts`), quantized Cosine vector (`vec`), or Reciprocal Rank Fusion (`hybrid`, default).",
+        mcp_schema(
+          {
+            "query": mcp_prop("string", "Search query text"),
+            "mode": mcp_prop("string", "Search mode: hybrid (default) | fts | vec"),
+            "project_id": mcp_prop("string", "Optional project_id scope filter"),
+            "limit": mcp_prop("integer", "Max ranked hits to return (default 10, max 50)")
+          },
+          ["query"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_search_stats",
+        "Return transactional FTS (BM25+) and quantized Vector corpus statistics for the Workbench.",
+        empty_schema
       )
     ])
   })
@@ -3051,6 +3315,12 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
     "modb_read_log": mcp_encode_result(get_reads(rf, args.int_at("limit")))
+    "modb_search":
+      case Json.from_json[SearchRequest](args)
+        Ok(inp): mcp_encode_result(post_search(rf, inp))
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_search_stats": mcp_encode_result(get_search_stats(rf))
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -3076,7 +3346,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.2.0")
+              "version": Json.String("0.3.0")
             })
           })
         )
@@ -4249,4 +4519,50 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
   assert sim_child.status == 200 and
     Json.decode_strict[Replay.ReplayProposal](sim_child.text) is Ok(prop_c)
   assert prop_c.summary.excluded == 1
+
+  ## Milestone 11B: Transactional BM25 FTS, Vector, and Hybrid RRF search over tasks & artifacts
+  s_stats_r = ApiTest.send(AgentWorkbench, Api.get("/search/stats"), files, ro, clock, env)
+  assert s_stats_r.status == 200 and
+    Json.decode_strict[SearchStatsResponse](s_stats_r.text) is Ok(s_stats)
+  assert s_stats.fts.doc_count >= 2 and s_stats.vec.doc_count == s_stats.fts.doc_count
+
+  hyb_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/search").with_json(
+      SearchRequest(
+        query: "failover",
+        mode: Some("hybrid"),
+        project_id: None,
+        limit: Some(5),
+        prefix_last_term: Some(true),
+        vector: None
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert hyb_r.status == 200 and Json.decode_strict[SearchResponse](hyb_r.text) is Ok(hyb_res)
+  assert not hyb_res.hits.empty?
+
+  fts_mcp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(103),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_search"),
+          "arguments": Json.Object({"query": Json.String("patch"), "mode": Json.String("fts")})
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert fts_mcp.status == 200 and fts_mcp.text.contains?("\"isError\":false")
 end
