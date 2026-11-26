@@ -338,3 +338,17 @@ Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on u
 | `mo test examples/agent-workbench.mo` | All 5 HTTP + MCP + M10 + Search + Governance + Taint + M14 `ApiTest.send` SSE subscription/publish suites | **PASS** (`5 passed, 0 failed`) |
 | `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, `58` MCP tools (`serverInfo.version == "0.6.0"`), Live `/events/stream` + `feed-stream` UI HTML | **PASS** (`tools=58`, `txid=54`) |
 | `tests/test_workbench_sse_live.py` | Live 8-worker `mo serve`: chunked HTTP/1.1 `/events/stream` + `/feeds/:id/stream`, zero `x-mo-sse-*` header leaks, cross-worker `feed.delta` push (`pushed_id=8`), and `Last-Event-ID` reconnect replay (`replayed_id=11`) | **PASS** (`tasks_delta=1`) |
+
+---
+
+## 17. Milestone 15: Index-Accelerated `ReadProgram` Planner & Incremental `Modb.Matview` (`v0.7.0`, 2026-11-26)
+
+| Check / Suite | Scope | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/views.mo` | `ViewIndex` / `QueryPlan` (`PlanIndexEq`, `PlanIndexInList`, `PlanIndexRange`, `PlanFullScan`), `plan_read_program`, `explain_read_program`, planned `execute_read_program` | **`1.57 s`** (`22 passed, 0 failed`) |
+| `mo test src/modb/matview.mo` | `Modb.Matview` `define_matview`, `rebuild_matview`, $O(\text{diff})$ `refresh_matview`, extremum delete single-group recompute fallback, stale/missing pin crash recovery, $k$-anonymous `query_matview` | **`0.67 s`** (`13 passed, 0 failed`) |
+| `mo test tests/test-views-incremental.mo` | Milestone 8 View narrowing, static gating, k-anonymous releases & incremental World validation regression | **`1.09 s`** (`5 passed, 0 failed`) |
+| `mo test tests/test-matview-planner.mo` | 200-step randomized differential (`refresh_matview` == `rebuild_matview`), `tx_apply_matview` + crash fallback, 500-row index planner (`8`/`20`/`10` vs `500` rows scanned with identical `answer_hash`) | **`1.54 s`** (`3 passed, 0 failed`) |
+| `mo test src/modb/cli.mo` | Standalone schema-less `modb` CLI including `matviews list \| refresh \| rebuild \| query` | **`2.87 s`** (`69 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | All 5 Workbench HTTP + MCP + M15 `POST /views/explain` (`index_eq`) + `/matviews*` suites | **`3.19 s`** (`5 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` | Live 8-worker `mo serve`: **`62` MCP tools** (`serverInfo.version == "0.7.0"`), `modb_explain_view` (`project_id` `index_eq`), `modb_matviews_list`, `modb_matview_refresh`, `modb_matview_query`, and HTTP `/matviews*` | **`7.95 s` PASS** (`tools=62`, `txid=58`, `export_entries=259`, `hash=494c0fec...`) |

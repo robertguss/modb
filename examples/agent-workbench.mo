@@ -22,6 +22,7 @@ use Modb.Feeds
 use Modb.Fts
 use Modb.Grants
 use Modb.Ledger
+use Modb.Matview
 use Modb.Policy
 use Modb.Proposals
 use Modb.Replay
@@ -357,6 +358,10 @@ api
   get "/events/stream" get_events_stream
   get "/describe" get_describe
   post "/views/query" post_view_query
+  post "/views/explain" post_view_explain
+  get "/matviews" get_matviews
+  post "/matviews/:name/refresh" post_matview_refresh
+  get "/matviews/:name/query" get_matview_query
   post "/releases/:name" post_release
   get "/reads" get_reads
   post "/search" post_search
@@ -1177,7 +1182,7 @@ end
 fn workbench_view_catalog() : Views.ViewCatalog
   projs = projects_table()
   tasks = tasks_table()
-  Views.catalog().with_view(
+  cat_with_docs = Views.catalog().with_view(
     Views.ViewDef(
       name: "projects_finance",
       description: "Full project records including budget, spent, and remaining cents",
@@ -1424,6 +1429,166 @@ fn workbench_view_catalog() : Views.ViewCatalog
   ).with_invariant_doc(
     "referential_integrity",
     "Every task references an existing project and every artifact references an existing task"
+  )
+  # Register Milestone 15 ViewIndexes on secondary & primary keys for O(k) ReadPrograms
+  with_task_view_indexes(with_project_view_indexes(cat_with_docs))
+end
+
+fn task_map_full(tid: Int, t: Task) : Map(Text, Json)
+  asg = case t.assignee
+    Some(a): Json.String(a)
+    None: Json.Null
+  end
+  {
+    "id": Json.int(tid),
+    "project_id": Json.String(t.project_id),
+    "title": Json.String(t.title),
+    "assignee": asg,
+    "base_cost_cents": Json.int(t.base_cost_cents),
+    "billed_cents": Json.int(t.billed_cents),
+    "status": Json.String(task_status_label(t.status))
+  }
+end
+
+fn task_map_public(tid: Int, t: Task) : Map(Text, Json)
+  {
+    "id": Json.int(tid),
+    "project_id": Json.String(t.project_id),
+    "title": Json.String(t.title),
+    "status": Json.String(task_status_label(t.status))
+  }
+end
+
+fn json_text_key(jv: Json) : Text
+  case jv
+    Json.String(s): s
+    Json.Null | Json.Boolean(_) | Json.Number(_) | Json.Array(_) | Json.Object(_): jv.to_text
+  end
+end
+
+fn proj_map_full(pid: Text, p: Project) : Map(Text, Json)
+  pr = project_to_row(pid, p)
+  {
+    "id": Json.String(pr.id),
+    "name": Json.String(pr.name),
+    "budget_cents": Json.int(pr.budget_cents),
+    "spent_cents": Json.int(pr.spent_cents),
+    "remaining_cents": Json.int(pr.remaining_cents),
+    "active": Json.Boolean(pr.active)
+  }
+end
+
+fn proj_map_public(pid: Text, p: Project) : Map(Text, Json)
+  {"id": Json.String(pid), "name": Json.String(p.name), "active": Json.Boolean(p.active)}
+end
+
+fn reg_project_view_index(
+  cat: Views.ViewCatalog,
+  vname: Text,
+  map_fn: fn(Text, Project) : Map(Text, Json)
+) : Views.ViewCatalog
+  projs = projects_table()
+  Views.with_view_range_index(
+    cat,
+    vname,
+    "id",
+    fn(store, jv)
+      k = json_text_key(jv)
+      case try Table.get(store, projs, k).map_error(fn(e) e.to_text end)
+        Some(p): Ok([map_fn(k, p)])
+        None: Ok([])
+      end
+    end,
+    fn(store, lo_opt, hi_opt, _lo_inc, hi_inc)
+      lo_k = lo_opt.map(json_text_key)
+      hi_k = case hi_opt
+        Some(jv):
+          s = json_text_key(jv)
+          Some(if hi_inc: "#{s}\u{10ffff}" else: s)
+        None: None
+      end
+      rows = try Table.scan(store, projs, lo_k, hi_k, 0).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+end
+
+fn with_project_view_indexes(cat: Views.ViewCatalog) : Views.ViewCatalog
+  reg_project_view_index(
+    reg_project_view_index(cat, "projects_finance", proj_map_full),
+    "projects_public",
+    proj_map_public
+  )
+end
+
+fn reg_task_view_indexes(
+  cat: Views.ViewCatalog,
+  vname: Text,
+  map_fn: fn(Int, Task) : Map(Text, Json)
+) : Views.ViewCatalog
+  tasks = tasks_table()
+  p_idx = tasks_by_project_index()
+  s_idx = tasks_by_status_index()
+  c1 = Views.with_view_range_index(
+    cat,
+    vname,
+    "id",
+    fn(store, jv)
+      case Json.Object({"v": jv}).int_at("v")
+        None: Ok([])
+        Some(tid):
+          case try Table.get(store, tasks, tid).map_error(fn(e) e.to_text end)
+            Some(t): Ok([map_fn(tid, t)])
+            None: Ok([])
+          end
+      end
+    end,
+    fn(store, lo_opt, hi_opt, lo_inc, hi_inc)
+      lo_k = case lo_opt
+        Some(jv):
+          case Json.Object({"v": jv}).int_at("v")
+            Some(iv): Some(if lo_inc: iv else: iv + 1)
+            None: None
+          end
+        None: None
+      end
+      hi_k = case hi_opt
+        Some(jv):
+          case Json.Object({"v": jv}).int_at("v")
+            Some(iv): Some(if hi_inc: iv + 1 else: iv)
+            None: None
+          end
+        None: None
+      end
+      rows = try Table.scan(store, tasks, lo_k, hi_k, 0).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+  c2 = Views.with_view_eq_index(
+    c1,
+    vname,
+    "project_id",
+    fn(store, jv)
+      rows = try Table.lookup(store, tasks, p_idx, json_text_key(jv)).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+  Views.with_view_eq_index(
+    c2,
+    vname,
+    "status",
+    fn(store, jv)
+      rows = try Table.lookup(store, tasks, s_idx, json_text_key(jv)).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+end
+
+fn with_task_view_indexes(cat: Views.ViewCatalog) : Views.ViewCatalog
+  reg_task_view_indexes(
+    reg_task_view_indexes(cat, "tasks_finance", task_map_full),
+    "tasks_public",
+    task_map_public
   )
 end
 
@@ -2860,6 +3025,155 @@ fn post_view_query(caller: Caller, files: Files, clock: Clock, body: ReadProgram
       ).map_error(map_policy_error)
       Ok(gov.result)
     end
+  )
+end
+
+fn post_view_explain(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  body: ReadProgramRequest
+) : Result(Json, WorkbenchError)
+  is_admin? = caller.role is Admin
+  now = clock.now
+  base_cat = workbench_view_catalog()
+  Ledger.read_locked(
+    files.read_only,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      narrows = Views.view_narrows_map(live_cat)
+      _g = case body.grant_id
+        Some(gid): Some(
+          try Grants.verify_view(st, gid, body.program.view, narrows, now).map_error(map_grant_error)
+        )
+        None:
+          if not is_admin?
+            return Error(Forbidden(required: "Admin role or valid scoped Grant required for View explain"))
+          end
+          None
+      end
+      Views.explain_read_program(live_cat, body.program).map_error(map_views_error)
+    end
+  )
+end
+
+fn map_matview_error(err: Matview.MatViewError) : WorkbenchError
+  case err
+    Matview.Storage(e): StorageFailed(message: e.to_text)
+    Matview.TableFailure(te): map_table_error(te)
+    Matview.UnknownMatView(name: n): ViewMissing(name: n)
+    Matview.InvalidDefinition(reason: r): InvalidInput(reason: r)
+  end
+end
+
+fn default_workbench_matview_defs() : List(Matview.MatViewDef)
+  [
+    Matview.MatViewDef(
+      name: "tasks_by_status",
+      description: "Incremental materialized summary of tasks grouped by status (count, total billed_cents, min/max base_cost_cents)",
+      source_bucket: "tasks",
+      group_by: "status",
+      aggregates: [
+        Matview.MatAggSpec(alias: "cnt", op: Matview.MatCount),
+        Matview.MatAggSpec(alias: "total_billed_cents", op: Matview.MatSum(field: "billed_cents")),
+        Matview.MatAggSpec(alias: "min_base_cents", op: Matview.MatMin(field: "base_cost_cents")),
+        Matview.MatAggSpec(alias: "max_base_cents", op: Matview.MatMax(field: "base_cost_cents"))
+      ]
+    ),
+    Matview.MatViewDef(
+      name: "tasks_by_project",
+      description: "Incremental materialized task rollup grouped by project_id",
+      source_bucket: "tasks",
+      group_by: "project_id",
+      aggregates: [
+        Matview.MatAggSpec(alias: "cnt", op: Matview.MatCount),
+        Matview.MatAggSpec(alias: "total_billed_cents", op: Matview.MatSum(field: "billed_cents")),
+        Matview.MatAggSpec(alias: "total_base_cents", op: Matview.MatSum(field: "base_cost_cents"))
+      ]
+    )
+  ]
+end
+
+fn ensure_default_matviews_store(store: Modb.Store) : Result(Modb.Store, WorkbenchError)
+  var cur = store
+  for mdef in default_workbench_matview_defs()
+    ex = try Matview.get_matview(cur, mdef.name).map_error(map_matview_error)
+    if ex is None
+      (next_st, _meta) = try Matview.define_matview(cur, mdef).map_error(map_matview_error)
+      cur = next_st
+    end
+  end
+  Ok(cur)
+end
+
+fn ensure_default_matviews_files(files: Files) : Result(List(Matview.MatViewMeta), WorkbenchError)
+  cur_mvs = try Modb.with_shared_lock(
+    files.read_only,
+    db_path(),
+    fn(e) StorageFailed(message: e.to_text) end,
+    fn(st) Matview.list_matviews(st).map_error(map_matview_error) end
+  )
+  if cur_mvs.size >= default_workbench_matview_defs().size
+    return Ok(cur_mvs)
+  end
+  Modb.with_exclusive_lock(
+    files,
+    db_path(),
+    fn(e) StorageFailed(message: e.to_text) end,
+    fn(st)
+      s2 = try ensure_default_matviews_store(st)
+      Matview.list_matviews(s2).map_error(map_matview_error)
+    end
+  )
+end
+
+fn get_matviews(files: Files) : Result(
+  List(Matview.MatViewMeta),
+  WorkbenchError
+)
+  ensure_default_matviews_files(files)
+end
+
+fn post_matview_refresh(caller: Caller, files: Files, name: Text) : Result(
+  Api.Response,
+  WorkbenchError
+)
+  _auth = caller
+  rep = try Modb.with_exclusive_lock(
+    files,
+    db_path(),
+    fn(e) StorageFailed(message: e.to_text) end,
+    fn(st)
+      s1 = try ensure_default_matviews_store(st)
+      (_s2, r) = try Matview.refresh_matview(s1, name).map_error(map_matview_error)
+      Ok(r)
+    end
+  )
+  Ok(
+    Api.with_sse_publish_json(
+      Api.json_response(200, rep),
+      "workbench",
+      "matview.refreshed",
+      rep.to_json
+    )
+  )
+end
+
+fn get_matview_query(
+  files: Files,
+  name: Text,
+  min_k: Option(Int)
+) : Result(Matview.MatQueryResult, WorkbenchError)
+  _ = try ensure_default_matviews_files(files)
+  Modb.with_shared_lock(
+    files.read_only,
+    db_path(),
+    fn(e) StorageFailed(message: e.to_text) end,
+    fn(st) Matview.query_matview(st, name, min_k).map_error(map_matview_error) end
   )
 end
 
@@ -4681,6 +4995,41 @@ fn mcp_tools_list() : Json
         "modb_erasure_receipts",
         "List all verifiable right-to-be-forgotten ErasureReceipts (zero raw PII).",
         empty_schema
+      ),
+      mcp_tool_def(
+        "modb_explain_view",
+        "Inspect the chosen QueryPlan (index_eq | index_in_list | index_range | full_scan) for a ReadProgram without scanning data rows.",
+        mcp_schema(
+          {
+            "grant_id": mcp_prop("string", "Optional Grant ID authorizing the View"),
+            "program": Json.Object({
+              "type": Json.String("object"),
+              "description": Json.String("ReadProgram object to explain")
+            })
+          },
+          ["program"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_matviews_list",
+        "List all CoW incremental materialized views (`tasks_by_status`, `tasks_by_project`) and their watermark txids.",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_matview_refresh",
+        "Incrementally refresh one materialized view in O(diff) using its persistent `mv:<name>` pin.",
+        mcp_schema({"name": mcp_prop("string", "Materialized view name")}, ["name"])
+      ),
+      mcp_tool_def(
+        "modb_matview_query",
+        "Query materialized view groups with optional k-anonymity minimum cohort filter (`min_k`).",
+        mcp_schema(
+          {
+            "name": mcp_prop("string", "Materialized view name"),
+            "min_k": mcp_prop("integer", "Optional k-anonymity minimum row count filter")
+          },
+          ["name"]
+        )
       )
     ])
   })
@@ -4990,6 +5339,40 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
     "modb_erasure_receipts": mcp_encode_result(list_erasures(rf))
+    "modb_explain_view":
+      prog_json = args.get("program") or args
+      case Json.from_json[Views.ReadProgram](prog_json)
+        Ok(prog): mcp_encode_result(
+          post_view_explain(
+            eff,
+            files,
+            clock,
+            ReadProgramRequest(grant_id: args.text_at("grant_id"), program: prog)
+          )
+        )
+        Error(e): mcp_tool_result(e.to_text, true)
+      end
+    "modb_matviews_list": mcp_encode_result(get_matviews(files))
+    "modb_matview_refresh":
+      case mcp_req_text(args, "name")
+        Ok(mname):
+          case post_matview_refresh(eff, files, mname)
+            Ok(resp):
+              pub = Api.sse_published_events(resp)
+              data = case pub.first
+                Some(ev): ev.data
+                None: "{}"
+              end
+              mcp_tool_result(data, false)
+            Error(err): mcp_tool_result(Json.encode(err), true)
+          end
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_matview_query":
+      case mcp_req_text(args, "name")
+        Ok(mname): mcp_encode_result(get_matview_query(files, mname, args.int_at("min_k")))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -5015,7 +5398,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.6.0")
+              "version": Json.String("0.7.0")
             })
           })
         )
@@ -6665,4 +7048,73 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
   mcp_pubs = Api.sse_published_events(mcp_r)
   assert mcp_pubs.any?(fn(p) p.topic == "workbench" and p.event == Some("project.created") end)
   assert mcp_pubs.any?(fn(p) p.topic == "bucket:projects" and p.event == Some("feed.delta") end)
+
+  # Milestone 15: ViewIndex query planner explain/execution + incremental CoW MatViews
+  exp_r = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/explain").with_bearer("tok-admin").with_json(
+      ReadProgramRequest(
+        grant_id: None,
+        program: Views.ReadProgram(
+          view: "tasks_public",
+          where_clause: Some(Views.Eq(field: "project_id", value: Json.String("infra"))),
+          select: None,
+          group_by: None,
+          aggregates: None,
+          order_by: None,
+          limit: None
+        )
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert exp_r.status == 200 and exp_r.text.contains?("\"strategy\":\"index_eq\"")
+
+  q_idx = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/query").with_bearer("tok-admin").with_header("X-Reason", "m15 idx").with_json(
+      ReadProgramRequest(
+        grant_id: None,
+        program: Views.ReadProgram(
+          view: "tasks_public",
+          where_clause: Some(Views.Eq(field: "project_id", value: Json.String("infra"))),
+          select: None,
+          group_by: None,
+          aggregates: None,
+          order_by: None,
+          limit: None
+        )
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert q_idx.status == 200 and q_idx.text.contains?("\"rows_scanned\":1") and
+    q_idx.text.contains?("951")
+
+  mv_l = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/matviews").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert mv_l.status == 200 and mv_l.text.contains?("tasks_by_status") and
+    mv_l.text.contains?("tasks_by_project")
+
+  mv_q = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/matviews/tasks_by_project/query").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert mv_q.status == 200 and mv_q.text.contains?("infra")
 end

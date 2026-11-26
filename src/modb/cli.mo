@@ -1,5 +1,5 @@
 ## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `fts`, `vec`,
-## `policy`, `proposals`, `feeds`, `taint`, `erasures`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
+## `policy`, `proposals`, `feeds`, `matviews`, `taint`, `erasures`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
 ## `.modb` database file safely using advisory `flock` coordination and read-only `ReadFiles`.
 module Modb.Cli
 expose run_cli,
@@ -14,6 +14,7 @@ use Modb.Feeds
 use Modb.Fts
 use Modb.Grants
 use Modb.Ledger{SchemaState, genesis_hash, meta_bucket}
+use Modb.Matview
 use Modb.Pager{from_file}
 use Modb.Policy
 use Modb.Proposals
@@ -41,6 +42,7 @@ fn print_usage(console: Console) : Unit
       "  modb proposals <db.modb> [--status pending|approved|rejected|withdrawn] [--json]",
       "  modb feeds <db.modb> [--json]",
       "  modb feeds <db.modb> poll <feed_id> [--limit N] [--json]",
+      "  modb matviews <db.modb> [list|refresh <name>|rebuild <name>|query <name>] [--min-k N] [--json]",
       "  modb taint <db.modb> [--json]",
       "  modb erasures <db.modb> [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
@@ -60,6 +62,7 @@ struct ParsedFlags
   fast?: Bool
   fast_window: Int
   limit_opt: Option(Int)
+  min_k_opt: Option(Int)
   principal_opt: Option(Text)
   action_opt: Option(Text)
   pin_opt: Option(Text)
@@ -75,6 +78,7 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var fast? = false
   var fast_window = 100
   var limit_opt = None
+  var min_k_opt = None
   var principal_opt = None
   var action_opt = None
   var pin_opt = None
@@ -107,6 +111,11 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       val = try rest.get(i + 1).or_fail("--limit requires a value")
       n = try val.to_int.or_fail("invalid --limit integer: #{val}")
       limit_opt = Some(n)
+      i += 2
+    else if tok == "--min-k"
+      val = try rest.get(i + 1).or_fail("--min-k requires a value")
+      n = try val.to_int.or_fail("invalid --min-k integer: #{val}")
+      min_k_opt = Some(n)
       i += 2
     else if tok == "--principal"
       val = try rest.get(i + 1).or_fail("--principal requires a value")
@@ -146,6 +155,7 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       fast?: fast?,
       fast_window: fast_window,
       limit_opt: limit_opt,
+      min_k_opt: min_k_opt,
       principal_opt: principal_opt,
       action_opt: action_opt,
       pin_opt: pin_opt,
@@ -1347,6 +1357,110 @@ fn cmd_taint(console: Console, files: Files, f: ParsedFlags) : Int
   end
 end
 
+fn cmd_matviews(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb matviews <db.modb> [list|refresh <name>|rebuild <name>|query <name>] [--min-k N] [--json]"
+    )
+  end
+  sub = (f.positional.get(1) or "list").trim
+  if sub == "list"
+    res = Modb.with_shared_lock(
+      files.read_only,
+      path,
+      fn(e) e.to_text end,
+      fn(store) Matview.list_matviews(store).map_error(fn(e) Matview.to_text(e) end) end
+    )
+    return case res
+      Error(msg): fail_msg(console, msg)
+      Ok(mvs):
+        if f.json?
+          console.print(Json.encode(mvs.to_json))
+        else
+          console.print("matviews=#{mvs.size}")
+          for mv in mvs
+            console.print(
+              "  #{mv.def.name} src=#{mv.def.source_bucket} group_by=#{mv.def.group_by} groups=#{mv
+                .group_count} rows=#{mv.source_rows_seen} tx=#{mv.last_txid} rebuilds=#{mv.rebuilds} inc=#{mv
+                .incremental_refreshes}"
+            )
+          end
+        end
+        0
+    end
+  else if sub == "refresh" or sub == "rebuild"
+    mv_name = (f.positional.get(2) or "").trim
+    if mv_name.empty?
+      return fail_msg(console, "usage: modb matviews <db.modb> #{sub} <name> [--json]")
+    end
+    res = Modb.with_exclusive_lock(
+      files,
+      path,
+      fn(e) e.to_text end,
+      fn(store)
+        r = if sub == "refresh"
+          Matview.refresh_matview(store, mv_name)
+        else
+          Matview.rebuild_matview(store, mv_name)
+        end
+        case r
+          Ok((_next, rep)): Ok(rep)
+          Error(e): Error(Matview.to_text(e))
+        end
+      end
+    )
+    return case res
+      Error(msg): fail_msg(console, msg)
+      Ok(rep):
+        if f.json?
+          console.print(Json.encode(rep.to_json))
+        else
+          console.print(
+            "matview=#{rep.name} strategy=#{rep.strategy} diffs=#{rep.diffs_applied} touched=#{rep
+              .groups_touched} recomputes=#{rep.group_recomputes} groups=#{rep.group_count} tx=#{rep
+              .last_txid}"
+          )
+        end
+        0
+    end
+  else if sub == "query"
+    mv_name = (f.positional.get(2) or "").trim
+    if mv_name.empty?
+      return fail_msg(console, "usage: modb matviews <db.modb> query <name> [--min-k N] [--json]")
+    end
+    res = Modb.with_shared_lock(
+      files.read_only,
+      path,
+      fn(e) e.to_text end,
+      fn(store)
+        Matview.query_matview(store, mv_name, f.min_k_opt).map_error(fn(e) Matview.to_text(e) end)
+      end
+    )
+    return case res
+      Error(msg): fail_msg(console, msg)
+      Ok(q):
+        if f.json?
+          console.print(Json.encode(q.to_json))
+        else
+          console.print(
+            "matview=#{q.name} tx=#{q.last_txid} returned=#{q.returned_groups}/#{q.total_groups} suppressed=#{q
+              .suppressed_groups}"
+          )
+          for row in q.rows
+            console.print("  #{Json.encode(row)}")
+          end
+        end
+        0
+    end
+  end
+  fail_msg(
+    console,
+    "unknown matviews subcommand '#{sub}' (use list | refresh | rebuild | query)"
+  )
+end
+
 fn cmd_erasures(console: Console, files: Files, f: ParsedFlags) : Int
   path = case f.positional.first
     Some(p) if not p.trim.empty?: p.trim
@@ -1398,6 +1512,7 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   return cmd_policy(console, files, f) if head == "policy"
   return cmd_proposals(console, files, f) if head == "proposals"
   return cmd_feeds(console, files, clock, f) if head == "feeds"
+  return cmd_matviews(console, files, f) if head == "matviews"
   return cmd_taint(console, files, f) if head == "taint"
   return cmd_erasures(console, files, f) if head == "erasures"
   return cmd_backup(console, files, clock, f) if head == "backup"
@@ -1641,4 +1756,38 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   assert run_cli(["inspect", "app.modb", "--json"], c_insp13, files, clock) == 0
   assert c_insp13.printed.join("\n").contains?("\"taint_sessions\":1") and
     c_insp13.printed.join("\n").contains?("\"erasure_receipts\":1")
+
+  ## Milestone 15 CLI: `modb matviews list | refresh | query`
+  mv_def = Matview.MatViewDef(
+    name: "notes_by_body",
+    description: "CLI notes rollup",
+    source_bucket: "notes",
+    group_by: "body",
+    aggregates: [Matview.MatAggSpec(alias: "cnt", op: Matview.MatCount)]
+  )
+  assert Modb.with_exclusive_lock(
+    files,
+    "app.modb",
+    fn(e) e.to_text end,
+    fn(st)
+      case Matview.define_matview(st, mv_def)
+        Ok((_st2, meta2)): Ok(meta2)
+        Error(e): Error(Matview.to_text(e))
+      end
+    end
+  ) is
+    Ok(_)
+  c_mvl = Console.fake()
+  assert run_cli(["matviews", "app.modb", "list", "--json"], c_mvl, files, clock) == 0
+  assert c_mvl.printed.join("\n").contains?("notes_by_body")
+
+  c_mvr = Console.fake()
+  assert run_cli(["matviews", "app.modb", "refresh", "notes_by_body", "--json"], c_mvr, files, clock) ==
+    0
+  assert c_mvr.printed.join("\n").contains?("notes_by_body")
+
+  c_mvq = Console.fake()
+  assert run_cli(["matviews", "app.modb", "query", "notes_by_body", "--json"], c_mvq, files, clock) ==
+    0
+  assert c_mvq.printed.join("\n").contains?("\"returned_groups\":")
 end

@@ -116,7 +116,7 @@ def main() -> int:
             send_rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             init_resp = read_json_line(proc)
             assert init_resp["result"]["serverInfo"]["name"] == "modb-agent-workbench", init_resp
-            assert init_resp["result"]["serverInfo"]["version"] == "0.6.0", init_resp
+            assert init_resp["result"]["serverInfo"]["version"] == "0.7.0", init_resp
             assert init_resp["result"]["protocolVersion"] == "2025-03-26", init_resp
 
             send_rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -130,7 +130,7 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 58, len(tools)
+            assert len(tools) >= 62, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_search",
@@ -168,6 +168,10 @@ def main() -> int:
                 "modb_read_program",
                 "modb_release",
                 "modb_read_log",
+                "modb_explain_view",
+                "modb_matviews_list",
+                "modb_matview_refresh",
+                "modb_matview_query",
             ):
                 assert req in tool_names, f"missing MCP tool {req}"
 
@@ -587,6 +591,33 @@ def main() -> int:
             is_err, er_list = call_tool(proc, 137, "modb_erasure_receipts", {})
             assert not is_err and isinstance(er_list, list), (is_err, er_list)
 
+            # Milestone 15: ViewIndex query planner explain + incremental CoW MatViews via MCP
+            is_err, exp_res = call_tool(
+                proc,
+                138,
+                "modb_explain_view",
+                {
+                    "program": {
+                        "view": "tasks_public",
+                        "where_clause": {"eq": {"field": "project_id", "value": "infra"}},
+                    },
+                },
+            )
+            assert not is_err and exp_res["strategy"] == "index_eq" and exp_res["field"] == "project_id", (
+                is_err,
+                exp_res,
+            )
+
+            is_err, mvs = call_tool(proc, 139, "modb_matviews_list", {})
+            mv_names = {m["def"]["name"] for m in mvs}
+            assert not is_err and {"tasks_by_status", "tasks_by_project"} <= mv_names, (is_err, mvs)
+
+            is_err, mv_ref = call_tool(proc, 140, "modb_matview_refresh", {"name": "tasks_by_status"})
+            assert not is_err and mv_ref["name"] == "tasks_by_status", (is_err, mv_ref)
+
+            is_err, mv_q = call_tool(proc, 141, "modb_matview_query", {"name": "tasks_by_project"})
+            assert not is_err and mv_q["returned_groups"] >= 2, (is_err, mv_q)
+
             is_err, ver3 = call_tool(proc, 133, "modb_verify", {})
             assert not is_err and ver3["ok"] is True, (is_err, ver3)
 
@@ -621,6 +652,8 @@ def main() -> int:
                 "/policy",
                 "/proposals",
                 "/feeds",
+                "/matviews",
+                "/matviews/tasks_by_status/query",
                 "/taint/sessions",
                 "/erasures",
                 "/audit",
