@@ -14,7 +14,7 @@ right-edge splitting, raw binary-search reads/scans, lock-free optimistic CoW re
 incremental invariants), Milestone 6 (real-world 8-worker multi-agent `AgentWorkbench` +
 empirical coarse-vs-fine needless send-back, replay recovery, and `SIGKILL` simulation), and
 Milestone 7 (live zero-CDN `WorkbenchUi` browser Inspector, native Streamable HTTP `POST /mcp`
-server with 35 tools, and zero-dependency Python stdio MCP bridge `tools/modb_mcp_server.py`),
+server with 41 tools, and zero-dependency Python stdio MCP bridge `tools/modb_mcp_server.py`),
 Milestone 8 (Grant-scoped hierarchical `Views` & k-anonymous `Releases`, zero-approval
 sandboxed ad-hoc `ReadPrograms` with static field gating & read provenance log, stateless agent
 self-onboarding `OnboardingManifest`, and O(1) CoW-diff incremental World read re-validation),

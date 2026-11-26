@@ -145,6 +145,8 @@ def run_swarm_experiment(base: str, mode: str, project_id: str, task_ids: list[i
 
     st_m0, m_before, _ = http_json(base, "GET", "/worlds/metrics")
     assert st_m0 == 200
+    st_t0, t_before, _ = http_json(base, "GET", "/worlds/telemetry")
+    assert st_t0 == 200
 
     # Partition tasks disjointly across 6 worker agents (3 tasks each = 18 tasks)
     buckets = [task_ids[w::6] for w in range(6)]
@@ -268,6 +270,8 @@ def run_swarm_experiment(base: str, mode: str, project_id: str, task_ids: list[i
     elapsed = time.perf_counter() - t0
     st_m1, m_after, _ = http_json(base, "GET", "/worlds/metrics")
     assert st_m1 == 200
+    st_t1, t_after, _ = http_json(base, "GET", "/worlds/telemetry")
+    assert st_t1 == 200
     assert not stats["errors"], f"{mode} errors: {stats['errors'][:5]}"
     assert stats["landed"] == len(task_ids), (mode, stats)
 
@@ -277,6 +281,10 @@ def run_swarm_experiment(base: str, mode: str, project_id: str, task_ids: list[i
         "landed": stats["landed"],
         "stale_retries": m_after["stale_read_rejections"] - m_before["stale_read_rejections"],
         "needless_send_backs": m_after["needless_send_backs"] - m_before["needless_send_backs"],
+        "key_level_reads_skipped": (
+            t_after["telemetry"]["key_level_reads_skipped"]
+            - t_before["telemetry"]["key_level_reads_skipped"]
+        ),
         "reads": len(read_lats),
         "land_p50_ms": pct(land_lats, 0.5),
         "land_p95_ms": pct(land_lats, 0.95),
@@ -534,7 +542,330 @@ def main() -> int:
             assert http_json(base2, "GET", "/tasks/301/artifacts")[1] == []
             assert len(http_json(base2, "GET", "/tasks/303/artifacts")[1]) == 1
 
-            print("=== Milestone 6: Real-World Multi-Agent Workbench Report (mo serve --workers 8) ===")
+            # PHASE 4: Milestone 10 — Range O(diff) Skipping, Starvation Fairness Rescue & Concurrent Child Worlds!
+            assert (
+                http_json(
+                    base2,
+                    "POST",
+                    "/projects",
+                    {"id": "m10-ops", "name": "Milestone 10 Operations", "budget_cents": 500000},
+                    admin_hdr,
+                )[0]
+                == 200
+            )
+            for tid in range(501, 521):
+                assert (
+                    http_json(
+                        base2,
+                        "POST",
+                        "/tasks",
+                        {
+                            "id": tid,
+                            "project_id": "m10-ops",
+                            "title": f"M10 task #{tid}",
+                            "base_cost_cents": 1000,
+                        },
+                        planner_hdr,
+                    )[0]
+                    == 200
+                )
+            assert (
+                http_json(
+                    base2,
+                    "POST",
+                    "/grants",
+                    {
+                        "id": "g-m10-root",
+                        "principal": "agent:m10-lead",
+                        "allowed_actions": ["create_task", "complete_task"],
+                        "max_calls": 200,
+                        "ttl_seconds": 3600,
+                    },
+                    admin_hdr,
+                )[0]
+                == 200
+            )
+            for w in range(4):
+                assert (
+                    http_json(
+                        base2,
+                        "POST",
+                        "/grants/g-m10-root/delegate",
+                        {
+                            "id": f"g-m10-w{w}",
+                            "principal": f"agent:m10-w{w}",
+                            "allowed_actions": ["complete_task"],
+                            "max_calls": 40,
+                            "ttl_seconds": 1800,
+                        },
+                        planner_hdr,
+                    )[0]
+                    == 200
+                )
+
+            st_t4a0, tel_4a0, _ = http_json(base2, "GET", "/worlds/telemetry")
+            assert st_t4a0 == 200
+            # 4A: Open 4 Worlds sharing base snapshot, read disjoint ranges [501..506), ..., land concurrently!
+            range_specs = [(501, 506, 0), (506, 511, 1), (511, 516, 2), (516, 521, 3)]
+            for start_id, end_id, w in range_specs:
+                wh = {"Authorization": "Bearer sim-worker", "X-Agent-Id": f"agent:m10-w{w}", "X-Reason": "m10-range"}
+                wid = f"w-m10-r{w}"
+                assert http_json(base2, "POST", "/worlds", {"id": wid, "grant_id": f"g-m10-w{w}", "ttl_seconds": 300}, wh)[0] == 200
+                st_q, qrows, _ = http_json(
+                    base2,
+                    "POST",
+                    f"/worlds/{wid}/query",
+                    {"query": "scan_tasks_range", "args": {"start_id": start_id, "end_id": end_id, "limit": 20}},
+                    wh,
+                )
+                assert st_q == 200 and len(qrows) == 5, (wid, st_q, qrows)
+                st_c, _, _ = http_json(
+                    base2,
+                    "POST",
+                    f"/worlds/{wid}/call",
+                    {
+                        "action": "complete_task",
+                        "args": {
+                            "task_id": start_id,
+                            "assignee": f"agent:m10-w{w}",
+                            "artifact_id": f"art-m10-{start_id}",
+                            "artifact_summary": f"Range skip #{start_id}",
+                            "artifact_sha256": f"m10r{start_id}",
+                        },
+                    },
+                    wh,
+                )
+                assert st_c == 200, (wid, st_c)
+
+            range_lats: list[float] = []
+            def land_range_worker(w: int):
+                wh = {"Authorization": "Bearer sim-worker", "X-Agent-Id": f"agent:m10-w{w}", "X-Reason": "m10-range-land"}
+                st_l, body_l, dt_l = http_json(base2, "POST", f"/worlds/w-m10-r{w}/land-fair", None, wh)
+                assert st_l == 200 and isinstance(body_l, dict) and "landed_ok" in body_l, (w, st_l, body_l)
+                return dt_l, body_l["landed_ok"]["result"]["reads_skipped"]
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                r_out = [f.result() for f in [pool.submit(land_range_worker, w) for w in range(4)]]
+            range_lats = [x[0] for x in r_out]
+            st_t4a1, tel_4a1, _ = http_json(base2, "GET", "/worlds/telemetry")
+            assert st_t4a1 == 200
+            phase4a_key_skips = tel_4a1["telemetry"]["key_level_reads_skipped"] - tel_4a0["telemetry"]["key_level_reads_skipped"]
+            assert phase4a_key_skips >= 3, tel_4a1
+
+            # 4B: Bounded-TTL PriorityTicket fairness rescue under 3 concurrent competing landings
+            assert (
+                http_json(
+                    base2,
+                    "POST",
+                    "/grants",
+                    {
+                        "id": "g-m10-starved",
+                        "principal": "agent:m10-starved",
+                        "allowed_actions": ["complete_task"],
+                        "max_calls": 20,
+                        "ttl_seconds": 3600,
+                    },
+                    admin_hdr,
+                )[0]
+                == 200
+            )
+            st_hdr = {"Authorization": "Bearer sim-worker", "X-Agent-Id": "agent:m10-starved", "X-Reason": "m10-starved"}
+            # Trigger 1 genuine StaleRead so `agent:m10-starved` qualifies for a PriorityTicket
+            assert http_json(base2, "POST", "/worlds", {"id": "w-m10-induce", "grant_id": "g-m10-starved", "ttl_seconds": 300}, st_hdr)[0] == 200
+            assert http_json(base2, "POST", "/worlds/w-m10-induce/query", {"query": "get_task", "args": 502}, st_hdr)[0] == 200
+            assert http_json(
+                base2,
+                "POST",
+                "/worlds/w-m10-induce/call",
+                {
+                    "action": "complete_task",
+                    "args": {
+                        "task_id": 502,
+                        "assignee": "agent:m10-starved",
+                        "artifact_id": None,
+                        "artifact_summary": None,
+                        "artifact_sha256": None,
+                    },
+                },
+                st_hdr,
+            )[0] == 200
+            assert http_json(
+                base2,
+                "POST",
+                "/tasks/502/complete",
+                {
+                    "task_id": 502,
+                    "assignee": "agent:main-interferer",
+                    "artifact_id": None,
+                    "artifact_summary": None,
+                    "artifact_sha256": None,
+                },
+                planner_hdr,
+            )[0] == 200
+            assert http_json(base2, "POST", "/worlds/w-m10-induce/land", None, st_hdr)[0] == 409
+
+            assert http_json(base2, "POST", "/worlds", {"id": "w-m10-starved", "grant_id": "g-m10-starved", "ttl_seconds": 300}, st_hdr)[0] == 200
+            assert http_json(base2, "POST", "/worlds/w-m10-starved/query", {"query": "get_task", "args": 503}, st_hdr)[0] == 200
+            assert http_json(
+                base2,
+                "POST",
+                "/worlds/w-m10-starved/call",
+                {
+                    "action": "complete_task",
+                    "args": {
+                        "task_id": 503,
+                        "assignee": "agent:m10-starved",
+                        "artifact_id": "art-m10-503",
+                        "artifact_summary": "Rescued starved worker",
+                        "artifact_sha256": "starve0503",
+                    },
+                },
+                st_hdr,
+            )[0] == 200
+            st_pr, pr_tick, _ = http_json(
+                base2,
+                "POST",
+                "/worlds/w-m10-starved/priority",
+                {"buckets": ["tasks", "projects"], "min_stale_threshold": 1, "hold_seconds": 20},
+                st_hdr,
+            )
+            assert st_pr == 200 and pr_tick["world_id"] == "w-m10-starved", (st_pr, pr_tick)
+
+            comp_specs = [(0, 504), (1, 505), (2, 507)]
+            for w, tid in comp_specs:
+                wh = {"Authorization": "Bearer sim-worker", "X-Agent-Id": f"agent:m10-w{w}", "X-Reason": "m10-comp"}
+                wid = f"w-m10-comp-{w}"
+                assert http_json(base2, "POST", "/worlds", {"id": wid, "grant_id": f"g-m10-w{w}", "ttl_seconds": 300}, wh)[0] == 200
+                assert http_json(base2, "POST", f"/worlds/{wid}/query", {"query": "get_task", "args": tid}, wh)[0] == 200
+                assert http_json(
+                    base2,
+                    "POST",
+                    f"/worlds/{wid}/call",
+                    {
+                        "action": "complete_task",
+                        "args": {
+                            "task_id": tid,
+                            "assignee": f"agent:m10-w{w}",
+                            "artifact_id": None,
+                            "artifact_summary": None,
+                            "artifact_sha256": None,
+                        },
+                    },
+                    wh,
+                )[0] == 200
+
+            def fair_try(w: int):
+                wh = {"Authorization": "Bearer sim-worker", "X-Agent-Id": f"agent:m10-w{w}", "X-Reason": "m10-fair-try"}
+                return http_json(base2, "POST", f"/worlds/w-m10-comp-{w}/land-fair", None, wh)
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                comp_res1 = [f.result() for f in [pool.submit(fair_try, w) for w, _ in comp_specs]]
+            for st_c, b_c, _ in comp_res1:
+                assert st_c == 200 and isinstance(b_c, dict) and "deferred_by_fairness" in b_c, (st_c, b_c)
+
+            st_rescue, b_rescue, rescue_ms = http_json(base2, "POST", "/worlds/w-m10-starved/land-fair", None, st_hdr)
+            assert st_rescue == 200 and isinstance(b_rescue, dict) and "landed_ok" in b_rescue, (st_rescue, b_rescue)
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                comp_res2 = [f.result() for f in [pool.submit(fair_try, w) for w, _ in comp_specs]]
+            for st_c, b_c, _ in comp_res2:
+                assert st_c == 200 and isinstance(b_c, dict) and "landed_ok" in b_c, (st_c, b_c)
+
+            st_t4b, tel_4b, _ = http_json(base2, "GET", "/worlds/telemetry")
+            assert st_t4b == 200
+            phase4b_deferrals = tel_4b["telemetry"]["fairness_deferrals"] - tel_4a1["telemetry"]["fairness_deferrals"]
+            phase4b_rescued = tel_4b["telemetry"]["starved_worlds_rescued"] - tel_4a1["telemetry"]["starved_worlds_rescued"]
+            assert phase4b_deferrals >= 3 and phase4b_rescued >= 1, tel_4b
+
+            # 4C: Concurrent Nested Child Worlds forked & merged into shared Parent World -> Parent lands cleanly
+            for suffix, tid in [("a", 509), ("b", 510)]:
+                assert (
+                    http_json(
+                        base2,
+                        "POST",
+                        "/grants/g-m10-root/delegate",
+                        {
+                            "id": f"g-m10-kid-{suffix}",
+                            "principal": f"agent:m10-kid-{suffix}",
+                            "allowed_actions": ["complete_task"],
+                            "max_calls": 10,
+                            "ttl_seconds": 900,
+                        },
+                        planner_hdr,
+                    )[0]
+                    == 200
+                )
+            p_hdr = {"Authorization": "Bearer sim-worker", "X-Agent-Id": "agent:m10-lead", "X-Reason": "m10-parent"}
+            assert http_json(base2, "POST", "/worlds", {"id": "w-m10-parent", "grant_id": "g-m10-root", "ttl_seconds": 600}, p_hdr)[0] == 200
+            assert http_json(base2, "POST", "/worlds/w-m10-parent/query", {"query": "get_task", "args": 508}, p_hdr)[0] == 200
+            assert http_json(
+                base2,
+                "POST",
+                "/worlds/w-m10-parent/call",
+                {
+                    "action": "complete_task",
+                    "args": {
+                        "task_id": 508,
+                        "assignee": "agent:m10-lead",
+                        "artifact_id": "art-m10-508",
+                        "artifact_summary": "Parent step 508",
+                        "artifact_sha256": "m10p0508",
+                    },
+                },
+                p_hdr,
+            )[0] == 200
+
+            def run_child_worker(suffix: str, tid: int):
+                ch = {"Authorization": "Bearer sim-worker", "X-Agent-Id": f"agent:m10-kid-{suffix}", "X-Reason": f"m10-kid-{suffix}"}
+                cid = f"w-m10-kid-{suffix}"
+                st_o, b_o, _ = http_json(
+                    base2,
+                    "POST",
+                    "/worlds/w-m10-parent/children",
+                    {"id": cid, "grant_id": f"g-m10-kid-{suffix}", "ttl_seconds": 300},
+                    ch,
+                )
+                assert st_o == 200, (cid, st_o, b_o)
+                assert http_json(base2, "POST", f"/worlds/{cid}/query", {"query": "get_task", "args": tid}, ch)[0] == 200
+                assert http_json(
+                    base2,
+                    "POST",
+                    f"/worlds/{cid}/call",
+                    {
+                        "action": "complete_task",
+                        "args": {
+                            "task_id": tid,
+                            "assignee": f"agent:m10-kid-{suffix}",
+                            "artifact_id": f"art-m10-{tid}",
+                            "artifact_summary": f"Child {suffix} task #{tid}",
+                            "artifact_sha256": f"m10kid{tid}",
+                        },
+                    },
+                    ch,
+                )[0] == 200
+                st_m, b_m, dt_m = http_json(base2, "POST", f"/worlds/{cid}/land-child", None, ch)
+                assert st_m == 200 and b_m["calls_merged"] == 1, (cid, st_m, b_m)
+                return dt_m
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                child_lats = [f.result() for f in [pool.submit(run_child_worker, "a", 509), pool.submit(run_child_worker, "b", 510)]]
+
+            st_ch, kids_list, _ = http_json(base2, "GET", "/worlds/w-m10-parent/children")
+            assert st_ch == 200 and len(kids_list) == 2, (st_ch, kids_list)
+
+            st_pl, b_pl, parent_land_ms = http_json(base2, "POST", "/worlds/w-m10-parent/land-fair", None, p_hdr)
+            assert st_pl == 200 and isinstance(b_pl, dict) and "landed_ok" in b_pl, (st_pl, b_pl)
+            assert b_pl["landed_ok"]["result"]["calls_replayed"] == 3, b_pl
+
+            st_t4c, tel_4c, _ = http_json(base2, "GET", "/worlds/telemetry")
+            assert st_t4c == 200
+            phase4c_children = tel_4c["telemetry"]["child_worlds_landed"] - tel_4b["telemetry"]["child_worlds_landed"]
+            assert phase4c_children == 2, tel_4c
+
+            st_vf, ver_final, ver_final_ms = http_json(base2, "GET", "/admin/verify")
+            assert st_vf == 200 and ver_final["ok"] is True, (st_vf, ver_final)
+
+            print("=== Milestone 6+10: Real-World Multi-Agent Workbench Report (mo serve --workers 8) ===")
             print(
                 f"Phase 1A (Coarse `list_project_tasks`, 6W+2R, 18 tasks): "
                 f"{coarse_res['elapsed_s']:.2f}s | stale_retries={coarse_res['stale_retries']} | "
@@ -543,9 +874,10 @@ def main() -> int:
                 f"reads={coarse_res['reads']} (p50={coarse_res['read_p50_ms']:.1f}ms)"
             )
             print(
-                f"Phase 1B (Fine `get_task` + Claims, 6W+2R, 18 tasks):     "
+                f"Phase 1B (Fine `get_task` O(diff) + Claims, 6W+2R, 18 tasks): "
                 f"{fine_res['elapsed_s']:.2f}s | stale_retries={fine_res['stale_retries']} | "
                 f"needless_send_backs={fine_res['needless_send_backs']} | "
+                f"key_skips={fine_res['key_level_reads_skipped']} | "
                 f"land p50={fine_res['land_p50_ms']:.1f}ms p95={fine_res['land_p95_ms']:.1f}ms | "
                 f"reads={fine_res['reads']} (p50={fine_res['read_p50_ms']:.1f}ms)"
             )
@@ -562,9 +894,14 @@ def main() -> int:
                 f"export={exp_ms:.1f}ms ({exp_snap['bucket_count']} buckets, {exp_snap['entry_count']} entries)"
             )
             print(
-                f"Post-SIGKILL verify: ok=True ({ver_ms:.1f}ms) | txid={ver['txid']} | "
-                f"pages={ver['page_count']} | audit_entries={ver['audit_entries']} | "
-                f"hash={ver['last_audit_hash'][:16]}..."
+                f"Phase 4  (M10 8-worker): range_key_skips={phase4a_key_skips} (p50={pct(range_lats, 0.5):.1f}ms) | "
+                f"fairness deferrals={phase4b_deferrals} rescued={phase4b_rescued} (rescue={rescue_ms:.1f}ms) | "
+                f"child_worlds_merged={phase4c_children} (child_p50={pct(child_lats, 0.5):.1f}ms parent_land={parent_land_ms:.1f}ms)"
+            )
+            print(
+                f"Post-SIGKILL verify: ok=True ({ver_ms:.1f}ms -> post-M10 {ver_final_ms:.1f}ms) | txid={ver_final['txid']} | "
+                f"pages={ver_final['page_count']} | audit_entries={ver_final['audit_entries']} | "
+                f"hash={ver_final['last_audit_hash'][:16]}..."
             )
             return 0
         finally:

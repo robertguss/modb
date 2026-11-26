@@ -275,6 +275,7 @@ fn page_html() : Text
         <div class="stat"><div class="label">Replay Calls</div><div class="val" id="st-calls">-</div><div class="sub" id="st-props">0 proposals</div></div>
         <div class="stat"><div class="label">Worlds Landed</div><div class="val" id="st-worlds">-</div><div class="sub" id="st-open-worlds">0 open</div></div>
         <div class="stat"><div class="label">Send-Backs</div><div class="val" id="st-retries">-</div><div class="sub" id="st-needless">0 needless</div></div>
+        <div class="stat"><div class="label">M10 O(diff) &amp; Fairness</div><div class="val" id="st-m10-skips">-</div><div class="sub" id="st-m10-sub">0 tickets · 0 child</div></div>
         <div class="stat"><div class="label">Active Claims</div><div class="val" id="st-claims">-</div><div class="sub" id="st-grants">0 grants</div></div>
       </section>
 
@@ -347,11 +348,12 @@ fn page_html() : Text
             <input id="w-grant" placeholder="grant id" />
             <button class="primary" onclick="openWorld()">Open World</button>
             <select id="w-qname">
-              <option value="get_task">Query: get_task (fine)</option>
-              <option value="get_project">Query: get_project (fine)</option>
+              <option value="get_task">Query: get_task (key O(diff))</option>
+              <option value="get_project">Query: get_project (key O(diff))</option>
+              <option value="scan_tasks_range">Query: scan_tasks_range (range O(diff))</option>
               <option value="list_project_tasks">Query: list_project_tasks (coarse)</option>
             </select>
-            <input id="w-qarg" placeholder="query arg (task id or project id)" />
+            <input id="w-qarg" placeholder="task id, project id, or start..end" />
             <button onclick="queryWorld()">Run Query</button>
           </div>
           <div class="form-row">
@@ -360,10 +362,35 @@ fn page_html() : Text
             <input id="w-call-art" placeholder="artifact_id (optional)" />
             <button onclick="stageWorldComplete()">Stage complete_task Call</button>
           </div>
+          <div class="form-row">
+            <input id="w-parent-id" placeholder="parent world id (blank=World ID)" />
+            <input id="w-child-id" placeholder="child world id" />
+            <input id="w-child-grant" placeholder="attenuated child grant id" />
+            <button onclick="openChildWorld()">Fork Child World</button>
+          </div>
+          <div class="form-row">
+            <input id="w-prio-id" placeholder="ticket world id (blank=World ID)" />
+            <input id="w-prio-buckets" value="tasks,projects" placeholder="buckets csv" />
+            <input id="w-prio-thresh" type="number" value="1" placeholder="min stale" style="max-width:95px" />
+            <input id="w-prio-hold" type="number" value="15" placeholder="hold sec (1..60)" style="max-width:110px" />
+            <button onclick="claimWorldPriority()">Claim Fairness Ticket</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Milestone 10 Telemetry &amp; Active Fairness Tickets <span class="pill purple">O(diff) · Child · Fair</span></h2>
+          <div id="m10-telemetry-pills" class="summary-pills">
+            <span class="pill">key_skipped 0</span>
+            <span class="pill">bucket_skipped 0</span>
+            <span class="pill">child_landed 0</span>
+            <span class="pill">tickets 0</span>
+            <span class="pill">deferrals 0</span>
+            <span class="pill">rescued 0</span>
+          </div>
+          <div id="fairness-tickets-list" class="muted">No active priority tickets.</div>
         </div>
         <div class="grid-2">
           <div class="card">
-            <h2>Worlds Registry</h2>
+            <h2>Worlds Registry &amp; Child Hierarchy</h2>
             <div id="worlds-list" class="muted">No worlds yet.</div>
           </div>
           <div class="card">
@@ -677,13 +704,67 @@ fn page_html() : Text
           const id = $('w-id').value.trim();
           const query = $('w-qname').value;
           const rawArg = $('w-qarg').value.trim();
-          const args = query === 'get_task' ? Number(rawArg) : rawArg;
+          let args;
+          if (query === 'get_task') {
+            args = Number(rawArg);
+          } else if (query === 'scan_tasks_range') {
+            if (!rawArg) {
+              args = { start_id: null, end_id: null, limit: 50 };
+            } else if (rawArg.startsWith('{')) {
+              args = JSON.parse(rawArg);
+            } else if (rawArg.includes('..')) {
+              const parts = rawArg.split('..');
+              const s = parts[0].trim();
+              const e = parts[1].trim();
+              args = {
+                start_id: s === '' ? null : Number(s),
+                end_id: e === '' ? null : Number(e),
+                limit: 50,
+              };
+            } else {
+              const n = Number(rawArg);
+              args = { start_id: n, end_id: n + 1, limit: 50 };
+            }
+          } else {
+            args = rawArg;
+          }
           const out = await api('POST', '/worlds/' + encodeURIComponent(id) + '/query', { query, args }, true);
           $('diff-world-label').textContent = id + ' query';
           $('world-diff-out').textContent = JSON.stringify(out, null, 2);
           toast('World query recorded on ' + id, 'ok');
           await refreshAll(true);
         } catch (e) { toast(e.message, 'err'); }
+      }
+
+      async function openChildWorld() {
+        try {
+          const parentId = $('w-parent-id').value.trim() || $('w-id').value.trim();
+          const id = $('w-child-id').value.trim();
+          const grant_id = $('w-child-grant').value.trim();
+          await api('POST', '/worlds/' + encodeURIComponent(parentId) + '/children', {
+            id,
+            grant_id,
+            ttl_seconds: 300,
+          }, true);
+          toast('Forked child World ' + id + ' from ' + parentId, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Fork child failed: ' + e.message, 'err'); }
+      }
+
+      async function claimWorldPriority() {
+        try {
+          const wid = $('w-prio-id').value.trim() || $('w-id').value.trim();
+          const buckets = $('w-prio-buckets').value.split(',').map((s) => s.trim()).filter(Boolean);
+          const min_stale_threshold = Number($('w-prio-thresh').value || 1);
+          const hold_seconds = Number($('w-prio-hold').value || 15);
+          const t = await api('POST', '/worlds/' + encodeURIComponent(wid) + '/priority', {
+            buckets,
+            min_stale_threshold,
+            hold_seconds,
+          }, true);
+          toast('Priority ticket issued for ' + wid + ' on [' + t.buckets.join(', ') + ']', 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Priority claim failed: ' + e.message, 'err'); }
       }
 
       async function stageWorldComplete() {
@@ -723,6 +804,30 @@ fn page_html() : Text
           toast('Landed world ' + id + ' (txid=' + r.commit_txid + ')', 'ok');
           await refreshAll(true);
         } catch (e) { toast('Land failed: ' + e.message, 'err'); await refreshAll(true); }
+      }
+
+      async function landWorldFair(id) {
+        try {
+          const out = await api('POST', '/worlds/' + encodeURIComponent(id) + '/land-fair', null, true);
+          if (out && out.landed_ok) {
+            const r = out.landed_ok.result || out.landed_ok;
+            toast('Landed world ' + id + ' cleanly (txid=' + r.commit_txid + ', skipped=' + r.reads_skipped + ')', 'ok');
+          } else if (out && out.deferred_by_fairness) {
+            const t = out.deferred_by_fairness.ticket;
+            toast('Deferred by fairness ticket on ' + (t ? t.world_id : '?') + ' (retry after ' + out.deferred_by_fairness.retry_after + ')', 'warn');
+          } else {
+            toast('Fair land result: ' + JSON.stringify(out), 'ok');
+          }
+          await refreshAll(true);
+        } catch (e) { toast('Fair land failed: ' + e.message, 'err'); await refreshAll(true); }
+      }
+
+      async function landChildWorld(id) {
+        try {
+          const r = await api('POST', '/worlds/' + encodeURIComponent(id) + '/land-child', null, true);
+          toast('Merged child ' + id + ' into ' + r.parent_world_id + ' (' + r.calls_merged + ' calls)', 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Child merge failed: ' + e.message, 'err'); await refreshAll(true); }
       }
 
       async function abortWorld(id) {
@@ -948,15 +1053,45 @@ fn page_html() : Text
           + '</tbody></table>';
       }
 
-      function renderWorlds(worlds, metrics) {
+      function renderWorlds(worlds, metrics, worldTelemetry) {
         const openCount = worlds.filter((w) => enumTag(w.status) === 'open').length;
         const skipped = metrics.total_reads_skipped || 0;
         const verified = metrics.total_reads_verified || 0;
+        const tel = (worldTelemetry && worldTelemetry.telemetry) || {};
+        const tickets = (worldTelemetry && worldTelemetry.active_tickets) || [];
+        const links = (worldTelemetry && worldTelemetry.links) || [];
+        const linkByChild = new Map();
+        links.forEach((l) => linkByChild.set(l.child_world_id, l));
+        const ticketByWorld = new Map();
+        tickets.forEach((t) => ticketByWorld.set(t.world_id, t));
+
         $('st-worlds').textContent = String(metrics.total_landed || 0);
         $('st-open-worlds').textContent = openCount + ' open · ' + skipped + '/' + verified + ' skipped';
         $('st-open-worlds').title = skipped + ' of ' + verified + ' World reads skipped via CoW O(diff)';
         $('st-retries').textContent = String(metrics.stale_read_rejections || 0);
         $('st-needless').textContent = (metrics.needless_send_backs || 0) + ' needless';
+        $('st-m10-skips').textContent = String(tel.key_level_reads_skipped || 0) + ' key';
+        $('st-m10-sub').textContent = (tel.fairness_tickets_issued || 0) + ' tickets · ' + (tel.child_worlds_landed || 0) + ' child';
+
+        $('m10-telemetry-pills').innerHTML =
+          '<span class="pill info">key_skipped ' + (tel.key_level_reads_skipped || 0) + '</span>'
+          + '<span class="pill">bucket_skipped ' + (tel.bucket_level_reads_skipped || 0) + '</span>'
+          + '<span class="pill purple">child_landed ' + (tel.child_worlds_landed || 0) + '</span>'
+          + '<span class="pill warn">tickets_issued ' + (tel.fairness_tickets_issued || 0) + '</span>'
+          + '<span class="pill warn">deferrals ' + (tel.fairness_deferrals || 0) + '</span>'
+          + '<span class="pill ok">rescued ' + (tel.starved_worlds_rescued || 0) + '</span>';
+
+        if (!tickets.length) {
+          $('fairness-tickets-list').innerHTML = '<div class="muted">No active priority tickets.</div>';
+        } else {
+          $('fairness-tickets-list').innerHTML = '<table><thead><tr><th>World</th><th>Principal</th><th>Buckets</th><th>Expires</th></tr></thead><tbody>'
+            + tickets.map((t) => '<tr><td class="mono">' + esc(t.world_id) + '</td>'
+              + '<td class="mono">' + esc(t.principal) + '</td>'
+              + '<td class="mono">[' + esc((t.buckets || []).join(', ')) + ']</td>'
+              + '<td class="mono muted">' + esc(t.expires_at) + '</td></tr>').join('')
+            + '</tbody></table>';
+        }
+
         if (!worlds.length) {
           $('worlds-list').innerHTML = '<div class="muted">No worlds opened yet.</div>';
           return;
@@ -964,19 +1099,32 @@ fn page_html() : Text
         $('worlds-list').innerHTML = '<table><thead><tr><th>World</th><th>Status</th><th>Grant</th><th>Base TX</th><th>Steps</th><th>Actions</th></tr></thead><tbody>'
           + worlds.slice().reverse().map((w) => {
             const st = enumTag(w.status);
-            const stText = (w.status && w.status.landed) ? ('landed #' + w.status.landed.commit_txid) : st;
+            const lnk = linkByChild.get(w.id);
+            const isChild = Boolean(lnk);
+            const isMerged = Boolean(lnk && (lnk['merged_into_parent?'] || lnk.merged_into_parent));
+            const hasTicket = ticketByWorld.has(w.id);
+            const stText = (w.status && w.status.landed)
+              ? (w.status.landed.commit_txid === 0 && isChild ? 'merged into parent' : ('landed #' + w.status.landed.commit_txid))
+              : st;
             const cls = st === 'open' ? 'info' : (st === 'landed' ? 'ok' : 'warn');
             const steps = w.steps || [];
             const qCount = steps.filter((s) => s && typeof s === 'object' && 'read_step' in s).length;
             const cCount = steps.filter((s) => s && typeof s === 'object' && 'call_step' in s).length;
+            const childBadge = isChild
+              ? '<div class="mono muted">&lfloor; child of ' + esc(lnk.parent_world_id) + ' (wm=' + lnk.parent_step_watermark + ')' + (isMerged ? ' <span class="pill purple">merged</span>' : '') + '</div>'
+              : '';
+            const prioBadge = hasTicket ? ' <span class="pill warn">priority</span>' : '';
             const acts = st === 'open'
               ? '<div class="actions-cell">'
                 + '<button class="small" data-action="world-diff" data-id="' + esc(w.id) + '">Diff</button>'
-                + '<button class="small success" data-action="world-land" data-id="' + esc(w.id) + '">Land</button>'
+                + (isChild
+                    ? '<button class="small success" data-action="world-land-child" data-id="' + esc(w.id) + '">Merge Child</button>'
+                    : '<button class="small success" data-action="world-land" data-id="' + esc(w.id) + '">Land</button>'
+                      + '<button class="small" data-action="world-land-fair" data-id="' + esc(w.id) + '">Land Fair</button>')
                 + '<button class="small danger" data-action="world-abort" data-id="' + esc(w.id) + '">Abort</button>'
                 + '</div>'
               : '<span class="mono muted">closed</span>';
-            return '<tr><td class="mono">' + esc(w.id) + '</td>'
+            return '<tr><td class="mono">' + esc(w.id) + prioBadge + childBadge + '</td>'
               + '<td><span class="pill ' + cls + '">' + esc(stText) + '</span></td>'
               + '<td class="mono">' + esc(w.grant_id) + '</td>'
               + '<td class="mono">' + w.base_txid + '</td>'
@@ -1075,6 +1223,8 @@ fn page_html() : Text
         else if (act === 'release-claim') releaseClaim(id);
         else if (act === 'world-diff') inspectDiff(id);
         else if (act === 'world-land') landWorld(id);
+        else if (act === 'world-land-fair') landWorldFair(id);
+        else if (act === 'world-land-child') landChildWorld(id);
         else if (act === 'world-abort') abortWorld(id);
         else if (act === 'proposal-accept') acceptProposal(id);
         else if (act === 'proposal-discard') discardProposal(id);
@@ -1106,12 +1256,13 @@ fn page_html() : Text
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
 
-          const [projects, grants, claims, worlds, metrics, calls, proposals, audit, reads] = await Promise.all([
+          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads] = await Promise.all([
             api('GET', '/projects'),
             api('GET', '/grants'),
             api('GET', '/claims'),
             api('GET', '/worlds'),
             api('GET', '/worlds/metrics'),
+            api('GET', '/worlds/telemetry'),
             api('GET', '/admin/replay/calls'),
             api('GET', '/admin/replay/proposals'),
             api('GET', auditPath),
@@ -1121,7 +1272,7 @@ fn page_html() : Text
           await refreshTasks();
           renderGrants(grants);
           renderClaims(claims);
-          renderWorlds(worlds, metrics);
+          renderWorlds(worlds, metrics, worldTelemetry);
           renderCalls(calls);
           renderProposals(proposals);
           renderAudit(audit);

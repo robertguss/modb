@@ -129,13 +129,19 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 35, len(tools)
+            assert len(tools) >= 41, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_list_grants",
                 "modb_list_worlds",
                 "modb_world_diff",
                 "modb_world_land",
+                "modb_world_telemetry",
+                "modb_world_open_child",
+                "modb_world_list_children",
+                "modb_world_land_child",
+                "modb_world_claim_priority",
+                "modb_world_land_fair",
                 "modb_replay_simulate",
                 "modb_replay_accept",
                 "modb_export_snapshot",
@@ -286,6 +292,145 @@ def main() -> int:
             is_err, ver = call_tool(proc, 20, "modb_verify", {})
             assert not is_err and ver["ok"] is True, (is_err, ver)
 
+            # Milestone 10: Range O(diff) skipping, Nested Child Worlds & Fairness Landing via MCP!
+            is_err, del_child = call_tool(
+                proc,
+                110,
+                "modb_delegate_grant",
+                {
+                    "parent_id": "g-sre",
+                    "id": "g-sre-child",
+                    "principal": "agent:sre-child",
+                    "allowed_actions": ["complete_task"],
+                    "max_calls": 5,
+                    "ttl_seconds": 1800,
+                    "reason": "delegate M10 child grant",
+                },
+            )
+            assert not is_err and del_child["id"] == "g-sre-child", (is_err, del_child)
+
+            for tid, title in [(403, "M10 task 403"), (404, "M10 task 404")]:
+                is_err, created_t = call_tool(
+                    proc,
+                    110 + (tid - 402),
+                    "modb_create_task",
+                    {
+                        "id": tid,
+                        "project_id": "payments",
+                        "title": title,
+                        "base_cost_cents": 4000,
+                        "reason": f"create task {tid} for M10",
+                    },
+                )
+                assert not is_err and created_t["id"] == tid, (is_err, created_t)
+
+            is_err, wp = call_tool(
+                proc,
+                113,
+                "modb_world_open",
+                {"id": "w-m10-parent", "grant_id": "g-sre", "ttl_seconds": 600},
+            )
+            assert not is_err and wp["id"] == "w-m10-parent", (is_err, wp)
+
+            is_err, rng = call_tool(
+                proc,
+                114,
+                "modb_world_query",
+                {
+                    "world_id": "w-m10-parent",
+                    "query": "scan_tasks_range",
+                    "args": {"start_id": 403, "end_id": 405, "limit": 20},
+                },
+            )
+            assert not is_err and [r["id"] for r in rng] == [403, 404], (is_err, rng)
+
+            is_err, wc = call_tool(
+                proc,
+                115,
+                "modb_world_open_child",
+                {
+                    "parent_world_id": "w-m10-parent",
+                    "id": "w-m10-child",
+                    "grant_id": "g-sre-child",
+                    "ttl_seconds": 300,
+                },
+            )
+            assert not is_err and wc["id"] == "w-m10-child", (is_err, wc)
+
+            is_err, kids = call_tool(
+                proc, 116, "modb_world_list_children", {"parent_world_id": "w-m10-parent"}
+            )
+            assert not is_err and [w["id"] for w in kids] == ["w-m10-child"], (is_err, kids)
+
+            is_err, wc_call = call_tool(
+                proc,
+                117,
+                "modb_world_call",
+                {
+                    "world_id": "w-m10-child",
+                    "action": "complete_task",
+                    "args": {
+                        "task_id": 403,
+                        "assignee": "agent:sre-child",
+                        "artifact_id": "art-pay-403",
+                        "artifact_summary": "Child M10 task output",
+                        "artifact_sha256": "m10child0403",
+                    },
+                    "reason": "child completes 403",
+                },
+            )
+            assert not is_err, (is_err, wc_call)
+
+            is_err, lc = call_tool(
+                proc,
+                118,
+                "modb_world_land_child",
+                {"world_id": "w-m10-child", "reason": "merge M10 child 403"},
+            )
+            assert not is_err and lc["calls_merged"] == 1 and lc["parent_world_id"] == "w-m10-parent", (
+                is_err,
+                lc,
+            )
+
+            # Mutate disjoint task #402 directly on main line (outside [403, 405)) so O(diff) skips range!
+            is_err, d402 = call_tool(
+                proc,
+                119,
+                "modb_complete_task",
+                {
+                    "task_id": 402,
+                    "assignee": "agent:sre",
+                    "artifact_id": "art-pay-402",
+                    "artifact_summary": "Direct disjoint complete 402",
+                    "artifact_sha256": "m10direct402",
+                    "reason": "disjoint direct complete",
+                },
+            )
+            assert not is_err, (is_err, d402)
+
+            is_err, lf = call_tool(
+                proc,
+                120,
+                "modb_world_land_fair",
+                {"world_id": "w-m10-parent", "reason": "land M10 parent fairly"},
+            )
+            assert not is_err and isinstance(lf, dict) and "landed_ok" in lf, (is_err, lf)
+            lf_res = lf["landed_ok"]["result"]
+            assert lf_res["calls_replayed"] == 1 and lf_res["reads_skipped"] >= 1, lf_res
+
+            is_err, tel = call_tool(proc, 121, "modb_world_telemetry", {})
+            assert not is_err, tel
+            tcounts = tel["telemetry"]
+            assert tcounts["key_level_reads_skipped"] >= 1 and tcounts["child_worlds_landed"] == 1, tel
+            assert any(
+                lnk["child_world_id"] == "w-m10-child"
+                and (lnk.get("merged_into_parent?") or lnk.get("merged_into_parent"))
+                for lnk in tel["links"]
+            ), tel
+
+            is_err, ver2 = call_tool(proc, 122, "modb_verify", {})
+            assert not is_err and ver2["ok"] is True, (is_err, ver2)
+
             # 4. Extract live Inspector UI URL from stderr and verify UI + inspector HTTP routes!
             base_url = None
             for line in stderr_lines:
@@ -297,6 +442,7 @@ def main() -> int:
 
             st_ui, html = http_get(f"{base_url}/")
             assert st_ui == 200 and "MoDB AgentWorkbench" in html and "Replay Studio" in html
+            assert "scan_tasks_range" in html and "Fork Child World" in html
             st_ui2, html2 = http_get(f"{base_url}/ui")
             assert st_ui2 == 200 and html2 == html
 
@@ -306,6 +452,7 @@ def main() -> int:
                 "/claims",
                 "/worlds",
                 "/worlds/metrics",
+                "/worlds/telemetry",
                 "/reads",
                 "/audit",
                 "/admin/replay/calls",
@@ -316,10 +463,11 @@ def main() -> int:
                 json.loads(body)
 
             print(
-                f"PASS: Milestone 7+8 stdio MCP + Live Inspector UI verified "
+                f"PASS: Milestone 7+8+10 stdio MCP + Live Inspector UI verified "
                 f"(tools={len(tools)}, ui={base_url}/, reads_skipped={landed['reads_skipped']}, "
+                f"key_skips={tcounts['key_level_reads_skipped']}, child_landed={tcounts['child_worlds_landed']}, "
                 f"infra_spent=20000c, payments_spent=8000c, "
-                f"export_entries={snap['entry_count']}, txid={ver['txid']}, hash={ver['last_audit_hash'][:16]}...)"
+                f"export_entries={snap['entry_count']}, txid={ver2['txid']}, hash={ver2['last_audit_hash'][:16]}...)"
             )
             return 0
         finally:

@@ -240,3 +240,9 @@ Measured on disk via pure-Rust `mo` (`4 KiB` synced B+Tree pages) after `398` au
 | World telemetry counters (after M10 run) | `WorldTelemetry` cumulative counters | `key_skipped=10`, `bucket_skipped=2`, `child_landed=1` |
 | `mo test src/modb/cli.mo` | 21 embedded standalone schema-less `modb` CLI unit tests | **`1,814.5 ms`** (`21 passed, 0 failed`) |
 | `mo test tests/test-m10-worlds-cli.mo` | 5 M10 integration tests (key/range O(diff) + negative controls, fairness tickets, multi-level Child Worlds, `Cli.run_cli`) | **`1,804.9 ms`** (`5 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | 3 full HTTP + MCP + M10 integration suites (`ApiTest.send`) | **`3 passed, 0 failed`** |
+| `tests/test_workbench_mcp_and_ui.py` (`AgentWorkbench` M7+M8+M10 E2E) | `mo serve --workers 8`, `41` MCP tools, Inspector UI, `131` export entries | **PASS** (`reads_skipped = 1`, `key_skips = 1`, `child_landed = 1`, `txid = 42`) |
+| `bench/real_world_agent_sim.py` Phase 1B (`get_task` key O(diff) + Claims) | 6 workers + 2 readers, 18 tasks on `mo serve --workers 8` | **`2.29 s`** (`stale_retries = 0`, `needless_send_backs = 0`, **`key_skips = 15`**, `land p50 = 195.9 ms`) |
+| `bench/real_world_agent_sim.py` Phase 4A (`scan_tasks_range`) | 4 concurrent Worlds sharing base snapshot, disjoint ranges `[501..521)` | **`range_key_skips = 3`** (`p50 = 173.5 ms`, `0` retries) |
+| `bench/real_world_agent_sim.py` Phase 4B (Starvation fairness rescue) | `PriorityTicket` (`hold = 20 s`) vs 3 concurrent competitors (`land-fair`) | **`deferrals = 3`**, **`rescued = 1`** (`rescue = 62.6 ms`) |
+| `bench/real_world_agent_sim.py` Phase 4C (Concurrent Nested Child Worlds) | 2 concurrent sibling Child Worlds (`w-m10-kid-a`, `w-m10-kid-b`) -> parent land | **`child_worlds_merged = 2`** (`child p50 = 91.9 ms`, `parent_land = 93.3 ms`; `/admin/verify = 244.1 ms`, `txid = 529`) |

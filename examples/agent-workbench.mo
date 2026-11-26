@@ -180,6 +180,30 @@ struct WorldCallInput
   args: Json
 end
 
+struct TaskRangeInput
+  start_id: Option(Int)
+  end_id: Option(Int)
+  limit: Option(Int)
+end
+
+struct ChildWorldOpenInput
+  id: Text
+  grant_id: Text
+  ttl_seconds: Int
+end
+
+struct PriorityClaimInput
+  buckets: List(Text)
+  min_stale_threshold: Option(Int)
+  hold_seconds: Int
+end
+
+struct WorldTelemetryResponse
+  telemetry: World.WorldTelemetry
+  active_tickets: List(World.PriorityTicket)
+  links: List(World.WorldLink)
+end
+
 struct ReplaySimulateInput
   proposal_id: Text
   description: Text
@@ -274,10 +298,16 @@ api
     post "" post_world
     get "" list_worlds
     get "/metrics" get_world_metrics
+    get "/telemetry" get_world_telemetry
+    post "/:id/children" post_world_child
+    get "/:id/children" list_world_children
     post "/:id/query" post_world_query
     post "/:id/call" post_world_call
     get "/:id/diff" get_world_diff
     post "/:id/land" post_world_land
+    post "/:id/land-fair" post_world_land_fair
+    post "/:id/land-child" post_world_land_child
+    post "/:id/priority" post_world_priority
     delete "/:id" delete_world
   end
 
@@ -746,29 +776,52 @@ fn action_complete_task(overhead_pct: Int) : fn(Modb.WriteTx, Json) : Result(
 end
 
 ## Approved query & write action catalog exposed to speculative multi-agent Worlds.
-## Includes both fine-grained queries (`get_task`, `get_project`) and a coarse query
-## (`list_project_tasks`) so real workloads can directly measure needless send-back rates!
+## Includes key/range O(diff) queries (`get_task`, `get_project`, `scan_tasks_range`) and a
+## coarse query (`list_project_tasks`) so real workloads can directly measure needless send-backs!
 fn workbench_catalog() : World.Catalog
   projs = projects_table()
   tasks = tasks_table()
   p_idx = tasks_by_project_index()
-  World.catalog().with_scoped_query(
+  World.catalog().with_key_scoped_query(
     "get_project",
-    ["projects"],
+    "projects",
+    fn(args)
+      pid = try Json.decode[Text](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      Ok(Table.encode_text_key(pid))
+    end,
     fn(tx, args)
       pid = try Json.decode[Text](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
       p_opt = try Table.tx_get(tx, projs, pid).map_error(fn(e) e.to_text end)
       proj = try p_opt.or_fail("project '#{pid}' not found")
       Ok(project_to_row(pid, proj).to_json)
     end
-  ).with_scoped_query(
+  ).with_key_scoped_query(
     "get_task",
-    ["tasks"],
+    "tasks",
+    fn(args)
+      tid = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      Ok(Table.encode_int_key(tid))
+    end,
     fn(tx, args)
       tid = try Json.decode[Int](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
       t_opt = try Table.tx_get(tx, tasks, tid).map_error(fn(e) e.to_text end)
       t = try t_opt.or_fail("task ##{tid} not found")
       Ok(task_to_row(tid, t).to_json)
+    end
+  ).with_range_scoped_query(
+    "scan_tasks_range",
+    "tasks",
+    fn(args)
+      inp = try Json.decode[TaskRangeInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      Ok((inp.start_id.map(Table.encode_int_key), inp.end_id.map(Table.encode_int_key)))
+    end,
+    fn(tx, args)
+      inp = try Json.decode[TaskRangeInput](Json.encode(args).bytes).map_error(fn(e) e.to_text end)
+      cap = inp.limit or 100
+      rows = try Table.tx_scan(tx, tasks, inp.start_id, inp.end_id, cap).map_error(fn(e)
+        e.to_text
+      end)
+      Ok(rows.map(fn(p) task_to_row(p.0, p.1) end).to_json)
     end
   ).with_scoped_query(
     "list_project_tasks",
@@ -1626,6 +1679,65 @@ fn get_world_metrics(rf: ReadFiles) : Result(World.LandingMetrics, WorkbenchErro
   )
 end
 
+fn get_world_telemetry(rf: ReadFiles, clock: Clock) : Result(
+  WorldTelemetryResponse,
+  WorkbenchError
+)
+  now = clock.now
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      tel = try World.telemetry(st).map_error(map_world_error)
+      tickets = try World.list_priority_tickets(st, now).map_error(map_world_error)
+      ws = try World.list_worlds(st).map_error(map_world_error)
+      var links = []
+      for w in ws
+        if (try World.get_world_link(st, w.id).map_error(map_world_error)) is Some(lnk)
+          links = links.append(lnk)
+        end
+      end
+      Ok(WorldTelemetryResponse(telemetry: tel, active_tickets: tickets, links: links))
+    end
+  )
+end
+
+fn post_world_child(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: ChildWorldOpenInput
+) : Result(World.WorldRecord, WorkbenchError)
+  _ = caller
+  return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
+  now = clock.now
+  exp = now + 1.second * body.ttl_seconds
+  World.open_child_world_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    body.id,
+    body.grant_id,
+    now,
+    exp
+  ).map_error(map_world_error)
+end
+
+fn list_world_children(rf: ReadFiles, id: Text) : Result(List(World.WorldRecord), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) World.list_child_worlds(Ledger.store(db), id).map_error(map_world_error) end
+  )
+end
+
 fn post_world_query(caller: Caller, files: Files, clock: Clock, id: Text, body: WorldQueryInput) : Result(
   Json,
   WorkbenchError
@@ -1681,6 +1793,63 @@ fn post_world_land(caller: Caller, files: Files, clock: Clock, id: Text) : Resul
     workbench_catalog(),
     id,
     reason,
+    clock.now
+  ).map_error(map_world_error)
+end
+
+fn post_world_land_fair(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  World.LandOutcome,
+  WorkbenchError
+)
+  reason = (caller.reason or "").trim
+  return Error(MissingReason) if reason.empty?
+  World.land_world_fair_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_catalog(),
+    id,
+    reason,
+    clock.now
+  ).map_error(map_world_error)
+end
+
+fn post_world_land_child(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  World.ChildLandResult,
+  WorkbenchError
+)
+  reason = (caller.reason or "").trim
+  return Error(MissingReason) if reason.empty?
+  World.land_child_world_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    workbench_catalog(),
+    id,
+    reason,
+    clock.now
+  ).map_error(map_world_error)
+end
+
+fn post_world_priority(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: PriorityClaimInput
+) : Result(World.PriorityTicket, WorkbenchError)
+  _ = caller
+  return Error(InvalidInput(reason: "hold_seconds must be > 0")) if body.hold_seconds <= 0
+  return Error(InvalidInput(reason: "buckets cannot be empty")) if body.buckets.empty?
+  threshold = body.min_stale_threshold or 1
+  World.claim_priority_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    body.buckets,
+    threshold,
+    body.hold_seconds,
     clock.now
   ).map_error(map_world_error)
 end
@@ -2446,13 +2615,18 @@ fn mcp_tools_list() : Json
       ),
       mcp_tool_def(
         "modb_world_query",
-        "Execute and record a snapshot query inside an open World (get_task, get_project, list_project_tasks).",
+        "Execute and record a snapshot query inside an open World (get_task, get_project, scan_tasks_range, list_project_tasks).",
         mcp_schema(
           {
             "world_id": mcp_prop("string", "Open World ID"),
-            "query": mcp_prop("string", "Query name: get_task | get_project | list_project_tasks"),
+            "query": mcp_prop(
+              "string",
+              "Query name: get_task | get_project | scan_tasks_range | list_project_tasks"
+            ),
             "args": Json.Object({
-              "description": Json.String("Query argument (task int ID or project string ID)")
+              "description": Json.String(
+                "Query argument (task int ID, project string ID, or {start_id, end_id, limit})"
+              )
             })
           },
           ["world_id", "query", "args"]
@@ -2479,7 +2653,7 @@ fn mcp_tools_list() : Json
       ),
       mcp_tool_def(
         "modb_world_diff",
-        "Inspect the exact structural CoW O(diff) of an open World against its pinned base.",
+        "Inspect the exact structural CoW O(diff) of an open World against its pinned base (or parent fork watermark for Child Worlds).",
         mcp_schema({"world_id": mcp_prop("string", "Open World ID")}, ["world_id"])
       ),
       mcp_tool_def(
@@ -2492,8 +2666,69 @@ fn mcp_tools_list() : Json
       ),
       mcp_tool_def(
         "modb_world_abort",
-        "Abort an open speculative World and release its pinned CoW root.",
+        "Abort an open speculative World and release its pinned CoW root (cascades to open Child Worlds).",
         mcp_schema({"world_id": mcp_prop("string", "Open World ID")}, ["world_id"])
+      ),
+      mcp_tool_def(
+        "modb_world_telemetry",
+        "Read Milestone 10 World telemetry (key/range O(diff) skips, child landings, active fairness PriorityTickets, and Child World links).",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_world_open_child",
+        "Fork an attenuated Nested Child World from an open Parent World with bounded TTL and non-widening Grant.",
+        mcp_schema(
+          {
+            "parent_world_id": mcp_prop("string", "Open Parent World ID"),
+            "id": mcp_prop("string", "New Child World ID"),
+            "grant_id": mcp_prop("string", "Descendant or same Grant ID (cannot widen parent Grant)"),
+            "ttl_seconds": mcp_prop("integer", "Child World TTL in seconds (capped at parent expiry)")
+          },
+          ["parent_world_id", "id", "grant_id", "ttl_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_list_children",
+        "List all Nested Child Worlds forked from a Parent World.",
+        mcp_schema(
+          {"parent_world_id": mcp_prop("string", "Parent World ID")},
+          ["parent_world_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_land_child",
+        "Validate child reads against post-fork parent mutations (via O(diff)) and atomically merge a Child World into its Parent World.",
+        mcp_schema(
+          {"world_id": mcp_prop("string", "Open Child World ID"), "reason": reason_p},
+          ["world_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_claim_priority",
+        "Issue a bounded (1..60s) fairness PriorityTicket for a starved open World so competing writes yield during land_fair.",
+        mcp_schema(
+          {
+            "world_id": mcp_prop("string", "Open World ID whose principal has starved"),
+            "buckets": Json.Object({
+              "type": Json.String("array"),
+              "items": Json.Object({"type": Json.String("string")})
+            }),
+            "min_stale_threshold": mcp_prop(
+              "integer",
+              "Minimum consecutive StaleRead rejections required (default 1)"
+            ),
+            "hold_seconds": mcp_prop("integer", "Ticket hold duration in seconds (1..60)")
+          },
+          ["world_id", "buckets", "hold_seconds"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_world_land_fair",
+        "Fairness-aware World landing: checks active PriorityTickets and yields DeferredByFairness instead of clobbering starved Worlds.",
+        mcp_schema(
+          {"world_id": mcp_prop("string", "Open World ID"), "reason": reason_p},
+          ["world_id"]
+        )
       ),
       mcp_tool_def(
         "modb_audit_log",
@@ -2740,6 +2975,34 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Ok(wid): mcp_encode_result(delete_world(eff, files, clock, wid))
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
+    "modb_world_telemetry": mcp_encode_result(get_world_telemetry(rf, clock))
+    "modb_world_open_child":
+      case (mcp_req_text(args, "parent_world_id"), Json.from_json[ChildWorldOpenInput](args))
+        (Ok(pwid), Ok(inp)): mcp_encode_result(post_world_child(eff, files, clock, pwid, inp))
+        (Error(e), _): mcp_tool_result(Json.encode(e), true)
+        (_, Error(e)): mcp_tool_result(e.to_text, true)
+      end
+    "modb_world_list_children":
+      case mcp_req_text(args, "parent_world_id")
+        Ok(pwid): mcp_encode_result(list_world_children(rf, pwid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_world_land_child":
+      case mcp_req_text(args, "world_id")
+        Ok(cwid): mcp_encode_result(post_world_land_child(eff, files, clock, cwid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_world_claim_priority":
+      case (mcp_req_text(args, "world_id"), Json.from_json[PriorityClaimInput](args))
+        (Ok(wid), Ok(inp)): mcp_encode_result(post_world_priority(eff, files, clock, wid, inp))
+        (Error(e), _): mcp_tool_result(Json.encode(e), true)
+        (_, Error(e)): mcp_tool_result(e.to_text, true)
+      end
+    "modb_world_land_fair":
+      case mcp_req_text(args, "world_id")
+        Ok(wid): mcp_encode_result(post_world_land_fair(eff, files, clock, wid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
     "modb_audit_log": mcp_encode_result(
       get_audit(rf, args.text_at("principal"), args.text_at("action"), None, args.int_at("limit"))
     )
@@ -2813,7 +3076,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.7.0")
+              "version": Json.String("0.2.0")
             })
           })
         )
@@ -3373,4 +3636,617 @@ test "AgentWorkbench Milestone 7: Inspector UI, list endpoints, demo seeder, and
 
   reads_r = ApiTest.send(AgentWorkbench, Api.get("/reads"), files, ro, clock, env)
   assert reads_r.status == 200 and reads_r.text.contains?("tasks_public")
+end
+
+test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets, Nested Child Worlds & MCP"
+  files = Files.in_memory({})
+  ro = files.read_only
+  t0 = Time.parse("2026-11-25T20:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "WB_ADMIN_TOKEN": "tok-admin",
+    "WB_PLANNER_TOKEN": "tok-plan",
+    "WB_WORKER_TOKEN": "tok-work"
+  })
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/admin/init").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/projects").with_bearer("tok-admin").with_header("X-Reason", "init-pay").with_json(
+      ProjectInput(id: "payments", name: "Payments", budget_cents: 100000)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/projects").with_bearer("tok-admin").with_header("X-Reason", "init-sub").with_json(
+      ProjectInput(id: "subproj", name: "Subproj", budget_cents: 50000)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  for tid in [401, 402, 403, 404, 405]
+    assert ApiTest.send(
+      AgentWorkbench,
+      Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "seed-pay").with_json(
+        CreateTaskInput(id: tid, project_id: "payments", title: "Task ##{tid}", base_cost_cents: 1000)
+      ),
+      files,
+      ro,
+      clock,
+      env
+    ).status ==
+      200
+  end
+  for tid in [501, 502]
+    assert ApiTest.send(
+      AgentWorkbench,
+      Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "seed-sub").with_json(
+        CreateTaskInput(id: tid, project_id: "subproj", title: "Subtask ##{tid}", base_cost_cents: 2000)
+      ),
+      files,
+      ro,
+      clock,
+      env
+    ).status ==
+      200
+  end
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "g-root").with_json(
+      GrantInput(
+        id: "g-root",
+        principal: "agent:lead",
+        allowed_actions: ["create_task", "complete_task"],
+        allowed_views: None,
+        allowed_releases: None,
+        max_calls: 20,
+        ttl_seconds: 3600
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "g-worker").with_json(
+      GrantInput(
+        id: "g-worker",
+        principal: "agent:w1",
+        allowed_actions: ["complete_task"],
+        allowed_views: None,
+        allowed_releases: None,
+        max_calls: 10,
+        ttl_seconds: 3600
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/grants/g-root/delegate").with_bearer("tok-plan").with_header("X-Reason", "g-child")
+      .with_json(
+        GrantInput(
+          id: "g-child",
+          principal: "agent:child",
+          allowed_actions: ["complete_task"],
+          allowed_views: None,
+          allowed_releases: None,
+          max_calls: 5,
+          ttl_seconds: 1800
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/grants").with_bearer("tok-admin").with_header("X-Reason", "g-other").with_json(
+      GrantInput(
+        id: "g-other",
+        principal: "agent:other",
+        allowed_actions: ["complete_task"],
+        allowed_views: None,
+        allowed_releases: None,
+        max_calls: 5,
+        ttl_seconds: 1800
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## 1. Key-scoped & half-open range-scoped O(diff) read skipping + negative control
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds").with_bearer("tok-work").with_json(
+      WorldOpenInput(id: "w-range-skip", grant_id: "g-root", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-skip/query").with_bearer("tok-work").with_json(
+      WorldQueryInput(query: "get_task", args: Json.int(401))
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-skip/query").with_bearer("tok-work").with_json(
+      WorldQueryInput(
+        query: "scan_tasks_range",
+        args: TaskRangeInput(start_id: Some(402), end_id: Some(404), limit: Some(10)).to_json
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-skip/call").with_bearer("tok-work").with_header("X-Reason", "skip-call")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 405,
+            assignee: "agent:lead",
+            artifact_id: None,
+            artifact_summary: None,
+            artifact_sha256: None
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  ## Mutate disjoint task #404 on main line -> both get_task(401) and scan_tasks_range [402, 404) skip!
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/tasks/404/complete").with_bearer("tok-work").with_header("X-Agent-Id", "agent:direct")
+      .with_header("X-Reason", "disjoint-404").with_json(
+        CompleteTaskInput(
+          task_id: 404,
+          assignee: "agent:direct",
+          artifact_id: None,
+          artifact_summary: None,
+          artifact_sha256: None
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  land1 = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-skip/land").with_bearer("tok-work").with_header("X-Reason", "land-skip"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert land1.status == 200 and Json.decode_strict[World.LandResult](land1.text) is Ok(lr1)
+  assert lr1.reads_verified == 2 and lr1.reads_skipped == 2
+
+  ## Negative control: modifying #402 inside [401, 404) rejects stale world cleanly (409)
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds").with_bearer("tok-work").with_json(
+      WorldOpenInput(id: "w-range-stale", grant_id: "g-worker", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-stale/query").with_bearer("tok-work").with_json(
+      WorldQueryInput(
+        query: "scan_tasks_range",
+        args: TaskRangeInput(start_id: Some(401), end_id: Some(404), limit: Some(10)).to_json
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-stale/call").with_bearer("tok-work").with_header("X-Reason", "stale-call")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 403,
+            assignee: "agent:w1",
+            artifact_id: None,
+            artifact_summary: None,
+            artifact_sha256: None
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/tasks/402/complete").with_bearer("tok-work").with_header("X-Agent-Id", "agent:direct")
+      .with_header("X-Reason", "overlap-402").with_json(
+        CompleteTaskInput(
+          task_id: 402,
+          assignee: "agent:direct",
+          artifact_id: None,
+          artifact_summary: None,
+          artifact_sha256: None
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-stale/land").with_bearer("tok-work").with_header("X-Reason", "land-stale"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    409
+
+  ## 2. Fairness PriorityTicket: competitor yields `deferred_by_fairness`, starved rescues cleanly
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds").with_bearer("tok-work").with_json(
+      WorldOpenInput(id: "w-starved", grant_id: "g-worker", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-starved/call").with_bearer("tok-work").with_header("X-Reason", "starved-call")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 403,
+            assignee: "agent:w1",
+            artifact_id: None,
+            artifact_summary: None,
+            artifact_sha256: None
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds").with_bearer("tok-work").with_json(
+      WorldOpenInput(id: "w-comp", grant_id: "g-root", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-comp/call").with_bearer("tok-work").with_header("X-Reason", "comp-call")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 401,
+            assignee: "agent:lead",
+            artifact_id: None,
+            artifact_summary: None,
+            artifact_sha256: None
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-starved/priority").with_bearer("tok-work").with_json(
+      PriorityClaimInput(buckets: ["tasks", "projects"], min_stale_threshold: Some(1), hold_seconds: 15)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  comp_defer = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-comp/land-fair").with_bearer("tok-work").with_header("X-Reason", "comp-try"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert comp_defer.status == 200 and comp_defer.text.contains?("deferred_by_fairness")
+  starved_ok = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-starved/land-fair").with_bearer("tok-work").with_header("X-Reason", "rescue-me"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert starved_ok.status == 200 and starved_ok.text.contains?("landed_ok")
+  comp_ok = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-comp/land-fair").with_bearer("tok-work").with_header("X-Reason", "comp-retry"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert comp_ok.status == 200 and comp_ok.text.contains?("landed_ok")
+
+  ## 3. Nested Child Worlds + widening negative control + MCP + Replay excision
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds").with_bearer("tok-work").with_json(
+      WorldOpenInput(id: "w-parent", grant_id: "g-root", ttl_seconds: 600)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-parent/children").with_bearer("tok-work").with_json(
+      ChildWorldOpenInput(id: "w-bad-child", grant_id: "g-other", ttl_seconds: 300)
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    403
+  fork_mcp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(100),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_world_open_child"),
+          "arguments": Json.Object({
+            "parent_world_id": Json.String("w-parent"),
+            "id": Json.String("w-child"),
+            "grant_id": Json.String("g-child"),
+            "ttl_seconds": Json.int(300)
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert fork_mcp.status == 200 and fork_mcp.text.contains?("\"isError\":false")
+
+  kids_mcp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(101),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_world_list_children"),
+          "arguments": Json.Object({"parent_world_id": Json.String("w-parent")})
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert kids_mcp.status == 200 and kids_mcp.text.contains?("w-child")
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-parent/call").with_bearer("tok-work").with_header("X-Reason", "parent-501")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 501,
+            assignee: "agent:lead",
+            artifact_id: None,
+            artifact_summary: None,
+            artifact_sha256: None
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-child/query").with_bearer("tok-work").with_json(
+      WorldQueryInput(query: "get_task", args: Json.int(502))
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-child/call").with_bearer("tok-work").with_header("X-Reason", "child-502")
+      .with_json(
+        WorldCallInput(
+          action: "complete_task",
+          args: CompleteTaskInput(
+            task_id: 502,
+            assignee: "agent:child",
+            artifact_id: Some("art-502"),
+            artifact_summary: Some("Child artifact"),
+            artifact_sha256: Some("child502sha")
+          ).to_json
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+
+  cdiff_r = ApiTest.send(AgentWorkbench, Api.get("/worlds/w-child/diff"), files, ro, clock, env)
+  assert cdiff_r.status == 200 and
+    Json.decode_strict[List(World.BucketDiffSummary)](cdiff_r.text) is Ok(cdiff)
+  assert not cdiff.empty?
+
+  merge_mcp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(102),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_world_land_child"),
+          "arguments": Json.Object({
+            "world_id": Json.String("w-child"),
+            "reason": Json.String("merge child into parent")
+          })
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert merge_mcp.status == 200 and
+    merge_mcp.text.contains?("\"isError\":false") and
+    merge_mcp.text.contains?("calls_merged\\\":1")
+
+  land_p = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-parent/land").with_bearer("tok-work").with_header("X-Reason", "land-parent"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert land_p.status == 200 and Json.decode_strict[World.LandResult](land_p.text) is Ok(lr_p)
+  assert lr_p.calls_replayed == 2
+
+  tel_r = ApiTest.send(AgentWorkbench, Api.get("/worlds/telemetry"), files, ro, clock, env)
+  assert tel_r.status == 200 and Json.decode_strict[WorldTelemetryResponse](tel_r.text) is Ok(tel)
+  assert tel.telemetry.key_level_reads_skipped >= 2
+  assert tel.telemetry.child_worlds_landed == 1
+  assert tel.telemetry.fairness_tickets_issued >= 1
+  assert tel.telemetry.fairness_deferrals >= 1
+  assert tel.telemetry.starved_worlds_rescued >= 1
+  assert tel.links.any?(fn(l) l.child_world_id == "w-child" and l.merged_into_parent? end)
+
+  sim_child = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/admin/replay/simulate").with_bearer("tok-admin").with_header("X-Reason", "excise-child")
+      .with_json(
+        ReplaySimulateInput(
+          proposal_id: "prop-excise-child",
+          description: "Excise attributed child grant g-child",
+          exclude_principal: None,
+          exclude_grant: Some("g-child"),
+          exclude_world: None,
+          exclude_seqs: None,
+          stop_before_seq: None,
+          overhead_pct_override: None
+        )
+      ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert sim_child.status == 200 and
+    Json.decode_strict[Replay.ReplayProposal](sim_child.text) is Ok(prop_c)
+  assert prop_c.summary.excluded == 1
 end

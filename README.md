@@ -78,7 +78,7 @@ For multi-worker HTTP servers built with Mo's `api` block, pass read-only `ReadF
 | Example / Tool | How to run | What it demonstrates |
 | --- | --- | --- |
 | **CLI Roastery Demo** ([`examples/shop.mo`](examples/shop.mo)) | `TMP=$(mktemp -d) && mo run --root "$TMP" examples/shop.mo && rm -rf "$TMP"` | Typed records, exact `Decimal` arithmetic, unique & non-unique secondary indexes, O(1) snapshots, and persistence. |
-| **AgentWorkbench + Live Web Inspector** ([`examples/agent-workbench.mo`](examples/agent-workbench.mo), [`examples/workbench-ui.mo`](examples/workbench-ui.mo)) | `mo serve --workers 8 --data ./workbench-data examples/agent-workbench.mo` | 8-worker HTTP API (`:8092`), interactive browser Inspector UI (`GET /`), native Streamable HTTP MCP endpoint (`POST /mcp` with 35 tools), Grants, Claims, Speculative Worlds, Views, Releases, Replay Studio, and SHA-256 Export. |
+| **AgentWorkbench + Live Web Inspector** ([`examples/agent-workbench.mo`](examples/agent-workbench.mo), [`examples/workbench-ui.mo`](examples/workbench-ui.mo)) | `mo serve --workers 8 --data ./workbench-data examples/agent-workbench.mo` | 8-worker HTTP API (`:8092`), interactive browser Inspector UI (`GET /`), native Streamable HTTP MCP endpoint (`POST /mcp` with 41 tools), Grants, Claims, Speculative & Nested Child Worlds, Fairness Tickets, Views, Releases, Replay Studio, and SHA-256 Export. |
 | **Stdio MCP Bridge** ([`tools/modb_mcp_server.py`](tools/modb_mcp_server.py)) | `python3 tools/modb_mcp_server.py --data ./workbench-data` | Zero-dependency Python 3 stdio MCP server bridging Claude Desktop, Cursor, or T3 Code to a live `AgentWorkbench` instance (`--url` to attach, `--print-config` for host setup). |
 | **8-Worker E-Commerce API** ([`examples/shop-api.mo`](examples/shop-api.mo)) | `mo serve --workers 8 --data ./shop-data examples/shop-api.mo` | Least-privilege `ReadFiles`/`Files` locking, Layer 3 hash-chained ledger, commit invariants, migrations, and selective-undo replay. |
 
@@ -98,6 +98,7 @@ Full methodology, historical comparisons, and reproduction steps live in [`BENCH
 - **8-Worker Concurrent HTTP (`mo serve --workers 8`, post-native-JSON `mo`):**
   - `ShopApi` pure 8-thread reads: **`386.0 req/s`** (`0` errors, `p50 = 20.1 ms`); mixed 6 readers + 2 synced writers: **`333.6 req/s`** (`write p50 = 34.3 ms`, zero writer starvation)
   - `AgentWorkbench` multi-agent coordination (18 tasks): coarse queries hit `49` `StaleRead` retries (`4.59 s`), while fine queries + Claims achieved **`0` retries and `0` needless send-backs in `1.38 s`**
+  - Milestone 10 8-worker (`mo serve --workers 8`): fine key-level `get_task` skipped **`15` reads** naturally under 6-worker contention (`2.29 s`, `0` retries), disjoint `scan_tasks_range` skipped `3` concurrent range validations, `PriorityTicket` fairness deferred `3` competitors and rescued the starved World (`62.6 ms`), and `2` concurrent Child Worlds merged & landed cleanly (`BENCHMARKS.md` §11)
   - 82-call offline Replay simulation: **`132.6–183.2 ms`**, atomic acceptance: **`64.3–116.1 ms`**, 922-entry canonical SHA-256 export: **`31.6 ms`**
 
 ---
