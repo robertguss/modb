@@ -516,6 +516,21 @@ fn page_html() : Text
           </div>
           <div id="gov-proposals-list" class="muted">No governance proposals submitted yet.</div>
         </div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Session Taint Monitor <span class="pill warn">Lethal Trifecta</span></h2>
+            <div class="form-row">
+              <input id="taint-sess-id" placeholder="session id (e.g. sess-ops)" />
+              <input id="taint-sess-src" placeholder="untrusted source (e.g. web:ticket)" />
+              <button class="primary" onclick="recordUntrustedUi()">Mark Untrusted</button>
+            </div>
+            <div id="taint-sessions-list" class="muted">No tracked agent taint sessions yet.</div>
+          </div>
+          <div class="card">
+            <h2>Verifiable Erasure Receipts <span class="pill purple">Crypto-Shred + Re-Chain</span></h2>
+            <div id="erasures-list" class="muted">No GDPR / right-to-be-forgotten erasure receipts recorded yet.</div>
+          </div>
+        </div>
       </section>
 
       <section id="tab-replay" class="tab-panel hidden">
@@ -1320,7 +1335,7 @@ fn page_html() : Text
           + '</tbody></table>';
       }
 
-      function renderGovernance(policySum, govProps, feeds) {
+      function renderGovernance(policySum, govProps, feeds, taintSessions, erasures) {
         const clrs = (policySum && policySum.clearances) || [];
         const dviews = (policySum && policySum.dynamic_views) || [];
         if (!clrs.length && !dviews.length) {
@@ -1374,6 +1389,50 @@ fn page_html() : Text
               + '<div>' + btns + '</div></div></div>';
           }).join('');
         }
+
+        const ts = taintSessions || [];
+        if (!ts.length) {
+          $('taint-sessions-list').innerHTML = '<div class="muted">No tracked agent taint sessions yet.</div>';
+        } else {
+          $('taint-sessions-list').innerHTML = '<table><thead><tr><th>Session</th><th>Principal</th><th>Tainted</th><th>Max Sens</th><th>Blocked</th><th>Action</th></tr></thead><tbody>'
+            + ts.map((s) => '<tr><td class="mono"><strong>' + esc(s.id) + '</strong></td>'
+              + '<td class="mono">' + esc(s.principal) + '</td>'
+              + '<td>' + (s.untrusted_tainted ? '<span class="pill err">TAINTED</span>' : '<span class="pill ok">clean</span>') + '</td>'
+              + '<td><span class="pill purple">' + esc(enumTag(s.max_sensitivity_read)) + '</span></td>'
+              + '<td class="mono">' + (s.blocked_attempts || 0) + '</td>'
+              + '<td>' + (s.untrusted_tainted ? '<button class="small warn" data-action="taint-clear" data-id="' + esc(s.id) + '">Admin Clear</button>' : '<span class="muted">-</span>') + '</td></tr>').join('')
+            + '</tbody></table>';
+        }
+
+        const ers = erasures || [];
+        if (!ers.length) {
+          $('erasures-list').innerHTML = '<div class="muted">No GDPR / right-to-be-forgotten erasure receipts recorded yet.</div>';
+        } else {
+          $('erasures-list').innerHTML = '<table><thead><tr><th>Receipt</th><th>Subject SHA-256</th><th>Rows / Audit</th><th>Shred / Compact</th></tr></thead><tbody>'
+            + ers.map((r) => '<tr><td class="mono"><strong>' + esc(r.id) + '</strong></td>'
+              + '<td class="mono">' + esc(String(r.subject_id_sha256 || '').slice(0, 12)) + '&hellip;</td>'
+              + '<td class="mono">' + (r.rows_deleted || 0) + ' rows / ' + (r.audit_entries_redacted || 0) + ' audit</td>'
+              + '<td>' + (r['key_shredded?'] ? '<span class="pill ok">shredded</span> ' : '') + (r['compacted?'] ? '<span class="pill purple">compacted</span>' : '<span class="pill">logical</span>') + '</td></tr>').join('')
+            + '</tbody></table>';
+        }
+      }
+
+      async function recordUntrustedUi() {
+        try {
+          const id = $('taint-sess-id').value.trim();
+          const source = $('taint-sess-src').value.trim() || 'web:external';
+          await api('POST', '/taint/sessions/' + encodeURIComponent(id) + '/untrusted', { source }, true);
+          toast('Marked session ' + id + ' tainted from ' + source, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Taint error: ' + e.message, 'err'); }
+      }
+
+      async function clearTaintUi(id) {
+        try {
+          await api('POST', '/taint/sessions/' + encodeURIComponent(id) + '/clear', null, true);
+          toast('Cleared taint on ' + id, 'ok');
+          await refreshAll(true);
+        } catch (e) { toast('Clear error: ' + e.message, 'err'); }
       }
 
       async function setClearance() {
@@ -1488,6 +1547,7 @@ fn page_html() : Text
         else if (act === 'feed-poll') pollFeedUi(id);
         else if (act === 'feed-consume') consumeFeedUi(id);
         else if (act === 'feed-unsub') unsubscribeFeedUi(id);
+        else if (act === 'taint-clear') clearTaintUi(id);
       });
 
       async function refreshAll(explicit = false) {
@@ -1516,7 +1576,7 @@ fn page_html() : Text
           if (ap) auditPath += '&principal=' + encodeURIComponent(ap);
           else if (aa) auditPath += '&action=' + encodeURIComponent(aa);
 
-          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads, searchStats, policySum, govProps, feeds] = await Promise.all([
+          const [projects, grants, claims, worlds, metrics, worldTelemetry, calls, proposals, audit, reads, searchStats, policySum, govProps, feeds, taintSessions, erasures] = await Promise.all([
             api('GET', '/projects'),
             api('GET', '/grants'),
             api('GET', '/claims'),
@@ -1531,6 +1591,8 @@ fn page_html() : Text
             api('GET', '/policy'),
             api('GET', '/proposals'),
             api('GET', '/feeds'),
+            api('GET', '/taint/sessions'),
+            api('GET', '/erasures'),
           ]);
           renderProjects(projects);
           await refreshTasks();
@@ -1542,7 +1604,7 @@ fn page_html() : Text
           renderAudit(audit);
           renderReads(reads);
           renderSearchStats(searchStats);
-          renderGovernance(policySum, govProps, feeds);
+          renderGovernance(policySum, govProps, feeds, taintSessions, erasures);
         } catch (e) {
           if (explicit) toast('Refresh error: ' + e.message, 'err');
         }

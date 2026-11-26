@@ -295,3 +295,19 @@ Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on p
 | `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, **`54` MCP tools** (incl. 11 M12 Policy/Proposal/Feed tools), Governance & Feeds Inspector UI tab, `259` export entries | **PASS** (`reads_skipped = 1`, `key_skips = 1`, `child_landed = 1`, `txid = 51`) |
 | `bench/real_world_agent_sim.py` (`AgentWorkbench` `mo serve --workers 8`) | Phase 1A (`5.26 s`, `stale_retries = 49`, `needless_send_backs = 7`) vs Phase 1B (`2.19 s`, `stale_retries = 0`, `key_skips = 15`); Phase 2/3 Replay (`486.1 ms` / `408.8 ms` sim, `86.8 ms` export over `1,687` entries); M10 (`range_key_skips = 3`, `rescued = 1`, `child_worlds_merged = 2`); `SIGKILL` verify | **PASS** (`verify = 188.2 ms`, post-M10 `111.2 ms`, `txid = 533`, `pages = 463`) |
 | `bench/kill_loop.py ... 100` | `100` consecutive real OS `kill -9` (`SIGKILL`) crashes under synced transactions | **PASS** (`100` kills in **`11.7 s`**, `acked = 666`, `txid = 667`, `pages = 163`, `free = 6`) |
+
+---
+
+## 15. Milestone 13: Lethal Trifecta Defense (`Modb.Taint`), Crypto-Verifiable Historical Erasure (`Modb.Erasure`) & `v0.5.0` (2026-11-26)
+
+Measured on Linux ext4 (`4 KiB` CoW pages, SHA-256 checksums, dual `fsync`) on pure-Rust `mo` (`v0.5.0`):
+
+| Suite / Benchmark | Scope / Workload | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/taint.mo` | Row provenance, monotonic session tainting, escalation capping, child fork inheritance, two-way `LethalTrifectaBlocked` + durable audit | **`2.02 s`** (`63 passed, 0 failed`) |
+| `mo test src/modb/erasure.mo` | O(1) AES-256-GCM crypto-shredding, atomic Table/FTS/Vec/Replay/ReadLog scrubbing, `_modb_audit` redaction + re-chaining, physical CoW compaction | **`2.21 s`** (`62 passed, 0 failed`) |
+| `mo test src/modb/cli.mo` | Standalone schema-less `modb` CLI including `taint`, `erasures`, and updated `inspect` counts | **`3.08 s`** (`67 passed, 0 failed`) |
+| `mo test tests/test-taint-erasure.mo` | M13.1 Supabase-style Lethal Trifecta, M13.2 Full multi-store GDPR erasure + disk scan, M13.3 `commit_and_crash` recovery | **`1.65 s`** (`3 passed, 0 failed`) |
+| `mo test examples/agent-workbench.mo` | 4 full HTTP + MCP + M10 + Search + Governance/Feeds + Taint/Erasures `ApiTest.send` suites | **`3.69 s`** (`4 passed, 0 failed`) |
+| `tests/test_workbench_mcp_and_ui.py` | `mo serve --workers 8`, **`58` MCP tools** (incl. 4 M13 Taint & Erasure tools), Session Taint Monitor & Erasure Receipts UI | **`6.44 s` PASS** (`txid = 54`, `export_entries = 259`, `hash = 7f122a87...`) |
+| `bench/real_world_agent_sim.py` (`AgentWorkbench` `mo serve --workers 8`) | Full 8-worker contention, Replay, M10 Child Worlds, and `SIGKILL` survival regression check | **`23.21 s` PASS** (`verify = 261.9 ms -> post-M10 114.2 ms`, `txid = 525`, `pages = 484`) |

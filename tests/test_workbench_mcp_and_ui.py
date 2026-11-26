@@ -116,6 +116,7 @@ def main() -> int:
             send_rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             init_resp = read_json_line(proc)
             assert init_resp["result"]["serverInfo"]["name"] == "modb-agent-workbench", init_resp
+            assert init_resp["result"]["serverInfo"]["version"] == "0.5.0", init_resp
             assert init_resp["result"]["protocolVersion"] == "2025-03-26", init_resp
 
             send_rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -129,7 +130,7 @@ def main() -> int:
             list_resp = read_json_line(proc)
             tools = list_resp["result"]["tools"]
             tool_names = {t["name"] for t in tools}
-            assert len(tools) >= 54, len(tools)
+            assert len(tools) >= 58, len(tools)
             for req in (
                 "modb_seed_demo",
                 "modb_search",
@@ -145,6 +146,10 @@ def main() -> int:
                 "modb_feed_poll",
                 "modb_feed_consume",
                 "modb_feed_unsubscribe",
+                "modb_taint_sessions",
+                "modb_taint_record_untrusted",
+                "modb_taint_clear",
+                "modb_erasure_receipts",
                 "modb_list_grants",
                 "modb_list_worlds",
                 "modb_world_diff",
@@ -555,6 +560,33 @@ def main() -> int:
             )
             assert not is_err and unsub["ok"] is True, (is_err, unsub)
 
+            # 3c. Milestone 13 MCP tools: session taint tracking, admin clear, erasure receipts
+            is_err, t_mark = call_tool(
+                proc,
+                134,
+                "modb_taint_record_untrusted",
+                {
+                    "session_id": "mcp-sess-1",
+                    "source": "web:ticket-77",
+                    "principal": "agent:mcp",
+                },
+            )
+            assert not is_err and t_mark["untrusted_tainted"] is True, (is_err, t_mark)
+
+            is_err, t_list = call_tool(proc, 135, "modb_taint_sessions", {})
+            assert not is_err and any(s["id"] == "mcp-sess-1" for s in t_list), (is_err, t_list)
+
+            is_err, t_clr = call_tool(
+                proc,
+                136,
+                "modb_taint_clear",
+                {"session_id": "mcp-sess-1", "reason": "mcp e2e clear"},
+            )
+            assert not is_err and t_clr["untrusted_tainted"] is False, (is_err, t_clr)
+
+            is_err, er_list = call_tool(proc, 137, "modb_erasure_receipts", {})
+            assert not is_err and isinstance(er_list, list), (is_err, er_list)
+
             is_err, ver3 = call_tool(proc, 133, "modb_verify", {})
             assert not is_err and ver3["ok"] is True, (is_err, ver3)
 
@@ -572,6 +604,7 @@ def main() -> int:
             assert "scan_tasks_range" in html and "Fork Child World" in html
             assert "Search (FTS / Hybrid)" in html and "/search/stats" in html
             assert "Governance &amp; Feeds" in html and "/policy" in html
+            assert "Session Taint Monitor" in html and "/taint/sessions" in html and "/erasures" in html
             st_ui2, html2 = http_get(f"{base_url}/ui")
             assert st_ui2 == 200 and html2 == html
 
@@ -587,6 +620,8 @@ def main() -> int:
                 "/policy",
                 "/proposals",
                 "/feeds",
+                "/taint/sessions",
+                "/erasures",
                 "/audit",
                 "/admin/replay/calls",
                 "/admin/replay/proposals",

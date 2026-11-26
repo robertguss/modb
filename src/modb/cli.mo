@@ -1,5 +1,5 @@
 ## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `fts`, `vec`,
-## `policy`, `proposals`, `feeds`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
+## `policy`, `proposals`, `feeds`, `taint`, `erasures`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
 ## `.modb` database file safely using advisory `flock` coordination and read-only `ReadFiles`.
 module Modb.Cli
 expose run_cli,
@@ -7,6 +7,7 @@ main
 use Json
 use Modb{Store}
 use Modb.Claims
+use Modb.Erasure
 use Modb.Errors{wrap_io}
 use Modb.Export{PortableSnapshot}
 use Modb.Feeds
@@ -17,6 +18,7 @@ use Modb.Pager{from_file}
 use Modb.Policy
 use Modb.Proposals
 use Modb.Table
+use Modb.Taint
 use Modb.Tree{KeyDiff}
 use Modb.Vec
 use Modb.Views
@@ -39,6 +41,8 @@ fn print_usage(console: Console) : Unit
       "  modb proposals <db.modb> [--status pending|approved|rejected|withdrawn] [--json]",
       "  modb feeds <db.modb> [--json]",
       "  modb feeds <db.modb> poll <feed_id> [--limit N] [--json]",
+      "  modb taint <db.modb> [--json]",
+      "  modb erasures <db.modb> [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
       "  modb export <src.modb> <out.json> [--include-internal]",
       "  modb restore <in.json> <dst.modb>",
@@ -246,6 +250,10 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
         Proposals.to_text(e)
       end)
       feeds = try Feeds.list_feeds(store).map_error(fn(e) Feeds.to_text(e) end)
+      taint_sessions = try Taint.list_sessions(store).map_error(fn(e) Taint.to_text(e) end)
+      erasure_receipts = try Erasure.list_erasure_receipts(store).map_error(fn(e)
+        Erasure.to_text(e)
+      end)
       schema_ver = case st_opt
         Some(s): s.version
         None: 0
@@ -275,6 +283,8 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
         clearances.size,
         gov_props.size,
         feeds.size,
+        taint_sessions.size,
+        erasure_receipts.size,
         b_counts,
         total_entries
       ))
@@ -299,6 +309,8 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
       clr_cnt,
       prop_cnt,
       feed_cnt,
+      taint_cnt,
+      erasure_cnt,
       b_counts,
       total_entries
     )):
@@ -326,6 +338,8 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
           "clearances": Json.int(clr_cnt),
           "gov_proposals": Json.int(prop_cnt),
           "feeds": Json.int(feed_cnt),
+          "taint_sessions": Json.int(taint_cnt),
+          "erasure_receipts": Json.int(erasure_cnt),
           "total_entries": Json.int(total_entries),
           "buckets": buckets_json
         })
@@ -337,7 +351,7 @@ fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : I
         console.print(
           "pins=#{pin_cnt} grants=#{grant_cnt} claims=#{claim_cnt} worlds=#{world_cnt} (open=#{w_open}) landed=#{wm
             .total_landed} key_skips=#{wt.key_level_reads_skipped} child_landed=#{wt
-            .child_worlds_landed} clearances=#{clr_cnt} proposals=#{prop_cnt} feeds=#{feed_cnt}"
+            .child_worlds_landed} clearances=#{clr_cnt} proposals=#{prop_cnt} feeds=#{feed_cnt} taint_sessions=#{taint_cnt} erasures=#{erasure_cnt}"
         )
         for (b, c) in b_counts
           console.print("  bucket #{b}: #{c} entries")
@@ -1303,6 +1317,66 @@ fn cmd_feeds(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
   end
 end
 
+fn cmd_taint(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb taint <db.modb> [--json]")
+  end
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store) Taint.list_sessions(store).map_error(fn(e) Taint.to_text(e) end) end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(sessions):
+      if f.json?
+        console.print(Json.encode(sessions.to_json))
+      else
+        console.print("taint_sessions=#{sessions.size}")
+        for s in sessions
+          srcs = if s.untrusted_sources.empty?: "-" else: s.untrusted_sources.join(",")
+          console.print(
+            "  #{s.id} principal=#{s.principal} tainted=#{s.untrusted_tainted} max_read=#{Policy
+              .sensitivity_to_text(s.max_sensitivity_read)} blocked=#{s.blocked_attempts} sources=[#{srcs}]"
+          )
+        end
+      end
+      0
+  end
+end
+
+fn cmd_erasures(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb erasures <db.modb> [--json]")
+  end
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store) Erasure.list_erasure_receipts(store).map_error(fn(e) Erasure.to_text(e) end) end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(receipts):
+      if f.json?
+        console.print(Json.encode(receipts.to_json))
+      else
+        console.print("erasure_receipts=#{receipts.size}")
+        for r in receipts
+          console.print(
+            "  #{r.id} subject_sha=#{Text.from_chars(r.subject_id_sha256.chars.take(12))} key_shredded=#{r
+              .key_shredded?} rows=#{r.rows_deleted} audit_redacted=#{r.audit_entries_redacted} compacted=#{r
+              .compacted?} by=#{r.erased_by}"
+          )
+        end
+      end
+      0
+  end
+end
+
 ## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, and `Clock`.
 fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   head = (argv.first or "").trim
@@ -1324,6 +1398,8 @@ fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
   return cmd_policy(console, files, f) if head == "policy"
   return cmd_proposals(console, files, f) if head == "proposals"
   return cmd_feeds(console, files, clock, f) if head == "feeds"
+  return cmd_taint(console, files, f) if head == "taint"
+  return cmd_erasures(console, files, f) if head == "erasures"
   return cmd_backup(console, files, clock, f) if head == "backup"
   return cmd_export(console, files, clock, f) if head == "export"
   return cmd_restore(console, files, f) if head == "restore"
@@ -1524,4 +1600,45 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   assert run_cli(["feeds", "app.modb", "poll", "f-cli"], c_fdp, files, clock) == 0
   assert c_fdp.printed.join("\n").contains?("events=1") and
     c_fdp.printed.join("\n").contains?("notes:n4")
+
+  ## Milestone 13 CLI: `modb taint` and `modb erasures` + `inspect` counts
+  assert Taint.ensure_session_locked(
+    files,
+    "app.modb",
+    sc,
+    "s-cli-1",
+    "agent:cli",
+    Some("g-cli"),
+    t0
+  ) is
+    Ok(_)
+  assert Taint.record_untrusted_read_locked(files, "app.modb", sc, "s-cli-1", "web:ticket", t0) is
+    Ok(_)
+  assert Erasure.erase_subject_locked(
+    files,
+    "app.modb",
+    sc,
+    Erasure.erasure_request("rcpt-cli-1", "cli-user"),
+    "admin:cli",
+    true,
+    "cli gdpr test",
+    t0
+  ) is
+    Ok(_)
+
+  c_tnt = Console.fake()
+  assert run_cli(["taint", "app.modb"], c_tnt, files, clock) == 0
+  assert c_tnt.printed.join("\n").contains?("taint_sessions=1") and
+    c_tnt.printed.join("\n").contains?("s-cli-1") and
+    c_tnt.printed.join("\n").contains?("tainted=true")
+
+  c_ers = Console.fake()
+  assert run_cli(["erasures", "app.modb"], c_ers, files, clock) == 0
+  assert c_ers.printed.join("\n").contains?("erasure_receipts=1") and
+    c_ers.printed.join("\n").contains?("rcpt-cli-1")
+
+  c_insp13 = Console.fake()
+  assert run_cli(["inspect", "app.modb", "--json"], c_insp13, files, clock) == 0
+  assert c_insp13.printed.join("\n").contains?("\"taint_sessions\":1") and
+    c_insp13.printed.join("\n").contains?("\"erasure_receipts\":1")
 end

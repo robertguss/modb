@@ -16,6 +16,7 @@ use Api
 use Json
 use Modb
 use Modb.Claims
+use Modb.Erasure
 use Modb.Export
 use Modb.Feeds
 use Modb.Fts
@@ -25,6 +26,7 @@ use Modb.Policy
 use Modb.Proposals
 use Modb.Replay
 use Modb.Table
+use Modb.Taint
 use Modb.Vec
 use Modb.Views
 use Modb.World
@@ -306,6 +308,12 @@ struct FeedConsumeResponse
   subscription: Feeds.FeedSubscription
 end
 
+struct TaintUntrustedInput
+  source: Text
+  principal: Option(Text)
+  grant_id: Option(Text)
+end
+
 enum WorkbenchError
   Unauthenticated
   Forbidden(required: Text)
@@ -331,6 +339,9 @@ enum WorkbenchError
   ClearanceBlocked(detail: Text)
   FeedMissing(id: Text)
   FeedConflict(detail: Text)
+  TaintMissing(id: Text)
+  TaintBlocked(detail: Text)
+  ErasureBlocked(detail: Text)
   WorkBudgetBlocked(detail: Text)
   StorageFailed(message: Text)
 end
@@ -434,6 +445,14 @@ api
     delete "/:id" delete_gov_feed
   end
 
+  scope "/taint"
+    get "/sessions" list_taint_sessions
+    post "/sessions/:id/untrusted" post_taint_untrusted
+    post "/sessions/:id/clear" post_taint_clear
+  end
+
+  get "/erasures" list_erasures
+
   status Unauthenticated = 401
   status Forbidden(_) = 403
   status MissingReason = 400
@@ -458,6 +477,9 @@ api
   status ClearanceBlocked(_) = 403
   status FeedMissing(_) = 404
   status FeedConflict(_) = 409
+  status TaintMissing(_) = 404
+  status TaintBlocked(_) = 403
+  status ErasureBlocked(_) = 403
   status WorkBudgetBlocked(_) = 429
   status StorageFailed(_) = 500
 end
@@ -939,6 +961,49 @@ fn map_feed_error(err: Feeds.FeedError) : WorkbenchError
       expected_txid: _,
       actual_txid: _
     ): FeedConflict(detail: Feeds.to_text(err))
+  end
+end
+
+fn map_taint_error(err: Taint.TaintError) : WorkbenchError
+  case err
+    Taint.LedgerFailure(le): map_ledger_error(le)
+    Taint.GrantFailure(ge): map_grant_error(ge)
+    Taint.PolicyFailure(pe): map_policy_error(pe)
+    Taint.ViewsFailure(_) | Taint.FtsFailure(_) | Taint.VecFailure(_): StorageFailed(
+      message: Taint.to_text(err)
+    )
+    Taint.InvalidSession(reason: _) | Taint.SessionAlreadyExists(id: _) | Taint.SessionClosed(
+      id: _
+    ): InvalidInput(reason: Taint.to_text(err))
+    Taint.SessionNotFound(id: sid): TaintMissing(id: sid)
+    Taint.ClearDenied(reason: r): Forbidden(required: r)
+    Taint.TaintedReadEscalationBlocked(
+      session_id: _,
+      subject: _,
+      required: _,
+      capped_clearance: _,
+      untrusted_sources: _
+    ) | Taint.LethalTrifectaBlocked(
+      session_id: _,
+      target: _,
+      max_sensitivity_read: _,
+      untrusted_sources: _,
+      reason: _
+    ): TaintBlocked(detail: Taint.to_text(err))
+  end
+end
+
+fn map_erasure_error(err: Erasure.ErasureError) : WorkbenchError
+  case err
+    Erasure.LedgerFailure(le): map_ledger_error(le)
+    Erasure.ExportFailure(_) | Erasure.FtsFailure(_) | Erasure.VecFailure(_) | Erasure
+      .CryptoFailure(detail: _): StorageFailed(message: Erasure.to_text(err))
+    Erasure.InvalidRequest(reason: _) | Erasure.KeyNotFound(subject_id: _) | Erasure
+      .ReceiptAlreadyExists(id: _) | Erasure.ReceiptNotFound(id: _): InvalidInput(
+      reason: Erasure.to_text(err)
+    )
+    Erasure.KeyShredded(subject_id: _): ErasureBlocked(detail: Erasure.to_text(err))
+    Erasure.ErasureDenied(reason: r): Forbidden(required: r)
   end
 end
 
@@ -3236,6 +3301,70 @@ fn delete_gov_feed(caller: Caller, files: Files, clock: Clock, id: Text) : Resul
   Ok(OkStatus(ok: true))
 end
 
+fn list_taint_sessions(rf: ReadFiles) : Result(List(Taint.TaintSession), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Taint.list_sessions(Ledger.store(db)).map_error(map_taint_error) end
+  )
+end
+
+fn post_taint_untrusted(
+  caller: Caller,
+  files: Files,
+  clock: Clock,
+  id: Text,
+  body: TaintUntrustedInput
+) : Result(Taint.TaintSession, WorkbenchError)
+  now = clock.now
+  eff_p = case body.principal
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: caller.principal
+  end
+  _s0 = try Taint.ensure_session_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    eff_p,
+    body.grant_id,
+    now
+  ).map_error(map_taint_error)
+  Taint.record_untrusted_read_locked(files, db_path(), workbench_schema(), id, body.source, now)
+    .map_error(map_taint_error)
+end
+
+fn post_taint_clear(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
+  Taint.TaintSession,
+  WorkbenchError
+)
+  try require_admin(caller)
+  note = (caller.reason or "").trim
+  eff_reason = if note.empty?: "admin cleared taint on '#{id}'" else: note
+  Taint.clear_session_taint_locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    id,
+    caller.principal,
+    true,
+    eff_reason,
+    clock.now
+  ).map_error(map_taint_error)
+end
+
+fn list_erasures(rf: ReadFiles) : Result(List(Erasure.ErasureReceipt), WorkbenchError)
+  Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db) Erasure.list_erasure_receipts(Ledger.store(db)).map_error(map_erasure_error) end
+  )
+end
+
 ## ---------------------------------------------------------------------------
 ## Native Streamable HTTP MCP JSON-RPC 2.0 Server (`POST /mcp`)
 ## ---------------------------------------------------------------------------
@@ -3859,6 +3988,37 @@ fn mcp_tools_list() : Json
         "modb_feed_unsubscribe",
         "Unsubscribe a reactive Change Feed and unpin its persistent CoW root.",
         mcp_schema({"feed_id": mcp_prop("string", "Feed ID"), "reason": reason_p}, ["feed_id"])
+      ),
+      mcp_tool_def(
+        "modb_taint_sessions",
+        "List all persisted dynamic session taint trackers (Lethal Trifecta defense).",
+        empty_schema
+      ),
+      mcp_tool_def(
+        "modb_taint_record_untrusted",
+        "Ensure a taint session exists and monotonically record ingestion from an untrusted source.",
+        mcp_schema(
+          {
+            "session_id": mcp_prop("string", "Taint session ID"),
+            "source": mcp_prop("string", "Untrusted source label"),
+            "principal": mcp_prop("string", "Optional principal override"),
+            "grant_id": mcp_prop("string", "Optional bound Grant ID")
+          },
+          ["session_id", "source"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_taint_clear",
+        "Admin-only explicit human-reviewed reset of untrusted taint on a session (audited).",
+        mcp_schema(
+          {"session_id": mcp_prop("string", "Taint session ID"), "reason": reason_p},
+          ["session_id"]
+        )
+      ),
+      mcp_tool_def(
+        "modb_erasure_receipts",
+        "List all verifiable right-to-be-forgotten ErasureReceipts (zero raw PII).",
+        empty_schema
       )
     ])
   })
@@ -4140,6 +4300,34 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
         Ok(fid): mcp_encode_result(delete_gov_feed(eff, files, clock, fid))
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
+    "modb_taint_sessions": mcp_encode_result(list_taint_sessions(rf))
+    "modb_taint_record_untrusted":
+      case mcp_req_text(args, "session_id")
+        Ok(sid):
+          case mcp_req_text(args, "source")
+            Ok(src): mcp_encode_result(
+              post_taint_untrusted(
+                eff,
+                files,
+                clock,
+                sid,
+                TaintUntrustedInput(
+                  source: src,
+                  principal: args.text_at("principal"),
+                  grant_id: args.text_at("grant_id")
+                )
+              )
+            )
+            Error(e): mcp_tool_result(Json.encode(e), true)
+          end
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_taint_clear":
+      case mcp_req_text(args, "session_id")
+        Ok(sid): mcp_encode_result(post_taint_clear(eff, files, clock, sid))
+        Error(e): mcp_tool_result(Json.encode(e), true)
+      end
+    "modb_erasure_receipts": mcp_encode_result(list_erasures(rf))
     _: mcp_tool_result("unknown MCP tool '#{name}'", true)
   end
 end
@@ -4165,7 +4353,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.4.0")
+              "version": Json.String("0.5.0")
             })
           })
         )
@@ -5583,6 +5771,87 @@ test "AgentWorkbench Milestone 12: Sensitivity Policy, Governance Proposals, and
     env
   ).status ==
     200
+
+  ## Milestone 13 HTTP + MCP: Taint Sessions & Erasure Receipts
+  t_mark = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/taint/sessions/wb-sess-1/untrusted").with_bearer("tok-work").with_json(
+      TaintUntrustedInput(source: "ticket:evil", principal: None, grant_id: Some("g-team-b"))
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert t_mark.status == 200 and
+    Json.decode_strict[Taint.TaintSession](t_mark.text) is Ok(ts_m) and
+    ts_m.untrusted_tainted
+
+  t_list = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/taint/sessions").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert t_list.status == 200 and t_list.text.contains?("wb-sess-1")
+
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/taint/sessions/wb-sess-1/clear").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    403
+
+  t_clr = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/taint/sessions/wb-sess-1/clear").with_bearer("tok-admin").with_header(
+      "X-Reason",
+      "human clear"
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert t_clr.status == 200 and
+    Json.decode_strict[Taint.TaintSession](t_clr.text) is Ok(ts_c) and
+    not ts_c.untrusted_tainted
+
+  e_list = ApiTest.send(
+    AgentWorkbench,
+    Api.get("/erasures").with_bearer("tok-work"),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert e_list.status == 200 and e_list.text.trim == "[]"
+
+  mcp_ers = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/mcp").with_bearer("tok-work").with_json(
+      Json.Object({
+        "jsonrpc": Json.String("2.0"),
+        "id": Json.int(1301),
+        "method": Json.String("tools/call"),
+        "params": Json.Object({
+          "name": Json.String("modb_taint_sessions"),
+          "arguments": Json.Object({})
+        })
+      })
+    ),
+    files,
+    ro,
+    clock,
+    env
+  )
+  assert mcp_ers.status == 200 and mcp_ers.text.contains?("wb-sess-1")
+
   ver = ApiTest.send(AgentWorkbench, Api.get("/admin/verify"), files, ro, clock, env)
   assert ver.status == 200 and Json.decode_strict[VerifySummary](ver.text) is Ok(vs) and vs.ok
 end

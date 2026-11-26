@@ -31,7 +31,12 @@ and Milestone 12 (`v0.4.0`: `Modb.Policy` `Public`/`Internal`/`Confidential`/`Se
 non-widening clearance enforcement across Views, Releases, FTS/Vec search & governed Export;
 `Modb.Proposals` human-reviewed agent proposals with machine-checked `CapabilityDiff` & live
 view/invariant materialization; `Modb.Feeds` CoW-pinned `txid`-cursor reactive change feeds;
-`AgentWorkbench` 54 MCP tools + Governance & Feeds Inspector tab + `modb policy/proposals/feeds` CLI)
+`AgentWorkbench` 54 MCP tools + Governance & Feeds Inspector tab + `modb policy/proposals/feeds` CLI),
+and Milestone 13 (`v0.5.0`: `Modb.Taint` row provenance, monotonic session tainting, escalation
+capping, child-fork propagation, and two-way Lethal Trifecta exfil breaker with durable audit;
+`Modb.Erasure` O(1) per-subject AES-256-GCM crypto-shredding + atomic Table/FTS/Vec/Replay/ReadLog
+scrubbing + hash-chain-preserving `_modb_audit` redaction/re-chaining + physical CoW compaction;
+`AgentWorkbench` 58 MCP tools + Taint/Erasures UI + `modb taint/erasures` CLI)
 live in `src/`, `tools/`, verified in `tests/` and `bench/` and demonstrated in `examples/shop.mo`,
 `examples/shop-api.mo`, `examples/agent-workbench.mo`, and `examples/workbench-ui.mo`.
 `specs/` holds active build specs, `design.md` holds the broader long-term design, and `map.md` is
@@ -41,12 +46,12 @@ the earlier wayfinder map that Robert stopped on 2026-11-14.
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `mo.toml`, `src/` | Pure-Mo MoDB `v0.4.0` package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables, secondary indexes, transactional BM25+ FTS & quantized Vector/Hybrid RRF search (`table.mo`, `fts.mo`, `vec.mo`), Layer 3 accountable ledger, invariants, migrations & portable export/compaction (`ledger.mo`, `export.mo`), Layer 4 multi-agent coordination, views/read programs, sensitivity policy, human-reviewed agent proposals, reactive change feeds, child worlds, fairness & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`, `policy.mo`, `proposals.mo`, `feeds.mo`), and standalone schema-less `modb` CLI (`cli.mo`) | Active build sessions |
-| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, BM25 FTS & Vector/Hybrid tests (`test-fts.mo`, `test-vec-hybrid.mo`), Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests, Milestone 9 backup/compaction tests (`test-compact-backup.mo`), Milestone 10 key/range O(diff), fairness, nested child-world & CLI tests (`test-m10-worlds-cli.mo`), Milestone 12 sensitivity policy, agent proposals & reactive change feed tests (`test-governance-feeds.mo`) (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
-| `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo, `shop-api.mo` e-commerce HTTP `api` server, `agent-workbench.mo` multi-agent project/task/budget/views/governance/feeds/search/replay/MCP HTTP `api` server, and `workbench-ui.mo` self-contained live browser Inspector UI) | Active build sessions |
+| `mo.toml`, `src/` | Pure-Mo MoDB `v0.5.0` package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables, secondary indexes, transactional BM25+ FTS & quantized Vector/Hybrid RRF search (`table.mo`, `fts.mo`, `vec.mo`), Layer 3 accountable ledger, invariants, migrations & portable export/compaction (`ledger.mo`, `export.mo`), Layer 4 multi-agent coordination, views/read programs, sensitivity policy, human-reviewed agent proposals, reactive change feeds, Lethal Trifecta taint defense, crypto-verifiable historical erasure, child worlds, fairness & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`, `policy.mo`, `proposals.mo`, `feeds.mo`, `taint.mo`, `erasure.mo`), and standalone schema-less `modb` CLI (`cli.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, BM25 FTS & Vector/Hybrid tests (`test-fts.mo`, `test-vec-hybrid.mo`), Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests, Milestone 9 backup/compaction tests (`test-compact-backup.mo`), Milestone 10 key/range O(diff), fairness, nested child-world & CLI tests (`test-m10-worlds-cli.mo`), Milestone 12 sensitivity policy, agent proposals & reactive change feed tests (`test-governance-feeds.mo`), Milestone 13 session taint/Lethal Trifecta & dual-layer erasure tests (`test-taint-erasure.mo`) (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
+| `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo, `shop-api.mo` e-commerce HTTP `api` server, `agent-workbench.mo` multi-agent project/task/budget/views/governance/feeds/taint/erasure/search/replay/MCP HTTP `api` server, and `workbench-ui.mo` self-contained live browser Inspector UI) | Active build sessions |
 | `tools/` | Zero-dependency Python 3 stdio MCP server bridge (`modb_mcp_server.py`) connecting MCP clients (Claude Desktop, Cursor, T3 Code) to live `AgentWorkbench` (`mo serve --workers 8`) | Active build sessions |
 | `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`), 1,000-doc FTS/Vector/Hybrid search benchmark (`bench-search.mo`), real OS `SIGKILL` crash loop (`kill_loop.py`), 8-worker HTTP concurrency benchmark (`bench_shop_api.py`), and 8-worker real-world multi-agent simulation (`real_world_agent_sim.py`) | Active build sessions |
-| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-12-governance-proposals-and-feeds.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-13-taint-and-erasure.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
 | `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
@@ -82,6 +87,8 @@ mo test src/modb/views.mo
 mo test src/modb/policy.mo
 mo test src/modb/proposals.mo
 mo test src/modb/feeds.mo
+mo test src/modb/taint.mo
+mo test src/modb/erasure.mo
 mo test src/modb/cli.mo
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
@@ -95,6 +102,7 @@ mo test tests/test-views-incremental.mo
 mo test tests/test-compact-backup.mo
 mo test tests/test-m10-worlds-cli.mo
 mo test tests/test-governance-feeds.mo
+mo test tests/test-taint-erasure.mo
 mo test examples/shop.mo
 mo test examples/shop-api.mo
 mo test examples/agent-workbench.mo
