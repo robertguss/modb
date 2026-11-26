@@ -13,7 +13,7 @@ MoDB is organized cleanly into four pure-Mo layers inside [`src/`](src/):
 | Layer | Modules | What it provides |
 | --- | --- | --- |
 | **Layer 1: Storage Engine** | [`src/modb.mo`](src/modb.mo), [`tree.mo`](src/modb/tree.mo), [`codec.mo`](src/modb/codec.mo), [`pager.mo`](src/modb/pager.mo), [`errors.mo`](src/modb/errors.mo) | Single-file CoW B+Tree over 4 KiB pages, per-page SHA-256 verification, zero-copy slotted page sealing, right-edge sequential splitting (~98% leaf fill), binary-search lookups & zero-decode entry counting (`count_entries`, `count_bucket`), overflow chains, persistent root pins (`pin_root`), $O(\text{diff})$ structural CoW diffs (`diff_roots`, `diff_user_tx_from_root`), and lock-free optimistic CoW snapshot reads (`with_shared_lock`) with advisory `flock` fallback. |
-| **Layer 2: Typed Tables & Indexes** | [`src/modb/table.mo`](src/modb/table.mo) | Typed `Table(K, V)` and transactional `Table.transact` / `Table.write_tx` with automatic maintenance of unique and non-unique secondary indexes (`unique_text_index`, `text_index`, `int_index`) inside the same CoW commit. |
+| **Layer 2: Typed Tables, Indexes & FTS** | [`src/modb/table.mo`](src/modb/table.mo), [`src/modb/fts.mo`](src/modb/fts.mo) | Typed `Table(K, V)` and transactional `Table.transact` / `Table.write_tx` with automatic maintenance of unique and non-unique secondary indexes (`unique_text_index`, `text_index`, `int_index`) inside the same CoW commit, plus `Modb.Fts` transactional pure-Mo BM25+ full-text search (`Fts.index`, `tx_index_document`, `tx_remove_document`, `search`, `search_filtered`) with field weights, trailing-term prefix expansion, and fail-closed scope/predicate filtering. |
 | **Layer 3: Ledger, Invariants & Export** | [`src/modb/ledger.mo`](src/modb/ledger.mo), [`src/modb/export.mo`](src/modb/export.mo) | Every write records caller metadata (`principal`, `action`, `reason`, timestamp) into an unbroken SHA-256 hash-chained `_modb_audit` log. Enforces $O(\text{touched})$ incremental commit-time invariants, atomic versioned schema migrations, checkpoint-anchored fast verification (`verify_fast`, `verify_audit_store`, `verify_audit_window_store`), layout-independent canonical SHA-256 `PortableSnapshot` export/import, consistent online `backup_db`, and atomic `compact_db` (`compact_db_with_hook`). |
 | **Layer 4: Multi-Agent Coordination** | [`src/modb/grants.mo`](src/modb/grants.mo), [`claims.mo`](src/modb/claims.mo), [`world.mo`](src/modb/world.mo), [`replay.mo`](src/modb/replay.mo), [`views.mo`](src/modb/views.mo) | **Grants:** Attenuated hierarchical capabilities ("helpers get less, never more") with cascading revocation.<br>**Claims:** Ordinary persisted TTL leases in `_modb_claims` so agents see contention through data.<br>**Worlds:** Speculative CoW sandboxes with $O(1)$ bucket-level & $O(\text{diff})$ key/range-level CoW-diff read skipping, bounded-TTL fairness priority tickets (`claim_priority`, `land_world_fair`), and Nested Child Worlds (`open_child_world`, `land_child_world`) with per-step lineage attribution.<br>**Replay:** Upgrade-aware offline simulation (`ExcludePrincipal`, `ExcludeGrant`, `ExcludeSeqs`, `ExcludeWorld`, `StopBeforeSeq`, bug-fix overrides), `compact_with_baseline` + CoW-pinned `ReplayBaseline` $O(\text{diff})$ delta proposals, staleness guards, and explicit atomic acceptance.<br>**Views & Onboarding:** Grant-scoped `Views`, k-anonymous `Releases`, zero-approval sandboxed `ReadProgram`s with static field gating & read provenance logs, and stateless `OnboardingManifest` (`describe_for_caller`). |
 | **Standalone CLI** | [`src/modb/cli.mo`](src/modb/cli.mo) | Schema-less `modb` CLI (`inspect`, `verify [--fast]`, `dump`, `audit`, `worlds`, `backup`, `export`, `restore`, `compact`, `diff`) installable via `mo install src/modb/cli.mo --name modb`. |
@@ -111,6 +111,7 @@ Using `mo` (from `PATH` or `~/code/mo/target/release/mo`):
 # Core unit & integration tests
 mo test src/modb.mo
 mo test src/modb/table.mo
+mo test src/modb/fts.mo
 mo test src/modb/ledger.mo
 mo test src/modb/export.mo
 mo test src/modb/grants.mo
@@ -123,6 +124,7 @@ mo test src/modb/cli.mo
 # Differential, crash-simulation, pin/diff, worlds, replay/export & views tests
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
+mo test tests/test-fts.mo
 mo test tests/test-ledger.mo
 mo test tests/test-pins-diff.mo
 mo test tests/test-worlds.mo
@@ -157,7 +159,7 @@ TMP=$(mktemp -d) && mo run --root "$TMP" bench/bench-modb.mo 100000 && rm -rf "$
 
 | Path | Purpose |
 | --- | --- |
-| [`mo.toml`](mo.toml), [`src/`](src/) | Pure-Mo MoDB package (`Modb` Layer 1, `Modb.Table` Layer 2, `Modb.Ledger` & `Modb.Export` Layer 3, `Modb.Grants`/`Claims`/`World`/`Replay`/`Views` Layer 4) |
+| [`mo.toml`](mo.toml), [`src/`](src/) | Pure-Mo MoDB package (`Modb` Layer 1, `Modb.Table` & `Modb.Fts` Layer 2, `Modb.Ledger` & `Modb.Export` Layer 3, `Modb.Grants`/`Claims`/`World`/`Replay`/`Views` Layer 4, `Modb.Cli`) |
 | [`examples/`](examples/) | End-to-end apps: [`shop.mo`](examples/shop.mo), [`shop-api.mo`](examples/shop-api.mo), [`agent-workbench.mo`](examples/agent-workbench.mo), [`workbench-ui.mo`](examples/workbench-ui.mo) |
 | [`tools/`](tools/) | Stdio MCP server bridge ([`tools/modb_mcp_server.py`](tools/modb_mcp_server.py)) |
 | [`tests/`](tests/) | Differential, crash-simulation, layer integration, multi-process `flock`+`SIGKILL`, and live UI/MCP test suites |

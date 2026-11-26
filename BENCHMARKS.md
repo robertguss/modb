@@ -240,6 +240,15 @@ Measured on disk via pure-Rust `mo` (`4 KiB` synced B+Tree pages) after `398` au
 | World telemetry counters (after M10 run) | `WorldTelemetry` cumulative counters | `key_skipped=10`, `bucket_skipped=2`, `child_landed=1` |
 | `mo test src/modb/cli.mo` | 21 embedded standalone schema-less `modb` CLI unit tests | **`1,814.5 ms`** (`21 passed, 0 failed`) |
 | `mo test tests/test-m10-worlds-cli.mo` | 5 M10 integration tests (key/range O(diff) + negative controls, fairness tickets, multi-level Child Worlds, `Cli.run_cli`) | **`1,804.9 ms`** (`5 passed, 0 failed`) |
+
+---
+
+## 12. Milestone 11A: Pure-Mo BM25 Full-Text Search (`Modb.Fts`) (2026-11-26)
+
+| Suite / Benchmark | Scope / Workload | Measured Result |
+| --- | --- | --- |
+| `mo test src/modb/fts.mo` | 32 unit/example/promise tests (`tokenize`, pure-Mo `ln_pos`, `bm25_idf`, `bm25_tf_score`, index/search/reindex/prefix/delete) | **`460.1 ms`** (`32 passed, 0 failed`) |
+| `mo test tests/test-fts.mo` | 6 integration suites (ranking invariants, incremental reindex/delete, prefix typeahead, scope/predicate isolation, 150+ randomized differential ops vs reference BM25, `Modb.commit_and_crash` fault-injection across `Modb.Table` + `Modb.Fts`) | **`2,282.9 ms`** (`6 passed, 0 failed`) |
 | `mo test examples/agent-workbench.mo` | 3 full HTTP + MCP + M10 integration suites (`ApiTest.send`) | **`3 passed, 0 failed`** |
 | `tests/test_workbench_mcp_and_ui.py` (`AgentWorkbench` M7+M8+M10 E2E) | `mo serve --workers 8`, `41` MCP tools, Inspector UI, `131` export entries | **PASS** (`reads_skipped = 1`, `key_skips = 1`, `child_landed = 1`, `txid = 42`) |
 | `bench/real_world_agent_sim.py` Phase 1B (`get_task` key O(diff) + Claims) | 6 workers + 2 readers, 18 tasks on `mo serve --workers 8` | **`2.29 s`** (`stale_retries = 0`, `needless_send_backs = 0`, **`key_skips = 15`**, `land p50 = 195.9 ms`) |
