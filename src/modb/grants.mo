@@ -17,6 +17,8 @@ list_by_principal,
 list_children,
 grant_subtree_ids,
 tx_verify_active,
+tx_check_descendant_or_same,
+check_descendant_or_same,
 tx_verify_view,
 tx_verify_release,
 verify_view,
@@ -248,6 +250,23 @@ fn tx_verify_active(tx: WriteTx, grant_id: Text, now: Time) : Result(Grant, Gran
     end
   end
   Ok(chain.first or stop "non-empty grant chain")
+end
+
+## Returns true iff `candidate_id` equals `ancestor_id` or was delegated beneath `ancestor_id`.
+fn tx_check_descendant_or_same(tx: WriteTx, ancestor_id: Text, candidate_id: Text) : Result(
+  Bool,
+  GrantError
+)
+  chain = try load_ancestor_chain(tx, candidate_id)
+  Ok(chain.any?(fn(g) g.id == ancestor_id end))
+end
+
+## Committed-store variant of `tx_check_descendant_or_same`.
+fn check_descendant_or_same(store: Store, ancestor_id: Text, candidate_id: Text) : Result(
+  Bool,
+  GrantError
+)
+  tx_check_descendant_or_same(Modb.begin_write(store), ancestor_id, candidate_id)
 end
 
 fn normalize_opt_names(items: Option(List(Text)), label: Text) : Result(

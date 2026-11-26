@@ -227,3 +227,16 @@ Measured on disk via pure-Rust `mo` (`4 KiB` synced B+Tree pages) after `398` au
 | `mo test tests/test-views-incremental.mo` | `5` tests (Views, Releases, `ReadLog`, O(1) World skip, negative control) | **`1,125.6 ms`** (`5 passed, 0 failed`) |
 | `mo test tests/test-compact-backup.mo` | `4` tests (`backup_db`, `compact_db`, `compact_with_baseline` + delta replay, rollback) | **`6,259.6 ms`** (`4 passed, 0 failed`) |
 | `tests/test_workbench_mcp_and_ui.py` (`AgentWorkbench` M7+M8 E2E) | `mo serve --workers 8`, `35` MCP tools, Inspector UI, `130` export entries | **PASS** (`reads_skipped = 1`, `txid = 32`, hash verified) |
+
+---
+
+## 11. Milestone 10: Key/Range O(diff) Validation, Child Worlds & Standalone CLI (2026-11-26)
+
+| Workload / Suite | Configuration | Measured Result |
+| --- | --- | --- |
+| Bucket-level World validation (`bucket_land`) | 500 rows in `tasks`, 10 queries per World, concurrent disjoint row edit (`#450` / `#451`) in same bucket | **`1,048 ms`** (`verified=10`, `skipped=0`) |
+| Range-scoped `[start_key, end_key)` O(diff) validation (`range_land`) | Same 500-row / 10-query workload using `with_range_scoped_query` | **`65 ms`** (`verified=10`, `skipped=10`, **16.1× faster**) |
+| Nested Child World landing (`child_land` + `parent_land`) | Child-relative `land_child_world` (`merged=1`, `skipped=1`) followed by parent landing (`calls=1`) | **`21 ms`** (`child_land`) / **`32 ms`** (`parent_land`) |
+| World telemetry counters (after M10 run) | `WorldTelemetry` cumulative counters | `key_skipped=10`, `bucket_skipped=2`, `child_landed=1` |
+| `mo test src/modb/cli.mo` | 21 embedded standalone schema-less `modb` CLI unit tests | **`1,814.5 ms`** (`21 passed, 0 failed`) |
+| `mo test tests/test-m10-worlds-cli.mo` | 5 M10 integration tests (key/range O(diff) + negative controls, fairness tickets, multi-level Child Worlds, `Cli.run_cli`) | **`1,804.9 ms`** (`5 passed, 0 failed`) |

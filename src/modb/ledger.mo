@@ -50,14 +50,18 @@ release_snapshot,
 audit_get,
 audit_since,
 audit_tail,
+audit_tail_store,
 audit_range,
 audit_by_principal,
 audit_by_action,
 snapshot_audit_tail,
+meta_state_store,
 latest_checkpoint,
 record_verify_checkpoint,
 verify_audit,
+verify_audit_store,
 verify_audit_window,
+verify_audit_window_store,
 verify_invariants,
 verify_all,
 verify_fast
@@ -781,17 +785,31 @@ fn audit_range(db: Db, start_seq: Int, end_seq: Int) : Result(List(AuditEntry), 
   Ok(rows.map(fn(p) p.1 end))
 end
 
-## Returns the most recent `limit` audit entries in ascending sequence order (`limit <= 0` = all).
-fn audit_tail(db: Db, limit: Int) : Result(List(AuditEntry), LedgerError)
-  total = audit_count(db)
+## Schema-less lookup of `_modb_meta["state"]` on any committed `Store`.
+fn meta_state_store(store: Store) : Result(Option(SchemaState), LedgerError)
+  Ok(try Table.get(store, meta_table(), "state"))
+end
+
+## Schema-less tail scan of the most recent `limit` audit entries on any committed `Store`.
+fn audit_tail_store(store: Store, limit: Int) : Result(List(AuditEntry), LedgerError)
+  total = case try meta_state_store(store)
+    Some(st): st.next_audit_seq - 1
+    None: try wrap_modb(Modb.count_bucket(store, audit_bucket))
+  end
   return Ok([]) if total <= 0
   if limit <= 0 or limit >= total
-    audit_since(db, 0, 0)
+    rows = try Table.all(store, audit_table())
+    Ok(rows.map(fn(p) p.1 end))
   else
     start_seq = total - limit + 1
-    rows = try Table.scan(db.store, audit_table(), Some(start_seq), None, limit)
+    rows = try Table.scan(store, audit_table(), Some(start_seq), None, limit)
     Ok(rows.map(fn(p) p.1 end))
   end
+end
+
+## Returns the most recent `limit` audit entries in ascending sequence order (`limit <= 0` = all).
+fn audit_tail(db: Db, limit: Int) : Result(List(AuditEntry), LedgerError)
+  audit_tail_store(db.store, limit)
 end
 
 ## Indexed lookup of all audit entries written by `principal` (in sequence order).
@@ -817,16 +835,13 @@ fn snapshot_audit_tail(db: Db, snap: Snapshot, limit: Int) : Result(List(AuditEn
   end
 end
 
-## Verifies complete tamper-evidence of `_modb_audit`, `_modb_meta`, and secondary audit indexes:
-## - contiguous 1..N sequence numbering with zero gaps or duplicate keys
-## - non-decreasing commit `txid` bounded by `Modb.txid(db.store)`
-## - unbroken SHA-256 `prev_hash` -> `entry_hash` chain from `genesis_hash`
-## - exact agreement with `_modb_meta["state"]` and secondary index row counts
-fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
-  stored_opt = try Table.get(db.store, meta_table(), "state")
-  rows = try Table.all(db.store, audit_table())
-  principal_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_principal_bucket))
-  action_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_action_bucket))
+## Schema-less complete verification of `_modb_audit`, `_modb_meta`, and secondary audit indexes
+## on any committed `Store` (used by both `verify_audit` and the standalone `modb` CLI).
+fn verify_audit_store(store: Store) : Result(AuditReport, LedgerError)
+  stored_opt = try Table.get(store, meta_table(), "state")
+  rows = try Table.all(store, audit_table())
+  principal_cnt = try wrap_modb(Modb.count_bucket(store, audit_by_principal_bucket))
+  action_cnt = try wrap_modb(Modb.count_bucket(store, audit_by_action_bucket))
 
   if principal_cnt != rows.size
     return Error(
@@ -843,7 +858,7 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
     )
   end
 
-  cp_opt = try latest_checkpoint(db)
+  cp_opt = try Table.get(store, checkpoint_table(), "latest")
   stored = case stored_opt
     Some(st): st
     None:
@@ -861,7 +876,7 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
   var expected_seq = 1
   var prev = genesis_hash
   var last_txid = 0
-  store_txid = Modb.txid(db.store)
+  store_txid = Modb.txid(store)
   var cp_matched = false
 
   for (key_seq, entry) in rows
@@ -941,6 +956,11 @@ fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
       last_hash: prev
     )
   )
+end
+
+## Verifies complete tamper-evidence of `_modb_audit`, `_modb_meta`, and secondary audit indexes.
+fn verify_audit(db: Db) : Result(AuditReport, LedgerError)
+  verify_audit_store(db.store)
 end
 
 ## Evaluates every invariant declared in `db.schema` against committed state (read-only).
@@ -1046,13 +1066,14 @@ fn verify_audit_entries_range(
   Ok(Unit)
 end
 
-## Windowed / checkpoint-anchored audit verification (`O(entries since checkpoint)` or `max_entries`).
-## Verifies exact row counts on `_modb_audit` and both secondary indexes without scanning old rows.
-fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerError)
-  stored_opt = try Table.get(db.store, meta_table(), "state")
-  audit_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_bucket))
-  principal_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_principal_bucket))
-  action_cnt = try wrap_modb(Modb.count_bucket(db.store, audit_by_action_bucket))
+## Schema-less windowed / checkpoint-anchored audit verification (`O(entries since checkpoint)` or
+## `max_entries`), verifying exact row counts on `_modb_audit` and both secondary indexes without
+## scanning old rows.
+fn verify_audit_window_store(store: Store, max_entries: Int) : Result(AuditReport, LedgerError)
+  stored_opt = try Table.get(store, meta_table(), "state")
+  audit_cnt = try wrap_modb(Modb.count_bucket(store, audit_bucket))
+  principal_cnt = try wrap_modb(Modb.count_bucket(store, audit_by_principal_bucket))
+  action_cnt = try wrap_modb(Modb.count_bucket(store, audit_by_action_bucket))
 
   if principal_cnt != audit_cnt
     return Error(
@@ -1097,16 +1118,16 @@ fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerErr
     )
   end
   if max_entries <= 0 or total <= max_entries
-    return verify_audit(db)
+    return verify_audit_store(store)
   end
 
-  store_txid = Modb.txid(db.store)
-  cp_opt = try latest_checkpoint(db)
+  store_txid = Modb.txid(store)
+  cp_opt = try Table.get(store, checkpoint_table(), "latest")
   case cp_opt
     Some(cp) if cp.seq > 0 and cp.seq <= total and total - cp.seq <= max_entries and cp.txid >= 2 and
       cp.txid <= store_txid:
       if cp.seq == total
-        tail_entry = try (try audit_get(db, total)).or_fail(
+        tail_entry = try (try Table.get(store, audit_table(), total)).or_fail(
           AuditCorrupt(reason: "missing tail audit entry ##{total}")
         )
         if tail_entry.entry_hash != cp.audit_hash or tail_entry.txid < 2 or
@@ -1122,7 +1143,7 @@ fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerErr
           store_txid
         )
       else
-        tail_rows = try Table.scan(db.store, audit_table(), Some(cp.seq + 1), None, max_entries + 1)
+        tail_rows = try Table.scan(store, audit_table(), Some(cp.seq + 1), None, max_entries + 1)
         try verify_audit_entries_range(
           tail_rows,
           cp.seq + 1,
@@ -1134,7 +1155,7 @@ fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerErr
       end
     Some(_) | None:
       start_seq = total - max_entries + 1
-      win_rows = try Table.scan(db.store, audit_table(), Some(start_seq), None, max_entries + 1)
+      win_rows = try Table.scan(store, audit_table(), Some(start_seq), None, max_entries + 1)
       try verify_audit_entries_range(
         win_rows,
         start_seq,
@@ -1153,6 +1174,12 @@ fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerErr
       last_hash: stored.last_audit_hash
     )
   )
+end
+
+## Windowed / checkpoint-anchored audit verification (`O(entries since checkpoint)` or `max_entries`).
+## Verifies exact row counts on `_modb_audit` and both secondary indexes without scanning old rows.
+fn verify_audit_window(db: Db, max_entries: Int) : Result(AuditReport, LedgerError)
+  verify_audit_window_store(db.store, max_entries)
 end
 
 ## Fast bounded health check for latency-constrained HTTP endpoints: checks catalog + bucket root

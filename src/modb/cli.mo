@@ -1,0 +1,1005 @@
+## Standalone schema-less `modb` CLI (`inspect`, `verify`, `dump`, `audit`, `worlds`, `backup`,
+## `export`, `restore`, `compact`, `diff`). Works on any `.modb` database file safely using advisory
+## `flock` coordination and read-only `ReadFiles` where applicable.
+module Modb.Cli
+expose run_cli,
+main
+use Json
+use Modb{Store}
+use Modb.Claims
+use Modb.Errors{wrap_io}
+use Modb.Export{PortableSnapshot}
+use Modb.Grants
+use Modb.Ledger{SchemaState, genesis_hash, meta_bucket}
+use Modb.Pager{from_file}
+use Modb.Table
+use Modb.Tree{KeyDiff}
+use Modb.World
+
+fn print_usage(console: Console) : Unit
+  console.print(
+    [
+      "modb - pure-Mo CoW B+Tree & accountable agent database CLI",
+      "",
+      "Usage:",
+      "  modb inspect <db.modb> [--json]",
+      "  modb verify <db.modb> [--fast [N]] [--json]",
+      "  modb dump <db.modb> <bucket> [--limit N] [--json]",
+      "  modb audit <db.modb> [--limit N] [--principal P] [--action A] [--json]",
+      "  modb worlds <db.modb> [--json]",
+      "  modb backup <src.modb> <dst.modb> [--include-internal]",
+      "  modb export <src.modb> <out.json> [--include-internal]",
+      "  modb restore <in.json> <dst.modb>",
+      "  modb compact <db.modb> [--include-internal]",
+      "  modb diff <a.modb> <b.modb> [--include-internal] [--json]",
+      "  modb diff <db.modb> --pin <pin_id> [--include-internal] [--json]"
+    ].join("\n")
+  )
+end
+
+struct ParsedFlags
+  positional: List(Text)
+  json?: Bool
+  include_internal?: Bool
+  fast?: Bool
+  fast_window: Int
+  limit_opt: Option(Int)
+  principal_opt: Option(Text)
+  action_opt: Option(Text)
+  pin_opt: Option(Text)
+end
+
+fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
+  var pos = []
+  var json? = false
+  var include_internal? = false
+  var fast? = false
+  var fast_window = 100
+  var limit_opt = None
+  var principal_opt = None
+  var action_opt = None
+  var pin_opt = None
+  var i = 0
+  while i < rest.size
+    tok = rest.get(i) or ""
+    if tok == "--json"
+      json? = true
+      i += 1
+    else if tok == "--include-internal"
+      include_internal? = true
+      i += 1
+    else if tok == "--fast"
+      fast? = true
+      case rest.get(i + 1)
+        Some(nxt) if not nxt.starts_with?("--"):
+          case nxt.to_int
+            Some(n) if n > 0:
+              fast_window = n
+              i += 2
+            Some(_): return Error("--fast window must be a positive integer")
+            None: i += 1
+          end
+        Some(_) | None: i += 1
+      end
+    else if tok == "--limit"
+      val = try rest.get(i + 1).or_fail("--limit requires a value")
+      n = try val.to_int.or_fail("invalid --limit integer: #{val}")
+      limit_opt = Some(n)
+      i += 2
+    else if tok == "--principal"
+      val = try rest.get(i + 1).or_fail("--principal requires a value")
+      principal_opt = Some(val)
+      i += 2
+    else if tok == "--action"
+      val = try rest.get(i + 1).or_fail("--action requires a value")
+      action_opt = Some(val)
+      i += 2
+    else if tok == "--pin"
+      val = try rest.get(i + 1).or_fail("--pin requires a value")
+      pin_opt = Some(val)
+      i += 2
+    else if tok.starts_with?("--")
+      return Error("unknown flag: #{tok}")
+    else
+      pos = pos.append(tok)
+      i += 1
+    end
+  end
+  Ok(
+    ParsedFlags(
+      positional: pos,
+      json?: json?,
+      include_internal?: include_internal?,
+      fast?: fast?,
+      fast_window: fast_window,
+      limit_opt: limit_opt,
+      principal_opt: principal_opt,
+      action_opt: action_opt,
+      pin_opt: pin_opt
+    )
+  )
+end
+
+fn decode_printable_text(raw: Bytes) : Option(Text)
+  case raw.decode_utf8
+    None: None
+    Some(s):
+      for c in s.chars
+        if c < ' ' and c != '\t' and c != '\n' and c != '\r'
+          return None
+        end
+      end
+      Some(s)
+  end
+end
+
+fn format_bytes_preview(raw: Bytes) : Text
+  case decode_printable_text(raw)
+    Some(s):
+      if s.chars.size > 160
+        "#{Text.from_chars(s.chars.take(160))}... (#{raw.size}B)"
+      else
+        s
+      end
+    None:
+      hex = raw.to_hex
+      if hex.chars.size > 64
+        "0x#{Text.from_chars(hex.chars.take(64))}... (#{raw.size}B)"
+      else
+        "0x#{hex}"
+      end
+  end
+end
+
+fn fail_msg(console: Console, msg: Text) : Int
+  console.error("error: #{msg}")
+  1
+end
+
+fn build_repacked_store(
+  files: Files,
+  dst_path: Text,
+  snap: PortableSnapshot
+) : Result((Store, Int), Text)
+  decoded0 = try Export.decode_snapshot_buckets(snap).map_error(fn(e) Export.to_text(e) end)
+  has_meta? = decoded0.any?(fn(p) p.0 == meta_bucket end)
+  decoded = if not snap.include_internal and snap.schema_version > 0 and not has_meta?
+    st = SchemaState(version: snap.schema_version, next_audit_seq: 1, last_audit_hash: genesis_hash)
+    decoded0.append((meta_bucket, [(Table.encode_text_key("state"), Json.encode(st).bytes)]))
+  else
+    decoded0
+  end
+  fh = try wrap_io(files.open(dst_path)).map_error(fn(e) e.to_text end)
+  store = try Modb.build_from_buckets(from_file(fh), snap.source_txid, decoded).map_error(fn(e)
+    e.to_text
+  end)
+  _vrep = try Modb.verify(store).map_error(fn(e) e.to_text end)
+  _arep = try Ledger.verify_audit_store(store).map_error(fn(e) Ledger.to_text(e) end)
+  var entry_cnt = 0
+  for b in decoded
+    entry_cnt += b.1.size
+  end
+  Ok((store, entry_cnt))
+end
+
+fn cmd_inspect(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb inspect <db.modb> [--json]")
+  end
+  now = clock.now
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      st_opt = try Ledger.meta_state_store(store).map_error(fn(e) Ledger.to_text(e) end)
+      pins = try Modb.list_pins(store).map_error(fn(e) e.to_text end)
+      bnames = try Modb.buckets(store).map_error(fn(e) e.to_text end)
+      var b_counts = []
+      var total_entries = 0
+      for b in bnames
+        c = try Modb.count_bucket(store, b).map_error(fn(e) e.to_text end)
+        b_counts = b_counts.append((b, c))
+        total_entries += c
+      end
+      grants = try Grants.list_all(store).map_error(fn(e) Grants.to_text(e) end)
+      claims = try Claims.list_active(store, now).map_error(fn(e) Claims.to_text(e) end)
+      worlds = try World.list_worlds(store).map_error(fn(e) World.to_text(e) end)
+      w_open = worlds.filter(fn(w) w.status is World.Open end).size
+      w_metrics = try World.metrics(store).map_error(fn(e) World.to_text(e) end)
+      w_telem = try World.telemetry(store).map_error(fn(e) World.to_text(e) end)
+      schema_ver = case st_opt
+        Some(s): s.version
+        None: 0
+      end
+      audit_cnt = case st_opt
+        Some(s): s.next_audit_seq - 1
+        None: 0
+      end
+      tail_hash = case st_opt
+        Some(s): s.last_audit_hash
+        None: genesis_hash
+      end
+      Ok((
+        Modb.txid(store),
+        Modb.page_count(store),
+        Modb.free_page_count(store),
+        schema_ver,
+        audit_cnt,
+        tail_hash,
+        pins.size,
+        grants.size,
+        claims.size,
+        worlds.size,
+        w_open,
+        w_metrics,
+        w_telem,
+        b_counts,
+        total_entries
+      ))
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok((
+      txid_v,
+      pages,
+      free_pages,
+      schema_ver,
+      audit_cnt,
+      tail_hash,
+      pin_cnt,
+      grant_cnt,
+      claim_cnt,
+      world_cnt,
+      w_open,
+      wm,
+      wt,
+      b_counts,
+      total_entries
+    )):
+      if f.json?
+        buckets_json = Json.Array(
+          b_counts.map(fn(p)
+            Json.Object({"bucket": Json.String(p.0), "entries": Json.int(p.1)})
+          end)
+        )
+        out = Json.Object({
+          "path": Json.String(path),
+          "txid": Json.int(txid_v),
+          "schema_version": Json.int(schema_ver),
+          "page_count": Json.int(pages),
+          "free_page_count": Json.int(free_pages),
+          "audit_entries": Json.int(audit_cnt),
+          "tail_hash": Json.String(tail_hash),
+          "pins": Json.int(pin_cnt),
+          "grants": Json.int(grant_cnt),
+          "active_claims": Json.int(claim_cnt),
+          "worlds_total": Json.int(world_cnt),
+          "worlds_open": Json.int(w_open),
+          "world_metrics": wm.to_json,
+          "world_telemetry": wt.to_json,
+          "total_entries": Json.int(total_entries),
+          "buckets": buckets_json
+        })
+        console.print(Json.encode(out))
+      else
+        console.print(
+          "db=#{path} txid=#{txid_v} schema=v#{schema_ver} pages=#{pages} free=#{free_pages} entries=#{total_entries} audit=#{audit_cnt} tail=#{tail_hash}"
+        )
+        console.print(
+          "pins=#{pin_cnt} grants=#{grant_cnt} claims=#{claim_cnt} worlds=#{world_cnt} (open=#{w_open}) landed=#{wm
+            .total_landed} key_skips=#{wt.key_level_reads_skipped} child_landed=#{wt
+            .child_worlds_landed}"
+        )
+        for (b, c) in b_counts
+          console.print("  bucket #{b}: #{c} entries")
+        end
+      end
+      0
+  end
+end
+
+fn cmd_verify(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb verify <db.modb> [--fast [N]] [--json]")
+  end
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      srep = if f.fast?
+        try Modb.verify_light(store).map_error(fn(e) e.to_text end)
+      else
+        try Modb.verify(store).map_error(fn(e) e.to_text end)
+      end
+      arep = if f.fast?
+        try Ledger.verify_audit_window_store(store, f.fast_window).map_error(fn(e)
+          Ledger.to_text(e)
+        end)
+      else
+        try Ledger.verify_audit_store(store).map_error(fn(e) Ledger.to_text(e) end)
+      end
+      Ok((srep, arep, Modb.free_page_count(store)))
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok((srep, arep, free_cnt)):
+      mode = if f.fast?: "fast(#{f.fast_window})" else: "full"
+      if f.json?
+        out = Json.Object({
+          "ok?": Json.Boolean(true),
+          "mode": Json.String(mode),
+          "txid": Json.int(srep.txid),
+          "schema_version": Json.int(arep.schema_version),
+          "page_count": Json.int(srep.page_count),
+          "free_page_count": Json.int(free_cnt),
+          "bucket_count": Json.int(srep.bucket_count),
+          "audit_entries": Json.int(arep.entry_count),
+          "last_seq": Json.int(arep.last_seq),
+          "tail_hash": Json.String(arep.last_hash)
+        })
+        console.print(Json.encode(out))
+      else
+        console.print(
+          "MoDB verify ok=true mode=#{mode} txid=#{srep.txid} schema=v#{arep.schema_version} pages=#{srep
+            .page_count} free=#{free_cnt} buckets=#{srep.bucket_count} audit=#{arep
+            .entry_count} tail=#{arep.last_hash}"
+        )
+      end
+      0
+  end
+end
+
+fn cmd_dump(console: Console, files: Files, f: ParsedFlags) : Int
+  if f.positional.size < 2
+    return fail_msg(console, "usage: modb dump <db.modb> <bucket> [--limit N] [--json]")
+  end
+  path = (f.positional.get(0) or "").trim
+  bucket = (f.positional.get(1) or "").trim
+  lim = f.limit_opt or 50
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store) Modb.scan(store, bucket, None, None, lim).map_error(fn(e) e.to_text end) end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(rows):
+      if f.json?
+        arr = Json.Array(
+          rows.map(fn(p)
+            kt = case decode_printable_text(p.0)
+              Some(s): Json.String(s)
+              None: Json.Null
+            end
+            vt = case decode_printable_text(p.1)
+              Some(s): Json.String(s)
+              None: Json.Null
+            end
+            Json.Object({
+              "key_hex": Json.String(p.0.to_hex),
+              "key_text": kt,
+              "value_hex": Json.String(p.1.to_hex),
+              "value_text": vt
+            })
+          end)
+        )
+        console.print(Json.encode(arr))
+      else
+        console.print("bucket=#{bucket} rows=#{rows.size}")
+        for (k, v) in rows
+          console.print("  #{format_bytes_preview(k)} => #{format_bytes_preview(v)}")
+        end
+      end
+      0
+  end
+end
+
+fn cmd_audit(console: Console, files: Files, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb audit <db.modb> [--limit N] [--principal P] [--action A] [--json]"
+    )
+  end
+  lim = f.limit_opt or 20
+  filtered? = f.principal_opt is Some(_) or f.action_opt is Some(_)
+  fetch_lim = if filtered?: 0 else: lim
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      entries = try Ledger.audit_tail_store(store, fetch_lim).map_error(fn(e) Ledger.to_text(e) end)
+      matching = entries.filter(fn(e)
+        ok_p = case f.principal_opt
+          Some(p): e.principal == p
+          None: true
+        end
+        ok_a = case f.action_opt
+          Some(a): e.action == a
+          None: true
+        end
+        ok_p and ok_a
+      end)
+      if lim > 0 and matching.size > lim
+        Ok(matching.drop(matching.size - lim))
+      else
+        Ok(matching)
+      end
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok(entries):
+      if f.json?
+        console.print(Json.encode(entries))
+      else
+        console.print("audit_entries=#{entries.size}")
+        for e in entries
+          console.print(
+            "  ##{e.seq} tx=#{e.txid} #{e.principal} #{e.action} reason=\"#{e.reason}\" hash=#{e
+              .entry_hash}"
+          )
+        end
+      end
+      0
+  end
+end
+
+fn world_status_text(st: World.WorldStatus) : Text
+  case st
+    World.Open: "open"
+    World.Landed(commit_txid: tx): if tx == 0: "merged_into_parent" else: "landed(tx=#{tx})"
+    World.Rejected(reason: r): "rejected(#{r})"
+    World.Dropped: "dropped"
+  end
+end
+
+fn cmd_worlds(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb worlds <db.modb> [--json]")
+  end
+  now = clock.now
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      wm = try World.metrics(store).map_error(fn(e) World.to_text(e) end)
+      wt = try World.telemetry(store).map_error(fn(e) World.to_text(e) end)
+      ws = try World.list_worlds(store).map_error(fn(e) World.to_text(e) end)
+      tks = try World.list_priority_tickets(store, now).map_error(fn(e) World.to_text(e) end)
+      var links = {}
+      for w in ws
+        if (try World.get_world_link(store, w.id).map_error(fn(e) World.to_text(e) end)) is Some(
+          lnk
+        )
+          links = links.set(w.id, lnk)
+        end
+      end
+      Ok((wm, wt, ws, tks, links))
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok((wm, wt, ws, tks, links)):
+      if f.json?
+        out = Json.Object({
+          "metrics": wm.to_json,
+          "telemetry": wt.to_json,
+          "priority_tickets": tks.to_json,
+          "worlds": ws.to_json
+        })
+        console.print(Json.encode(out))
+      else
+        console.print(
+          "LandingMetrics landed=#{wm.total_landed} reads_verified=#{wm.total_reads_verified} reads_skipped=#{wm
+            .total_reads_skipped} stale=#{wm.stale_read_rejections} invariant=#{wm
+            .invariant_rejections} needless_send_backs=#{wm.needless_send_backs}"
+        )
+        console.print(
+          "WorldTelemetry key_skipped=#{wt.key_level_reads_skipped} bucket_skipped=#{wt
+            .bucket_level_reads_skipped} child_landed=#{wt.child_worlds_landed} tickets=#{wt
+            .fairness_tickets_issued} deferrals=#{wt.fairness_deferrals} rescued=#{wt
+            .starved_worlds_rescued} active_tickets=#{tks.size}"
+        )
+        for w in ws
+          child_note = case links.get(w.id)
+            Some(lnk): " [child of #{lnk.parent_world_id}, watermark=#{lnk.parent_step_watermark}]"
+            None: ""
+          end
+          console.print(
+            "  #{w.id} status=#{world_status_text(w.status)} principal=#{w.principal} grant=#{w
+              .grant_id} base_tx=#{w.base_txid} steps=#{w.steps.size}#{child_note}"
+          )
+        end
+      end
+      0
+  end
+end
+
+fn cmd_backup(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  if f.positional.size < 2
+    return fail_msg(console, "usage: modb backup <src.modb> <dst.modb> [--include-internal]")
+  end
+  src_path = (f.positional.get(0) or "").trim
+  dst_path = (f.positional.get(1) or "").trim
+  if files.exists?(dst_path)
+    return fail_msg(console, "destination already exists: #{dst_path}")
+  end
+  now = clock.now
+  snap = case Modb.with_shared_lock(
+    files.read_only,
+    src_path,
+    fn(e) e.to_text end,
+    fn(store)
+      Export.export_store(store, f.include_internal?, now).map_error(fn(e)
+        Export.to_text(e)
+      end)
+    end
+  )
+    Ok(s): s
+    Error(msg): return fail_msg(console, msg)
+  end
+  tmp_path = "#{dst_path}.backup.tmp"
+  _rm0 = files.remove(tmp_path)
+  (st_bak, entries) = case build_repacked_store(files, tmp_path, snap)
+    Ok(p): p
+    Error(msg):
+      _rm1 = files.remove(tmp_path)
+      return fail_msg(console, msg)
+  end
+  pages = Modb.page_count(st_bak)
+  free_pages = Modb.free_page_count(st_bak)
+  case files.rename(tmp_path, dst_path)
+    Ok(Unit):
+      console.print(
+        "MoDB backup ok src=#{src_path} dst=#{dst_path} txid=#{snap.source_txid} schema=v#{snap
+          .schema_version} entries=#{entries} pages=#{pages} free=#{free_pages} sha256=#{snap.sha256}"
+      )
+      0
+    Error(fe):
+      _rm2 = files.remove(tmp_path)
+      fail_msg(console, fe.to_text)
+  end
+end
+
+fn cmd_export(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  if f.positional.size < 2
+    return fail_msg(console, "usage: modb export <src.modb> <out.json> [--include-internal]")
+  end
+  src_path = (f.positional.get(0) or "").trim
+  out_path = (f.positional.get(1) or "").trim
+  if files.exists?(out_path)
+    return fail_msg(console, "output file already exists: #{out_path}")
+  end
+  now = clock.now
+  snap = case Modb.with_shared_lock(
+    files.read_only,
+    src_path,
+    fn(e) e.to_text end,
+    fn(store)
+      Export.export_store(store, f.include_internal?, now).map_error(fn(e)
+        Export.to_text(e)
+      end)
+    end
+  )
+    Ok(s): s
+    Error(msg): return fail_msg(console, msg)
+  end
+  raw = Export.encode_snapshot_json(snap)
+  case files.write_text(out_path, raw)
+    Ok(Unit):
+      console.print(
+        "MoDB export ok src=#{src_path} out=#{out_path} txid=#{snap.source_txid} buckets=#{snap
+          .bucket_count} entries=#{snap.entry_count} sha256=#{snap.sha256}"
+      )
+      0
+    Error(fe): fail_msg(console, fe.to_text)
+  end
+end
+
+fn cmd_restore(console: Console, files: Files, f: ParsedFlags) : Int
+  if f.positional.size < 2
+    return fail_msg(console, "usage: modb restore <in.json> <dst.modb>")
+  end
+  in_path = (f.positional.get(0) or "").trim
+  dst_path = (f.positional.get(1) or "").trim
+  if files.exists?(dst_path)
+    return fail_msg(console, "destination already exists: #{dst_path}")
+  end
+  raw = case files.read_only.read_text(in_path)
+    Ok(s): s
+    Error(fe): return fail_msg(console, fe.to_text)
+  end
+  snap = case Json.decode[PortableSnapshot](raw)
+    Ok(s): s
+    Error(je): return fail_msg(console, "invalid snapshot JSON: #{je}")
+  end
+  tmp_path = "#{dst_path}.restore.tmp"
+  _rm0 = files.remove(tmp_path)
+  (st_restored, entries) = case build_repacked_store(files, tmp_path, snap)
+    Ok(p): p
+    Error(msg):
+      _rm1 = files.remove(tmp_path)
+      return fail_msg(console, msg)
+  end
+  pages = Modb.page_count(st_restored)
+  case files.rename(tmp_path, dst_path)
+    Ok(Unit):
+      console.print(
+        "MoDB restore ok src=#{in_path} dst=#{dst_path} txid=#{snap.source_txid} schema=v#{snap
+          .schema_version} entries=#{entries} pages=#{pages} sha256=#{snap.sha256}"
+      )
+      0
+    Error(fe):
+      _rm2 = files.remove(tmp_path)
+      fail_msg(console, fe.to_text)
+  end
+end
+
+fn cmd_compact(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
+  path = case f.positional.first
+    Some(p) if not p.trim.empty?: p.trim
+    Some(_) | None: return fail_msg(console, "usage: modb compact <db.modb> [--include-internal]")
+  end
+  if not files.read_only.exists?(path)
+    return fail_msg(console, "database file does not exist: #{path}")
+  end
+  now = clock.now
+  lock_res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      before_pages = Modb.page_count(store)
+      before_free = Modb.free_page_count(store)
+      snap = try Export.export_store(store, f.include_internal?, now).map_error(fn(e)
+        Export.to_text(e)
+      end)
+      Ok((before_pages, before_free, snap))
+    end
+  )
+  case lock_res
+    Error(msg): fail_msg(console, msg)
+    Ok((before_pages, before_free, snap)):
+      tmp_path = "#{path}.compact.tmp"
+      _rm0 = files.remove(tmp_path)
+      (st_new, entries) = case build_repacked_store(files, tmp_path, snap)
+        Ok(p): p
+        Error(msg):
+          _rm1 = files.remove(tmp_path)
+          return fail_msg(console, msg)
+      end
+      after_pages = Modb.page_count(st_new)
+      after_free = Modb.free_page_count(st_new)
+      case files.rename(tmp_path, path)
+        Ok(Unit):
+          console.print(
+            "MoDB compact ok path=#{path} pages=#{before_pages}->#{after_pages} free=#{before_free}->#{after_free} entries=#{entries} sha256=#{snap
+              .sha256}"
+          )
+          0
+        Error(fe):
+          _rm2 = files.remove(tmp_path)
+          fail_msg(console, fe.to_text)
+      end
+  end
+end
+
+struct BucketDiffCount
+  bucket: Text
+  added: Int
+  removed: Int
+  modified: Int
+end
+
+fn count_key_diffs(bucket: Text, kdiffs: List(KeyDiff)) : BucketDiffCount
+  var a = 0
+  var r = 0
+  var m = 0
+  for kd in kdiffs
+    case kd
+      Added(key: _, value: _): a += 1
+      Removed(key: _, value: _): r += 1
+      Modified(key: _, old_value: _, new_value: _): m += 1
+    end
+  end
+  BucketDiffCount(bucket: bucket, added: a, removed: r, modified: m)
+end
+
+fn diff_sorted_kv(a_rows: List((Bytes, Bytes)), b_rows: List((Bytes, Bytes))) : (Int, Int, Int)
+  var i = 0
+  var j = 0
+  var added = 0
+  var removed = 0
+  var modified = 0
+  while i < a_rows.size and j < b_rows.size
+    (ka, va) = a_rows.get(i) or stop "diff a row"
+    (kb, vb) = b_rows.get(j) or stop "diff b row"
+    if ka == kb
+      if va != vb
+        modified += 1
+      end
+      i += 1
+      j += 1
+    else if ka < kb
+      removed += 1
+      i += 1
+    else
+      added += 1
+      j += 1
+    end
+  end
+  removed += a_rows.size - i
+  added += b_rows.size - j
+  (added, removed, modified)
+end
+
+fn cmd_diff_pin(
+  console: Console,
+  files: Files,
+  f: ParsedFlags,
+  path: Text,
+  pin_id: Text
+) : Int
+  res = Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      pin = try (try Modb.get_pin(store, pin_id).map_error(fn(e) e.to_text end)).or_fail(
+        "unknown pin '#{pin_id}'"
+      )
+      (diffs, stats) = try Modb.diff_roots_with_stats(
+        store,
+        pin.catalog_root,
+        Modb.catalog_root(store)
+      ).map_error(fn(e) e.to_text end)
+      var items = []
+      for bd in diffs
+        if f.include_internal? or not bd.bucket.starts_with?("_modb_")
+          items = items.append(count_key_diffs(bd.bucket, bd.changes))
+        end
+      end
+      Ok((pin.txid, Modb.txid(store), items, stats))
+    end
+  )
+  case res
+    Error(msg): fail_msg(console, msg)
+    Ok((pin_tx, live_tx, items, stats)):
+      if f.json?
+        out = Json.Object({
+          "mode": Json.String("pin"),
+          "pin_id": Json.String(pin_id),
+          "pin_txid": Json.int(pin_tx),
+          "live_txid": Json.int(live_tx),
+          "pages_read": Json.int(stats.pages_read),
+          "subtrees_skipped": Json.int(stats.subtrees_skipped),
+          "diffs": items.to_json
+        })
+        console.print(Json.encode(out))
+      else
+        console.print(
+          "diff pin=#{pin_id} (tx #{pin_tx} -> #{live_tx}) buckets_changed=#{items.size} pages_read=#{stats
+            .pages_read} subtrees_skipped=#{stats.subtrees_skipped}"
+        )
+        for d in items
+          console.print("  #{d.bucket}: +#{d.added} / ~#{d.modified} / -#{d.removed}")
+        end
+      end
+      0
+  end
+end
+
+fn load_bucket_map_ro(
+  files: Files,
+  path: Text,
+  include_internal?: Bool
+) : Result((Int, Map(Text, List((Bytes, Bytes)))), Text)
+  Modb.with_shared_lock(
+    files.read_only,
+    path,
+    fn(e) e.to_text end,
+    fn(store)
+      names = try Modb.buckets(store).map_error(fn(e) e.to_text end)
+      var m = {}
+      for b in names
+        if include_internal? or not b.starts_with?("_modb_")
+          rows = try Modb.scan(store, b, None, None, 0).map_error(fn(e) e.to_text end)
+          m = m.set(b, rows)
+        end
+      end
+      Ok((Modb.txid(store), m))
+    end
+  )
+end
+
+fn cmd_diff(console: Console, files: Files, f: ParsedFlags) : Int
+  case f.pin_opt
+    Some(pin_id):
+      path = case f.positional.first
+        Some(p) if not p.trim.empty?: p.trim
+        Some(_) | None: return fail_msg(
+          console,
+          "usage: modb diff <db.modb> --pin <pin_id> [--include-internal] [--json]"
+        )
+      end
+      return cmd_diff_pin(console, files, f, path, pin_id)
+    None: Unit
+  end
+  if f.positional.size < 2
+    return fail_msg(
+      console,
+      "usage: modb diff <a.modb> <b.modb> [--include-internal] [--json]"
+    )
+  end
+  path_a = (f.positional.get(0) or "").trim
+  path_b = (f.positional.get(1) or "").trim
+  (tx_a, map_a) = case load_bucket_map_ro(files, path_a, f.include_internal?)
+    Ok(p): p
+    Error(msg): return fail_msg(console, msg)
+  end
+  (tx_b, map_b) = case load_bucket_map_ro(files, path_b, f.include_internal?)
+    Ok(p): p
+    Error(msg): return fail_msg(console, msg)
+  end
+  var seen = Set.empty
+  var items = []
+  for b in map_a.keys
+    seen = seen.add(b)
+    ra = map_a.get(b) or []
+    rb = map_b.get(b) or []
+    (ad, rm, md) = diff_sorted_kv(ra, rb)
+    if ad + rm + md > 0
+      items = items.append(BucketDiffCount(bucket: b, added: ad, removed: rm, modified: md))
+    end
+  end
+  for b in map_b.keys
+    if not seen.has?(b)
+      rb = map_b.get(b) or []
+      if not rb.empty?
+        items = items.append(
+          BucketDiffCount(bucket: b, added: rb.size, removed: 0, modified: 0)
+        )
+      end
+    end
+  end
+  if f.json?
+    out = Json.Object({
+      "mode": Json.String("files"),
+      "a": Json.String(path_a),
+      "b": Json.String(path_b),
+      "txid_a": Json.int(tx_a),
+      "txid_b": Json.int(tx_b),
+      "diffs": items.to_json
+    })
+    console.print(Json.encode(out))
+  else
+    console.print("diff #{path_a} (tx #{tx_a}) -> #{path_b} (tx #{tx_b}) buckets=#{items.size}")
+    for d in items
+      console.print("  #{d.bucket}: +#{d.added} / ~#{d.modified} / -#{d.removed}")
+    end
+  end
+  0
+end
+
+## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, and `Clock`.
+fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
+  head = (argv.first or "").trim
+  if head.empty? or head == "help" or head == "--help" or head == "-h"
+    print_usage(console)
+    return 0
+  end
+  f = case parse_flags(argv.drop(1))
+    Ok(parsed): parsed
+    Error(msg): return fail_msg(console, msg)
+  end
+  return cmd_inspect(console, files, clock, f) if head == "inspect"
+  return cmd_verify(console, files, f) if head == "verify"
+  return cmd_dump(console, files, f) if head == "dump"
+  return cmd_audit(console, files, f) if head == "audit"
+  return cmd_worlds(console, files, clock, f) if head == "worlds"
+  return cmd_backup(console, files, clock, f) if head == "backup"
+  return cmd_export(console, files, clock, f) if head == "export"
+  return cmd_restore(console, files, f) if head == "restore"
+  return cmd_compact(console, files, clock, f) if head == "compact"
+  return cmd_diff(console, files, f) if head == "diff"
+  console.error("unknown command: #{head}")
+  print_usage(console)
+  2
+end
+
+fn main(args: Args, console: Console, files: Files, clock: Clock) : Int
+  run_cli(args.list, console, files, clock)
+end
+
+struct NoteRec
+  body: Text
+end
+
+test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/restore, compact, diff"
+  files = Files.in_memory({})
+  t0 = Time.parse("2026-11-26T02:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  tbl = Table.text_key[NoteRec]("notes")
+  sc = Ledger.schema(1).with_require_reason(true).with_migration(
+    Ledger.migration(1, "init", fn(tx) Table.put(tx, tbl, "n1", NoteRec(body: "alpha")) end)
+  )
+  assert Ledger.open(files, "app.modb", sc, t0) is Ok(db0)
+  meta = Ledger.WriteMeta(principal: "user:ada", action: "save", reason: "add beta", at: t0)
+  assert Ledger.write(db0, meta, "put n2", Json.Null, fn(tx)
+    Table.put(tx, tbl, "n2", NoteRec(body: "beta"))
+  end) is
+    Ok(db1)
+  assert Modb.pin_root(Ledger.store(db1), "snap-v1") is Ok((st2, _pin))
+  db2 = Ledger.update_store(db1, st2)
+  assert Ledger.write(db2, meta, "put n3", Json.Null, fn(tx)
+    Table.put(tx, tbl, "n3", NoteRec(body: "gamma"))
+  end) is
+    Ok(db3)
+  assert Ledger.record_verify_checkpoint(db3, t0) is Ok((_db4, _cp))
+
+  c_help = Console.fake()
+  assert run_cli(["help"], c_help, files, clock) == 0
+  assert (c_help.printed.first or "").contains?("Usage:")
+
+  c_ins = Console.fake()
+  assert run_cli(["inspect", "app.modb", "--json"], c_ins, files, clock) == 0
+  assert (c_ins.printed.first or "").contains?("\"bucket\":\"notes\"")
+
+  c_ver = Console.fake()
+  assert run_cli(["verify", "app.modb"], c_ver, files, clock) == 0
+  assert (c_ver.printed.first or "").contains?("MoDB verify ok=true mode=full")
+
+  c_vf = Console.fake()
+  assert run_cli(["verify", "app.modb", "--fast", "10"], c_vf, files, clock) == 0
+  assert (c_vf.printed.first or "").contains?("mode=fast(10)")
+
+  c_dump = Console.fake()
+  assert run_cli(["dump", "app.modb", "notes"], c_dump, files, clock) == 0
+  assert c_dump.printed.join("\n").contains?("beta")
+
+  c_aud = Console.fake()
+  assert run_cli(["audit", "app.modb", "--principal", "user:ada"], c_aud, files, clock) == 0
+  assert c_aud.printed.join("\n").contains?("add beta")
+
+  c_wr = Console.fake()
+  assert run_cli(["worlds", "app.modb"], c_wr, files, clock) == 0
+  assert (c_wr.printed.first or "").contains?("LandingMetrics")
+
+  c_diff_pin = Console.fake()
+  assert run_cli(["diff", "app.modb", "--pin", "snap-v1"], c_diff_pin, files, clock) == 0
+  assert c_diff_pin.printed.join("\n").contains?("notes: +1 / ~0 / -0")
+
+  c_bak = Console.fake()
+  assert run_cli(["backup", "app.modb", "app-bak.modb"], c_bak, files, clock) == 0
+  assert (c_bak.printed.first or "").contains?("MoDB backup ok")
+  assert run_cli(["verify", "app-bak.modb"], Console.fake(), files, clock) == 0
+  ## Refuses overwrite
+  assert run_cli(["backup", "app.modb", "app-bak.modb"], Console.fake(), files, clock) == 1
+
+  c_exp = Console.fake()
+  assert run_cli(["export", "app.modb", "app.snap.json"], c_exp, files, clock) == 0
+  c_res = Console.fake()
+  assert run_cli(["restore", "app.snap.json", "app-res.modb"], c_res, files, clock) == 0
+  assert run_cli(["verify", "app-res.modb"], Console.fake(), files, clock) == 0
+
+  c_cmp = Console.fake()
+  assert run_cli(["compact", "app.modb"], c_cmp, files, clock) == 0
+  assert (c_cmp.printed.first or "").contains?("MoDB compact ok") and
+    (c_cmp.printed.first or "").contains?("->0 entries=")
+
+  c_diff_files = Console.fake()
+  assert run_cli(["diff", "app.modb", "app-bak.modb"], c_diff_files, files, clock) == 0
+  assert c_diff_files.printed.join("\n").contains?("buckets=0")
+end

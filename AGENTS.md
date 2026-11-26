@@ -20,7 +20,10 @@ sandboxed ad-hoc `ReadPrograms` with static field gating & read provenance log, 
 self-onboarding `OnboardingManifest`, and O(1) CoW-diff incremental World read re-validation),
 and Milestone 9 (first-class online `Export.backup_db`, atomic `Export.compact_db` /
 `Export.compact_db_with_hook`, replay-safe `Replay.compact_with_baseline` preserving
-`_modb_replay_baseline`, and production Worlds + Views integration in `motet`)
+`_modb_replay_baseline`, and production Worlds + Views integration in `motet`), and
+Milestone 10 (`v0.2.0`: key-level & range-level `O(diff)` World read skipping, bounded-TTL
+starvation fairness `PriorityTickets`, Nested Child Worlds with hierarchical attribution &
+excision, schema-less ledger verification, and the standalone `modb` CLI in `src/modb/cli.mo`)
 live in `src/`, `tools/`, verified in `tests/` and `bench/` and demonstrated in `examples/shop.mo`,
 `examples/shop-api.mo`, `examples/agent-workbench.mo`, and `examples/workbench-ui.mo`.
 `specs/` holds active build specs, `design.md` holds the broader long-term design, and `map.md` is
@@ -30,12 +33,12 @@ the earlier wayfinder map that Robert stopped on 2026-11-14.
 
 | Path | What it holds | Who edits it |
 | --- | --- | --- |
-| `mo.toml`, `src/` | Pure-Mo MoDB package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables & secondary indexes (`table.mo`), Layer 3 accountable ledger, invariants, migrations & portable export (`ledger.mo`, `export.mo`), and Layer 4 multi-agent coordination, views/read programs & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`) | Active build sessions |
-| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
+| `mo.toml`, `src/` | Pure-Mo MoDB `v0.2.0` package: Layer 1 CoW B+Tree + pins/diff/import (`modb.mo`, `codec.mo`, `pager.mo`, `tree.mo`, `errors.mo`), Layer 2 typed tables & secondary indexes (`table.mo`), Layer 3 accountable ledger, invariants, migrations & portable export/compaction (`ledger.mo`, `export.mo`), Layer 4 multi-agent coordination, views/read programs, child worlds, fairness & upgrade-aware replay (`grants.mo`, `claims.mo`, `replay.mo`, `world.mo`, `views.mo`), and standalone schema-less `modb` CLI (`cli.mo`) | Active build sessions |
+| `tests/` | Differential tests, deterministic crash-simulation tests, typed-table tests, Layer 3 ledger/migration/crash tests, Layer 1 pin/diff tests, Layer 4 `Replay.tla`/`Worlds.tla` parity tests, Experiment 18 multi-version replay & portable export tests, Milestone 8 views/releases/incremental read-validation tests, Milestone 9 backup/compaction tests (`test-compact-backup.mo`), Milestone 10 key/range O(diff), fairness, nested child-world & CLI tests (`test-m10-worlds-cli.mo`) (`mo test`), live 8-worker `mo serve` `SIGKILL` test (`test_shop_api_live.py`), and live stdio MCP + HTTP Inspector UI end-to-end test (`test_workbench_mcp_and_ui.py`) | Active build sessions |
 | `examples/` | End-to-end MoDB example programs (`shop.mo` CLI demo, `shop-api.mo` e-commerce HTTP `api` server, `agent-workbench.mo` multi-agent project/task/budget/views/replay/MCP HTTP `api` server, and `workbench-ui.mo` self-contained live browser Inspector UI) | Active build sessions |
 | `tools/` | Zero-dependency Python 3 stdio MCP server bridge (`modb_mcp_server.py`) connecting MCP clients (Claude Desktop, Cursor, T3 Code) to live `AgentWorkbench` (`mo serve --workers 8`) | Active build sessions |
 | `bench/` | Scale, freelist, and SQLite head-to-head benchmarks (`bench-modb.mo`), real OS `SIGKILL` crash loop (`kill_loop.py`), 8-worker HTTP concurrency benchmark (`bench_shop_api.py`), and 8-worker real-world multi-agent simulation (`real_world_agent_sim.py`) | Active build sessions |
-| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-8-views-reads-and-incremental-worlds.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
+| `specs/` | Active implementation specs (`milestone-1-storage-engine.md` through `milestone-10-key-diff-child-worlds-and-cli.md`) and completed Mo PR / Rust-rewrite contracts | Active build sessions |
 | `BENCHMARKS.md`, `FRICTION.md` | Verified gate/benchmark records and running Mo language/runtime friction log | Active build sessions |
 | `map.md`, `issues/` | The wayfinder map and its tickets, stopped on 2026-11-14 and kept as a record | Nobody |
 | `research/` | One findings file for each research ticket | Written once, then never edited |
@@ -66,6 +69,7 @@ mo test src/modb/claims.mo
 mo test src/modb/replay.mo
 mo test src/modb/world.mo
 mo test src/modb/views.mo
+mo test src/modb/cli.mo
 mo test tests/test-modb.mo
 mo test tests/test-table.mo
 mo test tests/test-ledger.mo
@@ -74,6 +78,7 @@ mo test tests/test-worlds.mo
 mo test tests/test-replay-export.mo
 mo test tests/test-views-incremental.mo
 mo test tests/test-compact-backup.mo
+mo test tests/test-m10-worlds-cli.mo
 mo test examples/shop.mo
 mo test examples/shop-api.mo
 mo test examples/agent-workbench.mo

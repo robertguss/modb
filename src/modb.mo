@@ -32,6 +32,7 @@ get_pin,
 pin_root,
 unpin_root,
 tx_pin_base_root,
+tx_pin_existing_root,
 tx_unpin_root,
 begin_write,
 begin_write_tracked,
@@ -40,6 +41,7 @@ tx_is_tracked?,
 tx_clear_touched,
 tx_touched_puts,
 tx_touched_deletes,
+tx_touched_buckets,
 tx_bucket_deleted?,
 tx_bucket_dirty?,
 tx_get,
@@ -60,6 +62,7 @@ diff_roots,
 diff_roots_with_stats,
 diff_tx_from_root,
 diff_user_tx_from_root,
+diff_txs,
 verify,
 verify_light,
 commit_and_crash
@@ -787,6 +790,21 @@ fn tx_touched_deletes(tx: WriteTx, bucket: Text) : List(Bytes)
   end
 end
 
+## Returns all bucket names with at least one put, delete, or full bucket delete staged in `tx`.
+fn tx_touched_buckets(tx: WriteTx) : List(Text)
+  var seen = Set.empty
+  for b in tx.touched_puts.keys
+    seen = seen.add(b)
+  end
+  for b in tx.touched_deletes.keys
+    seen = seen.add(b)
+  end
+  for b in tx.deleted_buckets.to_list
+    seen = seen.add(b)
+  end
+  seen.to_list
+end
+
 ## True if `bucket` was wholly deleted via `tx_delete_bucket` in `tx`.
 fn tx_bucket_deleted?(tx: WriteTx, bucket: Text) : Bool
   tx.deleted_buckets.has?(bucket)
@@ -908,6 +926,32 @@ fn tx_pin_base_root(tx: WriteTx, id: Text) : Result((WriteTx, PinnedRoot), ModbE
     return Error(InvalidArgument(reason: "pin '#{id}' already exists"))
   end
   pin = PinnedRoot(id: id, txid: tx.base.meta.txid, catalog_root: tx.base.meta.catalog_root)
+  var next = try tx_put_raw(tx, pins_bucket, id.bytes, encode_pinned_root(pin))
+  next.removed_pins = next.removed_pins.remove(id)
+  next.added_pins = next.added_pins.set(id, pin)
+  Ok((next, pin))
+end
+
+## Records a crash-safe persistent root pin under `id` pointing to the same committed
+## `(txid, catalog_root)` already held by `existing_pin_id` (used for Nested Child Worlds).
+fn tx_pin_existing_root(tx: WriteTx, id: Text, existing_pin_id: Text) : Result(
+  (WriteTx, PinnedRoot),
+  ModbError
+)
+  if id.trim.empty?
+    return Error(InvalidArgument(reason: "pin id cannot be empty"))
+  end
+  if tx.speculative
+    return Error(InvalidArgument(reason: "cannot persist pin inside a speculative WriteTx"))
+  end
+  cur_pins = try effective_pins(tx)
+  if cur_pins.has?(id)
+    return Error(InvalidArgument(reason: "pin '#{id}' already exists"))
+  end
+  parent_pin = try cur_pins.get(existing_pin_id).or_fail(
+    InvalidArgument(reason: "unknown source pin '#{existing_pin_id}'")
+  )
+  pin = PinnedRoot(id: id, txid: parent_pin.txid, catalog_root: parent_pin.catalog_root)
   var next = try tx_put_raw(tx, pins_bucket, id.bytes, encode_pinned_root(pin))
   next.removed_pins = next.removed_pins.remove(id)
   next.added_pins = next.added_pins.set(id, pin)
@@ -1339,6 +1383,50 @@ fn diff_user_tx_from_root(tx: WriteTx, base_root: Int) : Result(List(BucketDiff)
     true
   )
   Ok(diffs)
+end
+
+## Structural O(diff) comparison between two uncommitted `WriteTx` states (both rooted on the
+## same `BlockStore`), without touching disk.
+fn diff_txs(tx_a: WriteTx, tx_b: WriteTx) : Result(List(BucketDiff), ModbError)
+  (a_a, root_a) = try finalize_tx_pages(tx_a)
+  (a_b, root_b) = try finalize_tx_pages(tx_b)
+  (diffs, _stats) = try diff_catalog_roots_internal(
+    tx_a.base.pager,
+    a_a.staged,
+    a_b.staged,
+    root_a,
+    root_b,
+    false
+  )
+  ## Two independent WriteTxs from the same base can allocate identical new CoW page IDs
+  ## for differently-mutated dirty buckets, making `va == vb` in the catalog leaf despite differing bytes.
+  var out = diffs
+  var reported = Set.empty
+  for d in out
+    reported = reported.add(d.bucket)
+  end
+  var maybe_collided = Set.empty
+  for b in tx_a.dirty_buckets.keys
+    if not reported.has?(b)
+      maybe_collided = maybe_collided.add(b)
+    end
+  end
+  for b in tx_b.dirty_buckets.keys
+    if not reported.has?(b)
+      maybe_collided = maybe_collided.add(b)
+    end
+  end
+  for b in maybe_collided.to_list
+    ba = try lookup_bucket_root(tx_a.base.pager, a_a.staged, root_a, b)
+    bb = try lookup_bucket_root(tx_a.base.pager, a_b.staged, root_b, b)
+    if ba != bb or a_a.staged.has?(ba) or a_b.staged.has?(bb)
+      changes = try diff_trees(tx_a.base.pager, a_a.staged, a_b.staged, ba, bb)
+      if not changes.empty?
+        out = out.append(BucketDiff(bucket: b, changes: changes))
+      end
+    end
+  end
+  Ok(out)
 end
 
 ## Full structural & page-accounting integrity check:
