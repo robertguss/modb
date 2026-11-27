@@ -11,6 +11,8 @@ ReleaseDef(..),
 ActionDoc(..),
 InvariantDoc(..),
 ViewIndex(..),
+ViewCompositeIndex(..),
+ViewOrderedIndex(..),
 QueryPlan(..),
 ViewCatalog(..),
 Pred(..),
@@ -20,6 +22,7 @@ SortSpec(..),
 ReadProgram(..),
 ReadLimits(..),
 ReadResult(..),
+PagedReadResult(..),
 ReleaseResult(..),
 ReadKind(..),
 ReadLogEntry(..),
@@ -35,6 +38,10 @@ with_view,
 with_view_index,
 with_view_eq_index,
 with_view_range_index,
+with_view_composite_index,
+with_view_composite_eq_index,
+with_view_composite_range_index,
+with_view_ordered_index,
 with_release,
 with_action_doc,
 with_invariant_doc,
@@ -44,11 +51,14 @@ plan_read_program,
 explain_read_program,
 execute_read_program,
 execute_read_program_recorded,
+execute_read_program_paged,
+execute_read_program_paged_recorded,
 execute_release,
 execute_release_recorded,
 list_read_log,
 describe_for_caller,
 execute_read_program_locked,
+execute_read_program_paged_locked,
 execute_release_locked
 use Crypto
 use Json
@@ -142,7 +152,33 @@ struct ViewIndex
   supports_eq: Bool
   supports_range: Bool
   load_eq: fn(Store, Json) : Result(List(Map(Text, Json)), Text)
-  load_range: fn(Store, Option(Json), Option(Json), Bool, Bool) : Result(List(Map(Text, Json)), Text)
+  load_range: fn(Store, Option(Json), Option(Json), Bool, Bool) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
+end
+
+## Composite multi-field index lookup adapter attached to an ordered list of fields on a `ViewDef`.
+## When `supports_range_tail` is true, leading fields `[0..len-2]` use equality and the trailing field
+## `fields[len-1]` accepts optional `[lo, hi]` range bounds.
+struct ViewCompositeIndex
+  name: Text
+  fields: List(Text)
+  supports_range_tail: Bool
+  load_eq: fn(Store, List(Json)) : Result(List(Map(Text, Json)), Text)
+  load_prefix_range: fn(Store, List(Json), Option(Json), Option(Json), Bool, Bool) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
+end
+
+## Ordered ascending index adapter allowing `OrderBy(field, asc) + Limit` early-stop pushdown.
+struct ViewOrderedIndex
+  field: Text
+  load_ordered: fn(Store, Option(Json), Option(Json), Bool, Bool, Int) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
 end
 
 ## Physical execution strategy chosen by `plan_read_program`.
@@ -158,15 +194,38 @@ enum QueryPlan
     lo_inclusive: Bool,
     hi_inclusive: Bool
   )
+  PlanCompositeEq(view: Text, index_name: Text, fields: List(Text), values: List(Json))
+  PlanCompositeRange(
+    view: Text,
+    index_name: Text,
+    eq_fields: List(Text),
+    eq_values: List(Json),
+    range_field: Text,
+    lo: Option(Json),
+    hi: Option(Json),
+    lo_inclusive: Bool,
+    hi_inclusive: Bool
+  )
+  PlanIndexOrdered(
+    view: Text,
+    field: Text,
+    lo: Option(Json),
+    hi: Option(Json),
+    lo_inclusive: Bool,
+    hi_inclusive: Bool,
+    limit_pushdown: Option(Int)
+  )
 end
 
-## Registry of approved views, field indexes, releases, and onboarding documentation.
+## Registry of approved views, field indexes, composite/ordered indexes, releases, and onboarding docs.
 struct ViewCatalog
   views: Map(Text, ViewDef)
   releases: Map(Text, ReleaseDef)
   action_docs: Map(Text, ActionDoc)
   invariant_docs: List(InvariantDoc)
   view_indexes: Map(Text, Map(Text, ViewIndex))
+  composite_indexes: Map(Text, List(ViewCompositeIndex))
+  ordered_indexes: Map(Text, Map(Text, ViewOrderedIndex))
 end
 
 ## Composable read-only filter predicate evaluated over narrowed View rows.
@@ -235,6 +294,14 @@ struct ReadResult
   result_count: Int
   answer_hash: Text
   rows: List(Json)
+end
+
+## Keyset-paginated output returned by `execute_read_program_paged*`.
+struct PagedReadResult
+  result: ReadResult
+  next_cursor: Option(Text)
+  has_more: Bool
+  page_size: Int
 end
 
 ## Output of executing an approved k-anonymous `ReleaseDef`.
@@ -325,7 +392,15 @@ end
 
 ## Creates an empty `ViewCatalog`.
 fn catalog() : ViewCatalog
-  ViewCatalog(views: {}, releases: {}, action_docs: {}, invariant_docs: [], view_indexes: {})
+  ViewCatalog(
+    views: {},
+    releases: {},
+    action_docs: {},
+    invariant_docs: [],
+    view_indexes: {},
+    composite_indexes: {},
+    ordered_indexes: {}
+  )
 end
 
 ## Registers a narrowed `ViewDef` in `cat`.
@@ -369,7 +444,10 @@ fn with_view_range_index(
   view_name: Text,
   field: Text,
   load_eq: fn(Store, Json) : Result(List(Map(Text, Json)), Text),
-  load_range: fn(Store, Option(Json), Option(Json), Bool, Bool) : Result(List(Map(Text, Json)), Text)
+  load_range: fn(Store, Option(Json), Option(Json), Bool, Bool) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
 ) : ViewCatalog
   with_view_index(
     cat,
@@ -382,6 +460,92 @@ fn with_view_range_index(
       load_range: load_range
     )
   )
+end
+
+## Registers a `ViewCompositeIndex` on `view_name`.
+fn with_view_composite_index(cat: ViewCatalog, view_name: Text, idx: ViewCompositeIndex) : ViewCatalog
+  var next = cat
+  cur = next.composite_indexes.get(view_name) or []
+  var updated = []
+  var replaced? = false
+  for existing in cur
+    if existing.name == idx.name
+      updated = updated.append(idx)
+      replaced? = true
+    else
+      updated = updated.append(existing)
+    end
+  end
+  if not replaced?
+    updated = updated.append(idx)
+  end
+  next.composite_indexes = next.composite_indexes.set(view_name, updated)
+  next
+end
+
+## Registers an equality-only composite index on `(view_name, fields)` (`PlanCompositeEq`).
+fn with_view_composite_eq_index(
+  cat: ViewCatalog,
+  view_name: Text,
+  name: Text,
+  fields: List(Text),
+  load_eq: fn(Store, List(Json)) : Result(List(Map(Text, Json)), Text)
+) : ViewCatalog
+  with_view_composite_index(
+    cat,
+    view_name,
+    ViewCompositeIndex(
+      name: name,
+      fields: fields,
+      supports_range_tail: false,
+      load_eq: load_eq,
+      load_prefix_range: fn(_s, _eqs, _lo, _hi, _li, _hi_inc) Ok([]) end
+    )
+  )
+end
+
+## Registers a prefix-equality + tail-range composite index on `(view_name, fields)` (`PlanCompositeEq` / `PlanCompositeRange`).
+fn with_view_composite_range_index(
+  cat: ViewCatalog,
+  view_name: Text,
+  name: Text,
+  fields: List(Text),
+  load_eq: fn(Store, List(Json)) : Result(List(Map(Text, Json)), Text),
+  load_prefix_range: fn(Store, List(Json), Option(Json), Option(Json), Bool, Bool) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
+) : ViewCatalog
+  with_view_composite_index(
+    cat,
+    view_name,
+    ViewCompositeIndex(
+      name: name,
+      fields: fields,
+      supports_range_tail: true,
+      load_eq: load_eq,
+      load_prefix_range: load_prefix_range
+    )
+  )
+end
+
+## Registers an ascending-ordered index on `(view_name, field)` enabling `PlanIndexOrdered` and `OrderBy + Limit` early stop.
+fn with_view_ordered_index(
+  cat: ViewCatalog,
+  view_name: Text,
+  field: Text,
+  load_ordered: fn(Store, Option(Json), Option(Json), Bool, Bool, Int) : Result(
+    List(Map(Text, Json)),
+    Text
+  )
+) : ViewCatalog
+  var next = cat
+  cur_for_view = next.ordered_indexes.get(view_name) or {}
+  next.ordered_indexes = next.ordered_indexes.set(
+    view_name,
+    cur_for_view.set(field, ViewOrderedIndex(field: field, load_ordered: load_ordered))
+  )
+  next
 end
 
 ## Registers an approved k-anonymous `ReleaseDef` in `cat`.
@@ -609,6 +773,13 @@ fn json_as_int(v: Json) : Option(Int)
   end
 end
 
+fn json_as_decimal(v: Json) : Option(Decimal)
+  case v
+    Json.Number(n): n.to_decimal
+    Json.Null | Json.Boolean(_) | Json.String(_) | Json.Array(_) | Json.Object(_): None
+  end
+end
+
 fn json_as_text(v: Json) : Option(Text)
   case v
     Json.String(s): Some(s)
@@ -623,6 +794,14 @@ fn compare_json(a: Json, b: Json) : Int
     Some(ia):
       case json_as_int(b)
         Some(ib): return if ia < ib: -1 else if ia > ib: 1 else: 0
+        None: Unit
+      end
+    None: Unit
+  end
+  case json_as_decimal(a)
+    Some(da):
+      case json_as_decimal(b)
+        Some(db): return if da < db: -1 else if da > db: 1 else: 0
         None: Unit
       end
     None: Unit
@@ -842,14 +1021,39 @@ fn compute_group_agg(
   Ok((out, cur_ops))
 end
 
-fn sort_rows(rows: List(Map(Text, Json)), sort: SortSpec, ops: Int, max_ops: Int) : Result(
+struct ReadCursor
+  v: Int
+  view: Text
+  mode: Text
+  sort_field: Option(Text)
+  desc: Bool
+  last_val: Json
+  last_key: Text
+  offset: Int
+  emitted: Int
+end
+
+fn row_tie_key(row: Map(Text, Json)) : Text
+  Json.encode(Json.Object(row))
+end
+
+fn compare_rows_with_tie(a: Map(Text, Json), b: Map(Text, Json), field: Text, desc: Bool) : Int
+  cmp = compare_json(a.get(field) or Json.Null, b.get(field) or Json.Null)
+  if cmp != 0
+    return if desc: -cmp else: cmp
+  end
+  ka = row_tie_key(a)
+  kb = row_tie_key(b)
+  if ka < kb: -1 else if ka > kb: 1 else: 0
+end
+
+fn sort_rows_with_tie(rows: List(Map(Text, Json)), sort: SortSpec, ops: Int, max_ops: Int) : Result(
   (List(Map(Text, Json)), Int),
   ViewsError
 )
   var sorted = []
   var cur_ops = ops
   for r in rows
-    rv = r.get(sort.field) or Json.Null
     var pos = 0
     while pos < sorted.size
       cur_ops += 1
@@ -857,15 +1061,21 @@ fn sort_rows(rows: List(Map(Text, Json)), sort: SortSpec, ops: Int, max_ops: Int
         return Error(WorkBudgetExceeded(metric: "ops", limit: max_ops))
       end
       existing = sorted.get(pos) or stop "sort idx"
-      ev = existing.get(sort.field) or Json.Null
-      cmp = compare_json(rv, ev)
-      before? = if sort.desc: cmp > 0 else: cmp < 0
-      break if before?
+      if compare_rows_with_tie(r, existing, sort.field, sort.desc) < 0
+        break
+      end
       pos += 1
     end
     sorted = sorted.take(pos).append(r).concat(sorted.drop(pos))
   end
   Ok((sorted, cur_ops))
+end
+
+fn sort_rows(rows: List(Map(Text, Json)), sort: SortSpec, ops: Int, max_ops: Int) : Result(
+  (List(Map(Text, Json)), Int),
+  ViewsError
+)
+  sort_rows_with_tie(rows, sort, ops, max_ops)
 end
 
 fn authorize_view_read(
@@ -902,10 +1112,15 @@ fn flatten_conjuncts(pred: Pred) : List(Pred)
         end
       end
       out
-    Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) |
-    Gte(field: _, value: _) | Lt(field: _, value: _) | Lte(field: _, value: _) |
-    Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) | InList(field: _, values: _) |
-    IsNull(field: _) | NotNull(field: _) | Or(preds: _) | Not(pred: _): [pred]
+    Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(
+      field: _,
+      value: _
+    ) | Lt(field: _, value: _) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+      field: _,
+      prefix: _
+    ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | Or(preds: _) | Not(
+      pred: _
+    ): [pred]
   end
 end
 
@@ -919,12 +1134,10 @@ fn dedup_json_values(vals: List(Json)) : List(Json)
   out
 end
 
-fn tighten_lower(
-  cur_opt: Option(Json),
-  cur_inc: Bool,
-  cand: Json,
-  cand_inc: Bool
-) : (Option(Json), Bool)
+fn tighten_lower(cur_opt: Option(Json), cur_inc: Bool, cand: Json, cand_inc: Bool) : (
+  Option(Json),
+  Bool
+)
   case cur_opt
     None: (Some(cand), cand_inc)
     Some(cur):
@@ -939,12 +1152,10 @@ fn tighten_lower(
   end
 end
 
-fn tighten_upper(
-  cur_opt: Option(Json),
-  cur_inc: Bool,
-  cand: Json,
-  cand_inc: Bool
-) : (Option(Json), Bool)
+fn tighten_upper(cur_opt: Option(Json), cur_inc: Bool, cand: Json, cand_inc: Bool) : (
+  Option(Json),
+  Bool
+)
   case cur_opt
     None: (Some(cand), cand_inc)
     Some(cur):
@@ -959,89 +1170,157 @@ fn tighten_upper(
   end
 end
 
-## Chooses an index-accelerated `QueryPlan` when a registered `ViewIndex` matches a
-## top-level `And` conjunct (`PlanIndexEq` > `PlanIndexInList` > `PlanIndexRange` > `PlanFullScan`).
-fn plan_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(QueryPlan, ViewsError)
-  vdef = try cat.views.get(prog.view).or_fail(UnknownView(name: prog.view))
-  try validate_program(vdef, prog)
-  idxs = cat.view_indexes.get(prog.view) or {}
-  if idxs.empty?
-    return Ok(PlanFullScan(view: prog.view, reason: "no ViewIndex registered for '#{prog.view}'"))
-  end
-  where_pred = case prog.where_clause
-    Some(p): p
-    None: return Ok(PlanFullScan(view: prog.view, reason: "unfiltered scan without WHERE clause"))
-  end
-  conjuncts = flatten_conjuncts(where_pred)
-
-  # 1. Exact equality on any eq-indexed field
+fn extract_eq_map(conjuncts: List(Pred)) : Map(Text, Json)
+  var m = {}
   for c in conjuncts
     case c
       Eq(field: f, value: v):
-        case idxs.get(f)
-          Some(idx) if idx.supports_eq: return Ok(PlanIndexEq(view: prog.view, field: f, value: v))
-          Some(_) | None: Unit
+        if m.get(f) is None
+          m = m.set(f, v)
         end
-      Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(field: _, value: _) |
-      Lt(field: _, value: _) | Lte(field: _, value: _) | Contains(field: _, substr: _) |
-      StartsWith(field: _, prefix: _) | InList(field: _, values: _) | IsNull(field: _) |
-      NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): Unit
+      Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(field: _, value: _) | Lt(
+        field: _,
+        value: _
+      ) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) | InList(
+        field: _,
+        values: _
+      ) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): Unit
     end
   end
+  m
+end
 
-  # 2. IN-list on any eq-indexed field
+fn extract_range_bounds(conjuncts: List(Pred), target_field: Text) : (
+  Option(Json),
+  Bool,
+  Option(Json),
+  Bool,
+  Bool
+)
+  var lo_opt = None
+  var lo_inc = true
+  var hi_opt = None
+  var hi_inc = true
   for c in conjuncts
     case c
-      InList(field: f, values: vs):
-        case idxs.get(f)
-          Some(idx) if idx.supports_eq:
-            return Ok(PlanIndexInList(view: prog.view, field: f, values: dedup_json_values(vs)))
-          Some(_) | None: Unit
-        end
-      Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) |
-      Gte(field: _, value: _) | Lt(field: _, value: _) | Lte(field: _, value: _) |
-      Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) | IsNull(field: _) |
-      NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): Unit
+      Gt(field: f, value: v) if f == target_field:
+        (nl, nli) = tighten_lower(lo_opt, lo_inc, v, false)
+        lo_opt = nl
+        lo_inc = nli
+      Gte(field: f, value: v) if f == target_field:
+        (nl, nli) = tighten_lower(lo_opt, lo_inc, v, true)
+        lo_opt = nl
+        lo_inc = nli
+      Lt(field: f, value: v) if f == target_field:
+        (nh, nhi) = tighten_upper(hi_opt, hi_inc, v, false)
+        hi_opt = nh
+        hi_inc = nhi
+      Lte(field: f, value: v) if f == target_field:
+        (nh, nhi) = tighten_upper(hi_opt, hi_inc, v, true)
+        hi_opt = nh
+        hi_inc = nhi
+      Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(
+        field: _,
+        value: _
+      ) | Lt(field: _, value: _) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+        field: _,
+        prefix: _
+      ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(
+        preds: _
+      ) | Not(pred: _): Unit
     end
   end
+  has_any? = (lo_opt is Some(_)) or (hi_opt is Some(_))
+  (lo_opt, lo_inc, hi_opt, hi_inc, has_any?)
+end
 
-  # 3. Tightened range bounds on any range-indexed field (in declared field order)
+fn try_plan_composite_eq(
+  view_name: Text,
+  comp_idxs: List(ViewCompositeIndex),
+  eq_map: Map(Text, Json)
+) : Option(QueryPlan)
+  var best = None
+  var best_arity = 0
+  for cidx in comp_idxs
+    if not cidx.fields.empty? and cidx.fields.size > best_arity
+      var vals = []
+      var all_hit? = true
+      for f in cidx.fields
+        case eq_map.get(f)
+          Some(v): vals = vals.append(v)
+          None: all_hit? = false
+        end
+      end
+      if all_hit?
+        best_arity = cidx.fields.size
+        best = Some(
+          PlanCompositeEq(view: view_name, index_name: cidx.name, fields: cidx.fields, values: vals)
+        )
+      end
+    end
+  end
+  best
+end
+
+fn try_plan_composite_range(
+  view_name: Text,
+  comp_idxs: List(ViewCompositeIndex),
+  eq_map: Map(Text, Json),
+  conjuncts: List(Pred),
+  require_tail_range: Bool
+) : Option(QueryPlan)
+  var best = None
+  var best_arity = 0
+  for cidx in comp_idxs
+    if cidx.supports_range_tail and cidx.fields.size >= 2 and cidx.fields.size > best_arity
+      prefix_fields = cidx.fields.take(cidx.fields.size - 1)
+      tail_field = cidx.fields.last or ""
+      var eq_vals = []
+      var prefix_hit? = true
+      for pf in prefix_fields
+        case eq_map.get(pf)
+          Some(v): eq_vals = eq_vals.append(v)
+          None: prefix_hit? = false
+        end
+      end
+      if prefix_hit?
+        (lo_opt, lo_inc, hi_opt, hi_inc, has_any?) = extract_range_bounds(conjuncts, tail_field)
+        if (not require_tail_range) or has_any?
+          best_arity = cidx.fields.size
+          best = Some(
+            PlanCompositeRange(
+              view: view_name,
+              index_name: cidx.name,
+              eq_fields: prefix_fields,
+              eq_values: eq_vals,
+              range_field: tail_field,
+              lo: lo_opt,
+              hi: hi_opt,
+              lo_inclusive: lo_inc,
+              hi_inclusive: hi_inc
+            )
+          )
+        end
+      end
+    end
+  end
+  best
+end
+
+fn try_plan_single_range(
+  vdef: ViewDef,
+  idxs: Map(Text, ViewIndex),
+  conjuncts: List(Pred),
+  view_name: Text
+) : Option(QueryPlan)
   for fdef in vdef.fields
     case idxs.get(fdef.name)
       Some(idx) if idx.supports_range:
-        var lo_opt = None
-        var lo_inc = true
-        var hi_opt = None
-        var hi_inc = true
-        for c in conjuncts
-          case c
-            Gt(field: f, value: v) if f == fdef.name:
-              (nl, nli) = tighten_lower(lo_opt, lo_inc, v, false)
-              lo_opt = nl
-              lo_inc = nli
-            Gte(field: f, value: v) if f == fdef.name:
-              (nl, nli) = tighten_lower(lo_opt, lo_inc, v, true)
-              lo_opt = nl
-              lo_inc = nli
-            Lt(field: f, value: v) if f == fdef.name:
-              (nh, nhi) = tighten_upper(hi_opt, hi_inc, v, false)
-              hi_opt = nh
-              hi_inc = nhi
-            Lte(field: f, value: v) if f == fdef.name:
-              (nh, nhi) = tighten_upper(hi_opt, hi_inc, v, true)
-              hi_opt = nh
-              hi_inc = nhi
-            Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) |
-            Gte(field: _, value: _) | Lt(field: _, value: _) | Lte(field: _, value: _) |
-            Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) |
-            InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) |
-            Or(preds: _) | Not(pred: _): Unit
-          end
-        end
-        if (lo_opt is Some(_)) or (hi_opt is Some(_))
-          return Ok(
+        (lo_opt, lo_inc, hi_opt, hi_inc, has_any?) = extract_range_bounds(conjuncts, fdef.name)
+        if has_any?
+          return Some(
             PlanIndexRange(
-              view: prog.view,
+              view: view_name,
               field: fdef.name,
               lo: lo_opt,
               hi: hi_opt,
@@ -1053,13 +1332,295 @@ fn plan_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(QueryPlan, Vi
       Some(_) | None: Unit
     end
   end
+  None
+end
 
-  Ok(PlanFullScan(view: prog.view, reason: "no selective indexed conjunct matched"))
+fn find_field_idx(fields: List(Text), target: Text) : Option(Int)
+  for i in 0..fields.size
+    if (fields.get(i) or "") == target
+      return Some(i)
+    end
+  end
+  None
+end
+
+fn count_residual_for_plan(where_opt: Option(Pred), plan: QueryPlan) : Int
+  where_pred = case where_opt
+    Some(p): p
+    None: return 0
+  end
+  conjuncts = flatten_conjuncts(where_pred)
+  var residual = 0
+  for c in conjuncts
+    covered? = case plan
+      PlanFullScan(view: _, reason: _): false
+      PlanIndexEq(view: _, field: pf, value: pv):
+        case c
+          Eq(field: cf, value: cv): cf == pf and compare_json(cv, pv) == 0
+          Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(field: _, value: _) | Lt(
+            field: _,
+            value: _
+          ) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+            field: _,
+            prefix: _
+          ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(
+            preds: _
+          ) | Not(pred: _): false
+        end
+      PlanIndexInList(view: _, field: pf, values: _):
+        case c
+          InList(field: cf, values: _): cf == pf
+          Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(
+            field: _,
+            value: _
+          ) | Lt(field: _, value: _) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+            field: _,
+            prefix: _
+          ) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): false
+        end
+      PlanIndexRange(view: _, field: pf, lo: _, hi: _, lo_inclusive: _, hi_inclusive: _):
+        case c
+          Gt(field: cf, value: _) | Gte(field: cf, value: _) | Lt(field: cf, value: _) | Lte(
+            field: cf,
+            value: _
+          ): cf == pf
+          Eq(field: _, value: _) | Neq(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+            field: _,
+            prefix: _
+          ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(
+            preds: _
+          ) | Not(pred: _): false
+        end
+      PlanIndexOrdered(
+        view: _,
+        field: pf,
+        lo: lo_opt,
+        hi: hi_opt,
+        lo_inclusive: _,
+        hi_inclusive: _,
+        limit_pushdown: _
+      ):
+        if (lo_opt is None) and (hi_opt is None)
+          false
+        else
+          case c
+            Gt(field: cf, value: _) | Gte(field: cf, value: _) | Lt(field: cf, value: _) | Lte(
+              field: cf,
+              value: _
+            ): cf == pf
+            Eq(field: _, value: _) | Neq(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+              field: _,
+              prefix: _
+            ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(
+              preds: _
+            ) | Not(pred: _): false
+          end
+        end
+      PlanCompositeEq(view: _, index_name: _, fields: fs, values: vs):
+        case c
+          Eq(field: cf, value: cv):
+            case find_field_idx(fs, cf)
+              Some(idx):
+                case vs.get(idx)
+                  Some(pv): compare_json(cv, pv) == 0
+                  None: false
+                end
+              None: false
+            end
+          Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(field: _, value: _) | Lt(
+            field: _,
+            value: _
+          ) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+            field: _,
+            prefix: _
+          ) | InList(field: _, values: _) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(
+            preds: _
+          ) | Not(pred: _): false
+        end
+      PlanCompositeRange(
+        view: _,
+        index_name: _,
+        eq_fields: efs,
+        eq_values: evs,
+        range_field: rf,
+        lo: lo_opt,
+        hi: hi_opt,
+        lo_inclusive: _,
+        hi_inclusive: _
+      ):
+        case c
+          Eq(field: cf, value: cv):
+            case find_field_idx(efs, cf)
+              Some(idx):
+                case evs.get(idx)
+                  Some(pv): compare_json(cv, pv) == 0
+                  None: false
+                end
+              None: false
+            end
+          Gt(field: cf, value: _) | Gte(field: cf, value: _) | Lt(field: cf, value: _) | Lte(
+            field: cf,
+            value: _
+          ): ((lo_opt is Some(_)) or (hi_opt is Some(_))) and cf == rf
+          Neq(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) | InList(
+            field: _,
+            values: _
+          ) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): false
+        end
+    end
+    if not covered?
+      residual += 1
+    end
+  end
+  residual
+end
+
+fn ascending_order_field(prog: ReadProgram) : Option(Text)
+  case (prog.group_by, prog.aggregates, prog.order_by)
+    (None, None, Some(s)) if not s.desc: Some(s.field)
+    (_, _, _): None
+  end
+end
+
+## Chooses an index-accelerated `QueryPlan` when a registered `ViewCompositeIndex`, `ViewIndex`, or
+## `ViewOrderedIndex` matches (`PlanCompositeEq` > `PlanCompositeRange` > `PlanIndexEq` >
+## prefix `PlanCompositeRange` > `PlanIndexInList` > `PlanIndexOrdered` / `PlanIndexRange` > `PlanFullScan`).
+fn plan_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(QueryPlan, ViewsError)
+  vdef = try cat.views.get(prog.view).or_fail(UnknownView(name: prog.view))
+  try validate_program(vdef, prog)
+  idxs = cat.view_indexes.get(prog.view) or {}
+  comp_idxs = cat.composite_indexes.get(prog.view) or []
+  ord_idxs = cat.ordered_indexes.get(prog.view) or {}
+  if idxs.empty? and comp_idxs.empty? and ord_idxs.empty?
+    return Ok(PlanFullScan(view: prog.view, reason: "no ViewIndex registered for '#{prog.view}'"))
+  end
+
+  ord_field_opt = ascending_order_field(prog)
+  where_pred = case prog.where_clause
+    Some(p): p
+    None:
+      case ord_field_opt
+        Some(sf) if ord_idxs.get(sf) is Some(_): return Ok(
+          PlanIndexOrdered(
+            view: prog.view,
+            field: sf,
+            lo: None,
+            hi: None,
+            lo_inclusive: true,
+            hi_inclusive: true,
+            limit_pushdown: prog.limit
+          )
+        )
+        Some(_) | None: return Ok(
+          PlanFullScan(view: prog.view, reason: "unfiltered scan without WHERE clause")
+        )
+      end
+  end
+
+  conjuncts = flatten_conjuncts(where_pred)
+  eq_map = extract_eq_map(conjuncts)
+
+  # 1. Longest composite exact equality match
+  case try_plan_composite_eq(prog.view, comp_idxs, eq_map)
+    Some(p): return Ok(p)
+    None: Unit
+  end
+
+  # 2. Composite prefix equality + trailing range match
+  case try_plan_composite_range(prog.view, comp_idxs, eq_map, conjuncts, true)
+    Some(p): return Ok(p)
+    None: Unit
+  end
+
+  # 3. Single-field exact equality on any eq-indexed field
+  for c in conjuncts
+    case c
+      Eq(field: f, value: v):
+        case idxs.get(f)
+          Some(idx) if idx.supports_eq: return Ok(PlanIndexEq(view: prog.view, field: f, value: v))
+          Some(_) | None: Unit
+        end
+      Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(field: _, value: _) | Lt(
+        field: _,
+        value: _
+      ) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(field: _, prefix: _) | InList(
+        field: _,
+        values: _
+      ) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): Unit
+    end
+  end
+
+  # 4. Composite prefix equality without trailing range bounds
+  case try_plan_composite_range(prog.view, comp_idxs, eq_map, conjuncts, false)
+    Some(p): return Ok(p)
+    None: Unit
+  end
+
+  # 5. IN-list on any eq-indexed field
+  for c in conjuncts
+    case c
+      InList(field: f, values: vs):
+        case idxs.get(f)
+          Some(idx) if idx.supports_eq: return Ok(
+            PlanIndexInList(view: prog.view, field: f, values: dedup_json_values(vs))
+          )
+          Some(_) | None: Unit
+        end
+      Eq(field: _, value: _) | Neq(field: _, value: _) | Gt(field: _, value: _) | Gte(
+        field: _,
+        value: _
+      ) | Lt(field: _, value: _) | Lte(field: _, value: _) | Contains(field: _, substr: _) | StartsWith(
+        field: _,
+        prefix: _
+      ) | IsNull(field: _) | NotNull(field: _) | And(preds: _) | Or(preds: _) | Not(pred: _): Unit
+    end
+  end
+
+  # 6. Ordered index (matching ascending OrderBy) vs single-field range index
+  single_rng_opt = try_plan_single_range(vdef, idxs, conjuncts, prog.view)
+  case ord_field_opt
+    Some(sf) if ord_idxs.get(sf) is Some(_):
+      (lo_s, li_s, hi_s, hi_s_inc, has_b_s) = extract_range_bounds(conjuncts, sf)
+      if has_b_s or (single_rng_opt is None)
+        base_plan = PlanIndexOrdered(
+          view: prog.view,
+          field: sf,
+          lo: lo_s,
+          hi: hi_s,
+          lo_inclusive: li_s,
+          hi_inclusive: hi_s_inc,
+          limit_pushdown: None
+        )
+        res_cnt = count_residual_for_plan(prog.where_clause, base_plan)
+        if res_cnt == 0
+          return Ok(
+            PlanIndexOrdered(
+              view: prog.view,
+              field: sf,
+              lo: lo_s,
+              hi: hi_s,
+              lo_inclusive: li_s,
+              hi_inclusive: hi_s_inc,
+              limit_pushdown: prog.limit
+            )
+          )
+        end
+        return Ok(base_plan)
+      end
+    Some(_) | None: Unit
+  end
+
+  case single_rng_opt
+    Some(p): Ok(p)
+    None: Ok(PlanFullScan(view: prog.view, reason: "no selective indexed conjunct matched"))
+  end
 end
 
 ## Returns an inspection JSON summary describing how `plan_read_program` will execute `prog`.
 fn explain_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(Json, ViewsError)
   plan = try plan_read_program(cat, prog)
+  res_cnt = count_residual_for_plan(prog.where_clause, plan)
+  res_filter? = res_cnt > 0
   Ok(
     case plan
       PlanFullScan(view: v, reason: r): Json.Object({
@@ -1067,21 +1628,33 @@ fn explain_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(Json, View
         "strategy": Json.String("full_scan"),
         "index_used": Json.Boolean(false),
         "field": Json.Null,
-        "reason": Json.String(r)
+        "reason": Json.String(r),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
       })
       PlanIndexEq(view: v, field: f, value: val): Json.Object({
         "view": Json.String(v),
         "strategy": Json.String("index_eq"),
         "index_used": Json.Boolean(true),
         "field": Json.String(f),
-        "value": val
+        "value": val,
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
       })
       PlanIndexInList(view: v, field: f, values: vs): Json.Object({
         "view": Json.String(v),
         "strategy": Json.String("index_in_list"),
         "index_used": Json.Boolean(true),
         "field": Json.String(f),
-        "values": Json.Array(vs)
+        "values": Json.Array(vs),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
       })
       PlanIndexRange(
         view: v,
@@ -1098,26 +1671,107 @@ fn explain_read_program(cat: ViewCatalog, prog: ReadProgram) : Result(Json, View
         "lo": lo_opt or Json.Null,
         "hi": hi_opt or Json.Null,
         "lo_inclusive": Json.Boolean(lo_inc),
-        "hi_inclusive": Json.Boolean(hi_inc)
+        "hi_inclusive": Json.Boolean(hi_inc),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
+      })
+      PlanCompositeEq(view: v, index_name: idx_name, fields: fs, values: vs): Json.Object({
+        "view": Json.String(v),
+        "strategy": Json.String("composite_eq"),
+        "index_used": Json.Boolean(true),
+        "index_name": Json.String(idx_name),
+        "field": Json.String(fs.join("+")),
+        "fields": Json.Array(fs.map(fn(s) Json.String(s) end)),
+        "values": Json.Array(vs),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
+      })
+      PlanCompositeRange(
+        view: v,
+        index_name: idx_name,
+        eq_fields: efs,
+        eq_values: evs,
+        range_field: rf,
+        lo: lo_opt,
+        hi: hi_opt,
+        lo_inclusive: lo_inc,
+        hi_inclusive: hi_inc
+      ): Json.Object({
+        "view": Json.String(v),
+        "strategy": Json.String("composite_range"),
+        "index_used": Json.Boolean(true),
+        "index_name": Json.String(idx_name),
+        "field": Json.String(efs.append(rf).join("+")),
+        "eq_fields": Json.Array(efs.map(fn(s) Json.String(s) end)),
+        "eq_values": Json.Array(evs),
+        "range_field": Json.String(rf),
+        "lo": lo_opt or Json.Null,
+        "hi": hi_opt or Json.Null,
+        "lo_inclusive": Json.Boolean(lo_inc),
+        "hi_inclusive": Json.Boolean(hi_inc),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(false),
+        "limit_pushdown": Json.Null
+      })
+      PlanIndexOrdered(
+        view: v,
+        field: f,
+        lo: lo_opt,
+        hi: hi_opt,
+        lo_inclusive: lo_inc,
+        hi_inclusive: hi_inc,
+        limit_pushdown: lim_opt
+      ): Json.Object({
+        "view": Json.String(v),
+        "strategy": Json.String("index_ordered"),
+        "index_used": Json.Boolean(true),
+        "field": Json.String(f),
+        "lo": lo_opt or Json.Null,
+        "hi": hi_opt or Json.Null,
+        "lo_inclusive": Json.Boolean(lo_inc),
+        "hi_inclusive": Json.Boolean(hi_inc),
+        "residual_filter": Json.Boolean(res_filter?),
+        "residual_predicates": Json.int(res_cnt),
+        "order_pushdown": Json.Boolean(true),
+        "limit_pushdown": lim_opt.map(Json.int) or Json.Null
       })
     end
   )
+end
+
+fn find_composite_index(comp_idxs: List(ViewCompositeIndex), name: Text) : Option(
+  ViewCompositeIndex
+)
+  for ci in comp_idxs
+    return Some(ci) if ci.name == name
+  end
+  None
 end
 
 fn load_candidate_rows(
   store: Store,
   cat: ViewCatalog,
   vdef: ViewDef,
-  plan: QueryPlan
+  plan: QueryPlan,
+  max_result_rows: Int
 ) : Result(List(Map(Text, Json)), ViewsError)
   idxs = cat.view_indexes.get(vdef.name) or {}
+  comp_idxs = cat.composite_indexes.get(vdef.name) or []
+  ord_idxs = cat.ordered_indexes.get(vdef.name) or {}
   case plan
-    PlanFullScan(view: _, reason: _):
-      vdef.load(store).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
+    PlanFullScan(view: _, reason: _): vdef.load(store).map_error(
+      fn(d) ViewLoadFailed(view: vdef.name, detail: d) end
+    )
     PlanIndexEq(view: _, field: f, value: val):
       case idxs.get(f)
-        Some(idx):
-          idx.load_eq(store, val).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
+        Some(idx): idx.load_eq(store, val).map_error(
+          fn(d) ViewLoadFailed(view: vdef.name, detail: d) end
+        )
         None: vdef.load(store).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
       end
     PlanIndexInList(view: _, field: f, values: vals):
@@ -1144,43 +1798,311 @@ fn load_candidate_rows(
       hi_inclusive: hi_inc
     ):
       case idxs.get(f)
-        Some(idx) if idx.supports_range:
-          idx.load_range(store, lo_opt, hi_opt, lo_inc, hi_inc).map_error(fn(d)
+        Some(idx) if idx.supports_range: idx.load_range(store, lo_opt, hi_opt, lo_inc, hi_inc)
+          .map_error(fn(d)
             ViewLoadFailed(view: vdef.name, detail: d)
           end)
-        Some(_) | None:
-          vdef.load(store).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
+        Some(_) | None: vdef.load(store).map_error(
+          fn(d) ViewLoadFailed(view: vdef.name, detail: d) end
+        )
+      end
+    PlanCompositeEq(view: _, index_name: idx_name, fields: _, values: vals):
+      case find_composite_index(comp_idxs, idx_name)
+        Some(ci): ci.load_eq(store, vals).map_error(
+          fn(d) ViewLoadFailed(view: vdef.name, detail: d) end
+        )
+        None: vdef.load(store).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
+      end
+    PlanCompositeRange(
+      view: _,
+      index_name: idx_name,
+      eq_fields: _,
+      eq_values: eq_vals,
+      range_field: _,
+      lo: lo_opt,
+      hi: hi_opt,
+      lo_inclusive: lo_inc,
+      hi_inclusive: hi_inc
+    ):
+      case find_composite_index(comp_idxs, idx_name)
+        Some(ci) if ci.supports_range_tail: ci.load_prefix_range(
+          store,
+          eq_vals,
+          lo_opt,
+          hi_opt,
+          lo_inc,
+          hi_inc
+        ).map_error(fn(d)
+          ViewLoadFailed(view: vdef.name, detail: d)
+        end)
+        Some(_) | None: vdef.load(store).map_error(
+          fn(d) ViewLoadFailed(view: vdef.name, detail: d) end
+        )
+      end
+    PlanIndexOrdered(
+      view: _,
+      field: f,
+      lo: lo_opt,
+      hi: hi_opt,
+      lo_inclusive: lo_inc,
+      hi_inclusive: hi_inc,
+      limit_pushdown: lp_opt
+    ):
+      case lp_opt
+        Some(lp) if lp <= 0 or max_result_rows <= 0: return Ok([])
+        Some(_) | None: Unit
+      end
+      pass_lim = case lp_opt
+        Some(lp): if lp < max_result_rows: lp else: max_result_rows
+        None: 0
+      end
+      case ord_idxs.get(f)
+        Some(oi): oi.load_ordered(store, lo_opt, hi_opt, lo_inc, hi_inc, pass_lim).map_error(fn(d)
+          ViewLoadFailed(view: vdef.name, detail: d)
+        end)
+        None: vdef.load(store).map_error(fn(d) ViewLoadFailed(view: vdef.name, detail: d) end)
       end
   end
 end
 
-## Executes a zero-approval sandboxed `ReadProgram` on committed `store` (pure read-only).
-## Enforces Grant authorization, static field/type checks BEFORE scanning, index-accelerated
-## candidate loading when a registered `ViewIndex` applies, and `ReadLimits`.
-fn execute_read_program(
+fn decode_read_cursor(prog: ReadProgram, after_cursor: Option(Text)) : Result(
+  Option(ReadCursor),
+  ViewsError
+)
+  case after_cursor
+    None: Ok(None)
+    Some(tok):
+      if tok.trim.empty?
+        return Error(InvalidProgram(reason: "invalid pagination cursor: empty token"))
+      end
+      raw = try Bytes.from_base64url(tok).or_fail(
+        InvalidProgram(reason: "invalid pagination cursor: invalid base64url")
+      )
+      txt = try raw.decode_utf8.or_fail(
+        InvalidProgram(reason: "invalid pagination cursor: invalid UTF-8")
+      )
+      cur = try Json.decode[ReadCursor](txt).map_error(fn(e)
+        InvalidProgram(reason: "invalid pagination cursor: #{e.to_text}")
+      end)
+      if cur.v != 1 or cur.view != prog.view
+        return Error(InvalidProgram(reason: "invalid pagination cursor: view mismatch"))
+      end
+      case prog.order_by
+        Some(s):
+          if cur.mode != "keyset" or cur.sort_field != Some(s.field) or cur.desc != s.desc
+            return Error(
+              InvalidProgram(reason: "invalid pagination cursor: sort order does not match cursor")
+            )
+          end
+        None:
+          if cur.mode != "offset" or cur.offset < 0
+            return Error(
+              InvalidProgram(reason: "invalid pagination cursor: unsorted cursor mismatch")
+            )
+          end
+      end
+      Ok(Some(cur))
+  end
+end
+
+fn row_after_keyset_cursor?(row: Map(Text, Json), cur: ReadCursor, sort: SortSpec) : Bool
+  rv = row.get(sort.field) or Json.Null
+  cmp = compare_json(rv, cur.last_val)
+  directed = if sort.desc: -cmp else: cmp
+  if directed > 0
+    return true
+  end
+  if directed < 0
+    return false
+  end
+  row_tie_key(row) > cur.last_key
+end
+
+fn plan_with_cursor_seek(
+  cat: ViewCatalog,
+  prog: ReadProgram,
+  cursor_opt: Option(ReadCursor),
+  paged?: Bool
+) : Result(QueryPlan, ViewsError)
+  eff_prog = case (cursor_opt, paged?)
+    (Some(cur), true) if cur.mode == "keyset" and (not cur.desc) and (prog.group_by is None) and (
+      prog.aggregates is None
+    ):
+      case cur.sort_field
+        Some(sf):
+          idxs = cat.view_indexes.get(prog.view) or {}
+          ord_idxs = cat.ordered_indexes.get(prog.view) or {}
+          has_range_idx? = case idxs.get(sf)
+            Some(idx): idx.supports_range
+            None: false
+          end
+          can_seek? = (ord_idxs.get(sf) is Some(_)) or has_range_idx?
+          if can_seek?
+            seek_pred = Gte(field: sf, value: cur.last_val)
+            next_where = case prog.where_clause
+              Some(w): Some(And(preds: [w, seek_pred]))
+              None: Some(seek_pred)
+            end
+            ReadProgram(
+              view: prog.view,
+              where_clause: next_where,
+              select: prog.select,
+              group_by: prog.group_by,
+              aggregates: prog.aggregates,
+              order_by: prog.order_by,
+              limit: None
+            )
+          else
+            ReadProgram(
+              view: prog.view,
+              where_clause: prog.where_clause,
+              select: prog.select,
+              group_by: prog.group_by,
+              aggregates: prog.aggregates,
+              order_by: prog.order_by,
+              limit: None
+            )
+          end
+        None: prog
+      end
+    (_, true): ReadProgram(
+      view: prog.view,
+      where_clause: prog.where_clause,
+      select: prog.select,
+      group_by: prog.group_by,
+      aggregates: prog.aggregates,
+      order_by: prog.order_by,
+      limit: None
+    )
+    (_, false): prog
+  end
+  plan_read_program(cat, eff_prog)
+end
+
+fn run_read_pipeline(
   store: Store,
   cat: ViewCatalog,
   prog: ReadProgram,
   grant_id_opt: Option(Text),
   is_admin: Bool,
   limits: ReadLimits,
+  after_cursor: Option(Text),
+  page_size_opt: Option(Int),
   now: Time
-) : Result(ReadResult, ViewsError)
+) : Result((ReadResult, Option(Text), Bool, Int), ViewsError)
   vdef = try authorize_view_read(store, cat, prog.view, grant_id_opt, is_admin, now)
-  plan = try plan_read_program(cat, prog)
+  try validate_program(vdef, prog)
+  case page_size_opt
+    Some(ps):
+      if ps <= 0
+        return Error(InvalidProgram(reason: "page_size must be > 0"))
+      end
+      if ps > limits.max_result_rows
+        return Error(WorkBudgetExceeded(metric: "result_rows", limit: limits.max_result_rows))
+      end
+    None: Unit
+  end
 
-  raw_rows = try load_candidate_rows(store, cat, vdef, plan)
+  cursor_opt = try decode_read_cursor(prog, after_cursor)
+  paged? = page_size_opt is Some(_)
+  plan = try plan_with_cursor_seek(cat, prog, cursor_opt, paged?)
+  res_lim = case prog.limit
+    Some(l): if l < limits.max_result_rows: l else: limits.max_result_rows
+    None: limits.max_result_rows
+  end
+
+  eff_stop_cap_opt = case (page_size_opt, cursor_opt, prog.limit)
+    (None, _, _): Some(res_lim)
+    (Some(ps), None, Some(l)): Some((if ps < l: ps else: l) + 1)
+    (Some(ps), None, None): Some(ps + 1)
+    (Some(ps), Some(cur), l_opt):
+      if cur.mode == "keyset"
+        rem = case l_opt
+          Some(l):
+            d = l - cur.emitted
+            if d < 0: 0 else: d
+          None: limits.max_result_rows
+        end
+        Some((if ps < rem: ps else: rem) + 1)
+      else
+        None
+      end
+  end
+
+  can_early_stop? = case plan
+    PlanIndexOrdered(
+      view: _,
+      field: sf,
+      lo: _,
+      hi: _,
+      lo_inclusive: _,
+      hi_inclusive: _,
+      limit_pushdown: _
+    ): (prog.group_by is None) and (prog.aggregates is None) and
+      case prog.order_by
+        Some(s): (not s.desc) and s.field == sf
+        None: false
+      end
+    PlanFullScan(view: _, reason: _) | PlanIndexEq(view: _, field: _, value: _) | PlanIndexInList(
+      view: _,
+      field: _,
+      values: _
+    ) | PlanIndexRange(view: _, field: _, lo: _, hi: _, lo_inclusive: _, hi_inclusive: _) | PlanCompositeEq(
+      view: _,
+      index_name: _,
+      fields: _,
+      values: _
+    ) | PlanCompositeRange(
+      view: _,
+      index_name: _,
+      eq_fields: _,
+      eq_values: _,
+      range_field: _,
+      lo: _,
+      hi: _,
+      lo_inclusive: _,
+      hi_inclusive: _
+    ): false
+  end
+
+  load_cap = case eff_stop_cap_opt
+    Some(c): if c < limits.max_result_rows: c else: limits.max_result_rows
+    None: limits.max_result_rows
+  end
+  raw_rows = try load_candidate_rows(store, cat, vdef, plan, load_cap)
   var scanned = 0
   var ops = 0
   var matched = []
+  var ordered_monotone? = can_early_stop?
+  var prev_sort_val = None
+  var after_cursor_matches = 0
+  var stop_boundary_val = None
+
+  ord_field_name = case prog.order_by
+    Some(s): s.field
+    None: ""
+  end
 
   for raw_row in raw_rows
+    if can_early_stop? and ordered_monotone? and (eff_stop_cap_opt is Some(0))
+      break
+    end
     scanned += 1
     if scanned > limits.max_rows_scanned
       return Error(WorkBudgetExceeded(metric: "rows_scanned", limit: limits.max_rows_scanned))
     end
-    ## Strictly project raw_row to vdef's declared fields (defense in depth against view leaks).
     narrowed = project_row(vdef, raw_row, None)
+    if ordered_monotone?
+      cur_sv = narrowed.get(ord_field_name) or Json.Null
+      case prev_sort_val
+        Some(psv):
+          if compare_json(cur_sv, psv) < 0
+            ordered_monotone? = false
+          end
+        None: Unit
+      end
+      prev_sort_val = Some(cur_sv)
+    end
     keep? = case prog.where_clause
       Some(p):
         (ok, o2) = try eval_pred(narrowed, p, ops, limits.max_ops)
@@ -1195,18 +2117,47 @@ fn execute_read_program(
     end
     if keep?
       matched = matched.append(narrowed)
+      if can_early_stop? and ordered_monotone?
+        case eff_stop_cap_opt
+          Some(stop_n):
+            after? = case (cursor_opt, prog.order_by)
+              (Some(cur), Some(s)) if cur.mode == "keyset": row_after_keyset_cursor?(
+                narrowed,
+                cur,
+                s
+              )
+              (_, _): true
+            end
+            if after?
+              after_cursor_matches += 1
+              cur_sv = narrowed.get(ord_field_name) or Json.Null
+              if after_cursor_matches == stop_n
+                stop_boundary_val = Some(cur_sv)
+              else if after_cursor_matches > stop_n
+                case stop_boundary_val
+                  Some(sbv):
+                    if compare_json(cur_sv, sbv) > 0
+                      break
+                    end
+                  None: Unit
+                end
+              end
+            end
+          None: Unit
+        end
+      end
     end
   end
 
   is_agg? = (prog.group_by is Some(_)) or (prog.aggregates is Some(_))
-  var shaped = []
+  var base_rows = []
   if is_agg?
     aggs = prog.aggregates or []
     case prog.group_by
       None:
         (agg_row, o2) = try compute_group_agg(matched, None, Json.Null, aggs, ops, limits.max_ops)
         ops = o2
-        shaped = [agg_row]
+        base_rows = [agg_row]
       Some(gf):
         var group_order = []
         var group_vals = {}
@@ -1232,45 +2183,179 @@ fn execute_read_program(
           grows = group_buckets.get(gk) or []
           (agg_row, o2) = try compute_group_agg(grows, Some(gf), gv, aggs, ops, limits.max_ops)
           ops = o2
-          shaped = shaped.append(agg_row)
+          base_rows = base_rows.append(agg_row)
         end
     end
-    case prog.select
-      Some(cols):
-        var projected = []
-        for r in shaped
+  else
+    base_rows = matched
+  end
+
+  var sorted_base = base_rows
+  case prog.order_by
+    Some(s):
+      if can_early_stop? and ordered_monotone? and (not is_agg?)
+        # Rows already ascending by s.field; stabilize tie-breaks within identical s.field buckets
+        (sr, o2) = try sort_rows_with_tie(base_rows, s, ops, limits.max_ops)
+        sorted_base = sr
+        ops = o2
+      else if paged?
+        (sr, o2) = try sort_rows_with_tie(base_rows, s, ops, limits.max_ops)
+        sorted_base = sr
+        ops = o2
+      else
+        ## Preserve pre-M17 projection behavior on non-paged reads if select excludes order_by field
+        pre_sort = if is_agg?
+          case prog.select
+            Some(cols): base_rows.map(fn(r)
+              var pr = {}
+              for c in cols
+                pr = pr.set(c, r.get(c) or Json.Null)
+              end
+              pr
+            end)
+            None: base_rows
+          end
+        else
+          base_rows.map(fn(r) project_row(vdef, r, prog.select) end)
+        end
+        (sr, o2) = try sort_rows(pre_sort, s, ops, limits.max_ops)
+        ops = o2
+        final_maps = if sr.size > res_lim: sr.take(res_lim) else: sr
+        final_json = final_maps.map(fn(m) Json.Object(m) end)
+        ans_hash = hash_json(Json.Array(final_json))
+        return Ok((
+          ReadResult(
+            view: vdef.name,
+            txid: Modb.txid(store),
+            rows_scanned: scanned,
+            ops_used: ops,
+            result_count: final_json.size,
+            answer_hash: ans_hash,
+            rows: final_json
+          ),
+          None,
+          false,
+          final_json.size
+        ))
+      end
+    None: Unit
+  end
+
+  if not paged?
+    shaped_np = if is_agg?
+      case prog.select
+        Some(cols): sorted_base.map(fn(r)
           var pr = {}
           for c in cols
             pr = pr.set(c, r.get(c) or Json.Null)
           end
-          projected = projected.append(pr)
+          pr
+        end)
+        None: sorted_base
+      end
+    else
+      sorted_base.map(fn(r) project_row(vdef, r, prog.select) end)
+    end
+    final_maps = if shaped_np.size > res_lim: shaped_np.take(res_lim) else: shaped_np
+    final_json = final_maps.map(fn(m) Json.Object(m) end)
+    ans_hash = hash_json(Json.Array(final_json))
+    return Ok((
+      ReadResult(
+        view: vdef.name,
+        txid: Modb.txid(store),
+        rows_scanned: scanned,
+        ops_used: ops,
+        result_count: final_json.size,
+        answer_hash: ans_hash,
+        rows: final_json
+      ),
+      None,
+      false,
+      final_json.size
+    ))
+  end
+
+  ps = page_size_opt or limits.max_result_rows
+  after_base = case (cursor_opt, prog.order_by)
+    (Some(cur), Some(s)):
+      var filtered = []
+      for r in sorted_base
+        if row_after_keyset_cursor?(r, cur, s)
+          filtered = filtered.append(r)
         end
-        shaped = projected
-      None: Unit
+      end
+      filtered
+    (Some(cur), None): sorted_base.drop(cur.offset)
+    (None, _): sorted_base
+  end
+
+  prev_emitted = case cursor_opt
+    Some(cur): cur.emitted
+    None: 0
+  end
+  remaining_cap = case prog.limit
+    Some(l):
+      d = l - prev_emitted
+      if d < 0: 0 else: d
+    None: after_base.size
+  end
+  capped_base = if after_base.size > remaining_cap: after_base.take(remaining_cap) else: after_base
+  has_more = capped_base.size > ps
+  page_raw = if has_more: capped_base.take(ps) else: capped_base
+  next_cur = if has_more
+    last_raw = page_raw.last or stop "non-empty page"
+    next_emitted = prev_emitted + page_raw.size
+    cur_obj = case prog.order_by
+      Some(s): ReadCursor(
+        v: 1,
+        view: vdef.name,
+        mode: "keyset",
+        sort_field: Some(s.field),
+        desc: s.desc,
+        last_val: last_raw.get(s.field) or Json.Null,
+        last_key: row_tie_key(last_raw),
+        offset: 0,
+        emitted: next_emitted
+      )
+      None:
+        prev_off = case cursor_opt
+          Some(c): c.offset
+          None: 0
+        end
+        ReadCursor(
+          v: 1,
+          view: vdef.name,
+          mode: "offset",
+          sort_field: None,
+          desc: false,
+          last_val: Json.Null,
+          last_key: "",
+          offset: prev_off + page_raw.size,
+          emitted: next_emitted
+        )
+    end
+    Some(Json.encode(cur_obj.to_json).bytes.to_base64url)
+  else
+    None
+  end
+
+  page_projected = if is_agg?
+    case prog.select
+      Some(cols): page_raw.map(fn(r)
+        var pr = {}
+        for c in cols
+          pr = pr.set(c, r.get(c) or Json.Null)
+        end
+        pr
+      end)
+      None: page_raw
     end
   else
-    for r in matched
-      shaped = shaped.append(project_row(vdef, r, prog.select))
-    end
+    page_raw.map(fn(r) project_row(vdef, r, prog.select) end)
   end
-
-  case prog.order_by
-    Some(s):
-      (sr, o2) = try sort_rows(shaped, s, ops, limits.max_ops)
-      shaped = sr
-      ops = o2
-    None: Unit
-  end
-
-  eff_limit = case prog.limit
-    Some(l): if l < limits.max_result_rows: l else: limits.max_result_rows
-    None: limits.max_result_rows
-  end
-  final_maps = if shaped.size > eff_limit: shaped.take(eff_limit) else: shaped
-  final_json = final_maps.map(fn(m) Json.Object(m) end)
+  final_json = page_projected.map(fn(m) Json.Object(m) end)
   ans_hash = hash_json(Json.Array(final_json))
-
-  Ok(
+  Ok((
     ReadResult(
       view: vdef.name,
       txid: Modb.txid(store),
@@ -1279,8 +2364,64 @@ fn execute_read_program(
       result_count: final_json.size,
       answer_hash: ans_hash,
       rows: final_json
-    )
+    ),
+    next_cur,
+    has_more,
+    ps
+  ))
+end
+
+## Executes a zero-approval sandboxed `ReadProgram` on committed `store` (pure read-only).
+## Enforces Grant authorization, static field/type checks BEFORE scanning, index-accelerated
+## candidate loading when a registered `ViewCompositeIndex` / `ViewIndex` / `ViewOrderedIndex` applies,
+## and `ReadLimits`.
+fn execute_read_program(
+  store: Store,
+  cat: ViewCatalog,
+  prog: ReadProgram,
+  grant_id_opt: Option(Text),
+  is_admin: Bool,
+  limits: ReadLimits,
+  now: Time
+) : Result(ReadResult, ViewsError)
+  (res, _nc, _hm, _ps) = try run_read_pipeline(
+    store,
+    cat,
+    prog,
+    grant_id_opt,
+    is_admin,
+    limits,
+    None,
+    None,
+    now
   )
+  Ok(res)
+end
+
+## Executes a zero-approval sandboxed `ReadProgram` with opaque keyset/offset cursor pagination.
+fn execute_read_program_paged(
+  store: Store,
+  cat: ViewCatalog,
+  prog: ReadProgram,
+  after_cursor: Option(Text),
+  page_size: Int,
+  grant_id_opt: Option(Text),
+  is_admin: Bool,
+  limits: ReadLimits,
+  now: Time
+) : Result(PagedReadResult, ViewsError)
+  (res, next_cur, has_more, eff_ps) = try run_read_pipeline(
+    store,
+    cat,
+    prog,
+    grant_id_opt,
+    is_admin,
+    limits,
+    after_cursor,
+    Some(page_size),
+    now
+  )
+  Ok(PagedReadResult(result: res, next_cursor: next_cur, has_more: has_more, page_size: eff_ps))
 end
 
 ## Executes an approved k-anonymous `ReleaseDef` on committed `store` (pure read-only).
@@ -1390,6 +2531,51 @@ fn execute_read_program_recorded(
     now
   )
   Ok((next_db, res, entry))
+end
+
+## Executes a paginated `ReadProgram` and persists its provenance entry in `_modb_read_log`.
+fn execute_read_program_paged_recorded(
+  db: Db,
+  cat: ViewCatalog,
+  prog: ReadProgram,
+  after_cursor: Option(Text),
+  page_size: Int,
+  principal: Text,
+  grant_id_opt: Option(Text),
+  is_admin: Bool,
+  limits: ReadLimits,
+  now: Time
+) : Result((Db, PagedReadResult, ReadLogEntry), ViewsError)
+  paged = try execute_read_program_paged(
+    Ledger.store(db),
+    cat,
+    prog,
+    after_cursor,
+    page_size,
+    grant_id_opt,
+    is_admin,
+    limits,
+    now
+  )
+  req_meta = Json.Object({
+    "program": prog.to_json,
+    "after_cursor": after_cursor.map(fn(c) Json.String(c) end) or Json.Null,
+    "page_size": Json.int(page_size)
+  })
+  (next_db, entry) = try append_read_log(
+    db,
+    principal,
+    grant_id_opt,
+    AdHocProgram,
+    prog.view,
+    req_meta,
+    paged.result.txid,
+    paged.result.rows_scanned,
+    paged.result.result_count,
+    paged.result.answer_hash,
+    now
+  )
+  Ok((next_db, paged, entry))
 end
 
 ## Executes an approved `ReleaseDef` and persists its provenance entry in `_modb_read_log`.
@@ -1628,6 +2814,45 @@ fn execute_read_program_locked(
         now
       )
       Ok(res)
+    end
+  )
+end
+
+## Lock-coordinated paginated `ReadProgram` execution + provenance recording for multi-worker HTTP.
+fn execute_read_program_paged_locked(
+  files: Files,
+  path: Text,
+  sc: Schema,
+  cat: ViewCatalog,
+  prog: ReadProgram,
+  after_cursor: Option(Text),
+  page_size: Int,
+  principal: Text,
+  grant_id_opt: Option(Text),
+  is_admin: Bool,
+  limits: ReadLimits,
+  now: Time
+) : Result(PagedReadResult, ViewsError)
+  Ledger.locked(
+    files,
+    path,
+    sc,
+    now,
+    fn(e) LedgerFailure(e) end,
+    fn(db)
+      (_next_db, paged, _entry) = try execute_read_program_paged_recorded(
+        db,
+        cat,
+        prog,
+        after_cursor,
+        page_size,
+        principal,
+        grant_id_opt,
+        is_admin,
+        limits,
+        now
+      )
+      Ok(paged)
     end
   )
 end
@@ -1895,9 +3120,12 @@ end
 
 test "plan_read_program and explain_read_program accelerate Eq, InList, and Range queries cleanly"
   assert Modb.open(Files.in_memory({}), "plan.modb") is Ok(s0)
-  cat_idx = Table.text_index[Int, Json]("plan_items_by_cat", fn(r)
-    r.text_at("category") or ""
-  end)
+  cat_idx = Table.text_index[Int, Json](
+    "plan_items_by_cat",
+    fn(r)
+      r.text_at("category") or ""
+    end
+  )
   score_idx = Table.int_index[Int, Json]("plan_items_by_score", fn(r) r.int_at("score") or 0 end)
   items_tbl = Table.int_key[Json]("plan_items").with_index(cat_idx).with_index(score_idx)
 
@@ -1940,8 +3168,11 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
       Ok(
         all_rows.map(fn(p)
           r = p.1
-          {"id": r.get("id") or Json.Null, "category": r.get("category") or Json.Null, "score": r
-            .get("score") or Json.Null}
+          {
+            "id": r.get("id") or Json.Null,
+            "category": r.get("category") or Json.Null,
+            "score": r.get("score") or Json.Null
+          }
         end)
       )
     end
@@ -1960,8 +3191,11 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
         Ok(
           rows.map(fn(p)
             r = p.1
-            {"id": r.get("id") or Json.Null, "category": r.get("category") or Json.Null, "score": r
-              .get("score") or Json.Null}
+            {
+              "id": r.get("id") or Json.Null,
+              "category": r.get("category") or Json.Null,
+              "score": r.get("score") or Json.Null
+            }
           end)
         )
       end
@@ -1974,8 +3208,11 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
       Ok(
         rows.map(fn(p)
           r = p.1
-          {"id": r.get("id") or Json.Null, "category": r.get("category") or Json.Null, "score": r
-            .get("score") or Json.Null}
+          {
+            "id": r.get("id") or Json.Null,
+            "category": r.get("category") or Json.Null,
+            "score": r.get("score") or Json.Null
+          }
         end)
       )
     end,
@@ -2002,8 +3239,11 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
       Ok(
         rows.map(fn(p)
           r = p.1
-          {"id": r.get("id") or Json.Null, "category": r.get("category") or Json.Null, "score": r
-            .get("score") or Json.Null}
+          {
+            "id": r.get("id") or Json.Null,
+            "category": r.get("category") or Json.Null,
+            "score": r.get("score") or Json.Null
+          }
         end)
       )
     end
@@ -2045,7 +3285,8 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
     order_by: None,
     limit: None
   )
-  assert plan_read_program(cat_v, in_prog) is Ok(PlanIndexInList(view: "items_pub", field: "category", values: vs)) and
+  assert plan_read_program(cat_v, in_prog) is
+    Ok(PlanIndexInList(view: "items_pub", field: "category", values: vs)) and
     vs.size == 2
   assert execute_read_program(s1, cat_v, in_prog, None, true, default_limits(), t0) is Ok(r_in)
   assert r_in.rows_scanned == 6 and r_in.result_count == 6
@@ -2092,5 +3333,266 @@ test "plan_read_program and explain_read_program accelerate Eq, InList, and Rang
     order_by: None,
     limit: None
   )
-  assert plan_read_program(cat_v, bad_hidden) is Error(FieldNotInView(view: "items_pub", field: "secret", allowed: _))
+  assert plan_read_program(cat_v, bad_hidden) is
+    Error(FieldNotInView(view: "items_pub", field: "secret", allowed: _))
+end
+
+test "M17 Views: composite eq/range pushdown, PlanIndexOrdered early-stop, and keyset cursor pagination"
+  assert Modb.open(Files.in_memory({}), "m17-plan.modb") is Ok(s0)
+  by_cat_score = Table.composite_index[Text, Int, Int, Json](
+    "m17_items_by_cat_score",
+    Table.text_codec(),
+    Table.int_codec(),
+    fn(r) (r.text_at("category") or "", r.int_at("score") or 0) end
+  )
+  tbl = Table.int_key[Json]("m17_items").with_index(by_cat_score)
+  t0 = Time.parse("2026-11-26T12:00:00Z") or stop "time"
+  tx0 = Modb.begin_write(s0)
+  var tx = tx0
+  for i in 1..61
+    cat_s = if i <= 20
+      "ops"
+    else if i <= 40
+      "ml"
+    else
+      "eng"
+    end
+    tag_s = if i % 2 == 0: "even" else: "odd"
+    row = Json.Object({
+      "id": Json.int(i),
+      "category": Json.String(cat_s),
+      "score": Json.int((i % 10) * 100),
+      "tag": Json.String(tag_s)
+    })
+    assert Table.put(tx, tbl, i, row) is Ok(ntx)
+    tx = ntx
+  end
+  assert Modb.commit(tx) is Ok(s1)
+
+  to_view_row = fn(p)
+    r = p.1
+    {
+      "id": r.get("id") or Json.Null,
+      "category": r.get("category") or Json.Null,
+      "score": r.get("score") or Json.Null,
+      "tag": r.get("tag") or Json.Null
+    }
+  end
+  vdef = ViewDef(
+    name: "m17_items_v",
+    description: "M17 composite + ordered test view",
+    source_buckets: ["m17_items"],
+    fields: [
+      ViewField(name: "id", field_type: "int", description: "id"),
+      ViewField(name: "category", field_type: "text", description: "category"),
+      ViewField(name: "score", field_type: "int", description: "score"),
+      ViewField(name: "tag", field_type: "text", description: "tag")
+    ],
+    narrows: None,
+    load: fn(s)
+      all_r = try Table.all(s, tbl).map_error(fn(e) e.to_text end)
+      Ok(all_r.map(to_view_row))
+    end
+  )
+  cat_full = with_view(catalog(), vdef)
+  cat_m17 = with_view_ordered_index(
+    with_view_composite_range_index(
+      cat_full,
+      "m17_items_v",
+      "cat_score",
+      ["category", "score"],
+      fn(s, vals)
+        ck = json_as_text(vals.get(0) or Json.Null) or ""
+        sk = json_as_int(vals.get(1) or Json.Null) or 0
+        rows = try Table.lookup(s, tbl, by_cat_score, (ck, sk)).map_error(fn(e) e.to_text end)
+        Ok(rows.map(to_view_row))
+      end,
+      fn(s, eq_vals, lo_opt, hi_opt, lo_inc, hi_inc)
+        ck = json_as_text(eq_vals.get(0) or Json.Null) or ""
+        lo_k = case lo_opt
+          Some(jv):
+            case json_as_int(jv)
+              Some(iv): (ck, if lo_inc: iv else: iv + 1)
+              None: (ck, Table.int64_min)
+            end
+          None: (ck, Table.int64_min)
+        end
+        hi_k = case hi_opt
+          Some(jv):
+            case json_as_int(jv)
+              Some(iv): (ck, if hi_inc: iv + 1 else: iv)
+              None: (ck, Table.int64_max)
+            end
+          None: (ck, Table.int64_max)
+        end
+        rows = try Table.range_by(s, tbl, by_cat_score, Some(lo_k), Some(hi_k), 0).map_error(fn(e)
+          e.to_text
+        end)
+        Ok(rows.map(to_view_row))
+      end
+    ),
+    "m17_items_v",
+    "id",
+    fn(s, lo_opt, hi_opt, lo_inc, hi_inc, lim)
+      lo_k = lo_opt.map(fn(jv)
+        iv = json_as_int(jv) or Table.int64_min
+        if lo_inc: iv else: iv + 1
+      end)
+      hi_k = hi_opt.map(fn(jv)
+        iv = json_as_int(jv) or Table.int64_max
+        if hi_inc: iv + 1 else: iv
+      end)
+      rows = try Table.scan(s, tbl, lo_k, hi_k, lim).map_error(fn(e) e.to_text end)
+      Ok(rows.map(to_view_row))
+    end
+  )
+
+  # 1. PlanCompositeEq + residual filter parity vs full scan
+  p_ceq = ReadProgram(
+    view: "m17_items_v",
+    where_clause: Some(
+      And(
+        preds: [
+          Eq(field: "tag", value: Json.String("even")),
+          And(
+            preds: [
+              Eq(field: "category", value: Json.String("ops")),
+              Eq(field: "score", value: Json.int(200))
+            ]
+          )
+        ]
+      )
+    ),
+    select: None,
+    group_by: None,
+    aggregates: None,
+    order_by: Some(SortSpec(field: "id", desc: false)),
+    limit: None
+  )
+  assert plan_read_program(cat_m17, p_ceq) is
+    Ok(PlanCompositeEq(view: "m17_items_v", index_name: "cat_score", fields: _, values: _))
+  assert explain_read_program(cat_m17, p_ceq) is Ok(ex_ceq) and
+    ex_ceq.text_at("strategy") == Some("composite_eq") and
+    ex_ceq.bool_at("residual_filter") == Some(true)
+  assert execute_read_program(s1, cat_full, p_ceq, None, true, default_limits(), t0) is
+    Ok(r_ceq_full)
+  assert execute_read_program(s1, cat_m17, p_ceq, None, true, default_limits(), t0) is
+    Ok(r_ceq_fast)
+  assert r_ceq_fast.rows == r_ceq_full.rows and r_ceq_fast.rows_scanned == 2
+
+  # 2. PlanCompositeRange parity
+  p_crng = ReadProgram(
+    view: "m17_items_v",
+    where_clause: Some(
+      And(
+        preds: [
+          Eq(field: "category", value: Json.String("ml")),
+          Gte(field: "score", value: Json.int(700)),
+          Lte(field: "score", value: Json.int(900))
+        ]
+      )
+    ),
+    select: None,
+    group_by: None,
+    aggregates: None,
+    order_by: Some(SortSpec(field: "id", desc: false)),
+    limit: None
+  )
+  assert plan_read_program(cat_m17, p_crng) is
+    Ok(
+      PlanCompositeRange(
+        view: "m17_items_v",
+        index_name: "cat_score",
+        eq_fields: _,
+        eq_values: _,
+        range_field: "score",
+        lo: _,
+        hi: _,
+        lo_inclusive: _,
+        hi_inclusive: _
+      )
+    )
+  assert execute_read_program(s1, cat_full, p_crng, None, true, default_limits(), t0) is
+    Ok(r_cr_full)
+  assert execute_read_program(s1, cat_m17, p_crng, None, true, default_limits(), t0) is
+    Ok(r_cr_fast)
+  assert r_cr_fast.rows == r_cr_full.rows and r_cr_fast.rows_scanned == 6
+
+  # 3. PlanIndexOrdered + Limit early stop scans 3 rows instead of 60!
+  p_ord = ReadProgram(
+    view: "m17_items_v",
+    where_clause: None,
+    select: Some(["id", "category"]),
+    group_by: None,
+    aggregates: None,
+    order_by: Some(SortSpec(field: "id", desc: false)),
+    limit: Some(3)
+  )
+  assert plan_read_program(cat_m17, p_ord) is
+    Ok(
+      PlanIndexOrdered(
+        view: "m17_items_v",
+        field: "id",
+        limit_pushdown: Some(3),
+        lo: _,
+        hi: _,
+        lo_inclusive: _,
+        hi_inclusive: _
+      )
+    )
+  assert execute_read_program(s1, cat_full, p_ord, None, true, default_limits(), t0) is
+    Ok(r_ord_full)
+  assert execute_read_program(s1, cat_m17, p_ord, None, true, default_limits(), t0) is
+    Ok(r_ord_fast)
+  assert r_ord_fast.rows == r_ord_full.rows and r_ord_fast.rows_scanned == 3
+
+  # 4. Paged keyset traversal matches unpaged answer rows exactly (even with ties on `score`)
+  p_page = ReadProgram(
+    view: "m17_items_v",
+    where_clause: Some(Eq(field: "category", value: Json.String("eng"))),
+    select: Some(["id", "score"]),
+    group_by: None,
+    aggregates: None,
+    order_by: Some(SortSpec(field: "score", desc: false)),
+    limit: None
+  )
+  assert execute_read_program(s1, cat_m17, p_page, None, true, default_limits(), t0) is
+    Ok(r_unpaged)
+  var collected = []
+  var cur_opt = None
+  var loops = 0
+  while loops < 20
+    loops += 1
+    assert execute_read_program_paged(
+      s1,
+      cat_m17,
+      p_page,
+      cur_opt,
+      7,
+      None,
+      true,
+      default_limits(),
+      t0
+    ) is
+      Ok(pg)
+    for row in pg.result.rows
+      collected = collected.append(row)
+    end
+    cur_opt = pg.next_cursor
+    break if not pg.has_more
+  end
+  assert collected == r_unpaged.rows and collected.size == 20
+  # Reject invalid cursor cleanly
+  assert execute_read_program_paged(
+    s1,
+    cat_m17,
+    p_page,
+    Some("not-valid-base64"),
+    5,
+    None,
+    true,
+    default_limits(),
+    t0
+  ) is
+    Error(InvalidProgram(reason: _))
 end
