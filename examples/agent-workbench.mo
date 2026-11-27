@@ -158,6 +158,13 @@ struct ReadProgramRequest
   program: Views.ReadProgram
 end
 
+struct PagedReadProgramRequest
+  grant_id: Option(Text)
+  program: Views.ReadProgram
+  after_cursor: Option(Text)
+  page_size: Option(Int)
+end
+
 struct ReleaseRequest
   grant_id: Option(Text)
   args: Option(Json)
@@ -372,6 +379,7 @@ api
   get "/events/stream" get_events_stream
   get "/describe" get_describe
   post "/views/query" post_view_query
+  post "/views/query/paged" post_view_query_paged
   post "/views/explain" post_view_explain
   get "/matviews" get_matviews
   post "/matviews/:name/refresh" post_matview_refresh
@@ -379,6 +387,7 @@ api
   scope "/sync/peers"
     get "" list_sync_peers
     post "" http_post_sync_peer
+    post "/:id/snapshot" http_post_sync_snapshot
     post "/:id/export" http_post_sync_export
     post "/:id/ack" http_post_sync_ack
     delete "/:id" http_delete_sync_peer
@@ -548,10 +557,19 @@ fn tasks_by_status_index() : Table.Index(Int, Task, Text)
   Table.text_index[Int, Task]("tasks_by_status", fn(t) task_status_label(t.status) end)
 end
 
+fn tasks_by_project_status_index() : Table.Index(Int, Task, (Text, Text))
+  Table.composite_index[Text, Text, Int, Task](
+    "tasks_by_project_status",
+    Table.text_codec(),
+    Table.text_codec(),
+    fn(t) (t.project_id, task_status_label(t.status)) end
+  )
+end
+
 fn tasks_table() : Table.Table(Int, Task)
   Table.int_key[Task]("tasks").with_index(tasks_by_project_index()).with_index(
     tasks_by_status_index()
-  )
+  ).with_index(tasks_by_project_status_index())
 end
 
 fn artifacts_by_task_index() : Table.Index(Text, Artifact, Int)
@@ -619,12 +637,10 @@ fn tx_index_workbench_task(tx: Modb.WriteTx, task_id: Int, task: Task) : Result(
   ).map_error(wrap_vec_table_err)
 end
 
-fn tx_index_workbench_artifact(
-  tx: Modb.WriteTx,
-  art_id: Text,
-  project_id: Text,
-  art: Artifact
-) : Result(Modb.WriteTx, Table.TableError)
+fn tx_index_workbench_artifact(tx: Modb.WriteTx, art_id: Text, project_id: Text, art: Artifact) : Result(
+  Modb.WriteTx,
+  Table.TableError
+)
   doc_id = "artifact:#{art_id}"
   fdoc = Fts.DocumentInput(
     doc_id: doc_id,
@@ -909,7 +925,9 @@ fn map_export_error(err: Export.ExportError) : WorkbenchError
     Export.LedgerFailure(le): map_ledger_error(le)
     Export.StorageFailure(_) | Export.UnsupportedFormat(found: _, supported: _) | Export
       .InvalidEncoding(bucket: _, detail: _) | Export.ChecksumMismatch(expected: _, actual: _) | Export
-      .TargetNotEmpty(path: _) | Export.PostImportFailed(detail: _): StorageFailed(message: err.to_text)
+      .TargetNotEmpty(path: _) | Export.PostImportFailed(detail: _): StorageFailed(
+        message: err.to_text
+      )
   end
 end
 
@@ -968,12 +986,9 @@ fn map_proposal_error(err: Proposals.ProposalError) : WorkbenchError
     Proposals.PolicyFailure(pe): map_policy_error(pe)
     Proposals.InvalidProposal(reason: r): InvalidInput(reason: r)
     Proposals.ProposalAlreadyExists(id: _) | Proposals.ProposalNotPending(id: _, status: _) | Proposals
-      .ExistingDataViolatesInvariant(
-        name: _,
-        bucket: _,
-        violation_count: _,
-        sample: _
-      ): ProposalConflict(detail: Proposals.to_text(err))
+      .ExistingDataViolatesInvariant(name: _, bucket: _, violation_count: _, sample: _): ProposalConflict(
+        detail: Proposals.to_text(err)
+      )
     Proposals.ProposalNotFound(id: id): ProposalMissing(id: id)
     Proposals.ApprovalDenied(reason: r): Forbidden(required: r)
   end
@@ -1002,9 +1017,9 @@ fn map_taint_error(err: Taint.TaintError) : WorkbenchError
     Taint.ViewsFailure(_) | Taint.FtsFailure(_) | Taint.VecFailure(_): StorageFailed(
       message: Taint.to_text(err)
     )
-    Taint.InvalidSession(reason: _) | Taint.SessionAlreadyExists(id: _) | Taint.SessionClosed(
-      id: _
-    ): InvalidInput(reason: Taint.to_text(err))
+    Taint.InvalidSession(reason: _) | Taint.SessionAlreadyExists(id: _) | Taint.SessionClosed(id: _): InvalidInput(
+      reason: Taint.to_text(err)
+    )
     Taint.SessionNotFound(id: sid): TaintMissing(id: sid)
     Taint.ClearDenied(reason: r): Forbidden(required: r)
     Taint.TaintedReadEscalationBlocked(
@@ -1026,12 +1041,13 @@ end
 fn map_erasure_error(err: Erasure.ErasureError) : WorkbenchError
   case err
     Erasure.LedgerFailure(le): map_ledger_error(le)
-    Erasure.ExportFailure(_) | Erasure.FtsFailure(_) | Erasure.VecFailure(_) | Erasure
-      .CryptoFailure(detail: _): StorageFailed(message: Erasure.to_text(err))
+    Erasure.ExportFailure(_) | Erasure.FtsFailure(_) | Erasure.VecFailure(_) | Erasure.CryptoFailure(
+      detail: _
+    ): StorageFailed(message: Erasure.to_text(err))
     Erasure.InvalidRequest(reason: _) | Erasure.KeyNotFound(subject_id: _) | Erasure
       .ReceiptAlreadyExists(id: _) | Erasure.ReceiptNotFound(id: _): InvalidInput(
-      reason: Erasure.to_text(err)
-    )
+        reason: Erasure.to_text(err)
+      )
     Erasure.KeyShredded(subject_id: _): ErasureBlocked(detail: Erasure.to_text(err))
     Erasure.ErasureDenied(reason: r): Forbidden(required: r)
   end
@@ -1046,11 +1062,10 @@ fn map_sync_error(err: Sync.SyncError) : WorkbenchError
       expected_prev_hash: _,
       actual_prev_hash: _
     ): SyncConflict(detail: Sync.to_text(err))
-    Sync.InvalidPeerId(peer_id: _) | Sync.InvalidDelta(reason: _) | Sync.InvalidEnvelope(
-      reason: _
-    ) | Sync.InvalidKeyLength(expected: _, got: _) | Sync.KeyNotFound(key_id: _): InvalidInput(
-      reason: Sync.to_text(err)
-    )
+    Sync.InvalidPeerId(peer_id: _) | Sync.InvalidDelta(reason: _) | Sync.InvalidEnvelope(reason: _) | Sync
+      .InvalidKeyLength(expected: _, got: _) | Sync.KeyNotFound(key_id: _): InvalidInput(
+        reason: Sync.to_text(err)
+      )
     Sync.StorageFailure(_) | Sync.TableFailure(_) | Sync.ExportFailure(_) | Sync.PinMissing(
       pin_id: _
     ) | Sync.DecryptionFailed | Sync.TargetExists(path: _): StorageFailed(
@@ -1154,7 +1169,9 @@ fn action_complete_task(overhead_pct: Int) : fn(Modb.WriteTx, Json) : Result(
       (Some(aid), Some(sum), Some(sha)):
         art = Artifact(task_id: body.task_id, author: body.assignee, summary: sum, sha256: sha)
         ta = try Table.put(t2, arts, aid, art).map_error(fn(e) e.to_text end)
-        try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(fn(e) e.to_text end)
+        try tx_index_workbench_artifact(ta, aid, task.project_id, art).map_error(
+          fn(e) e.to_text end
+        )
       _: t2
     end
     Ok((t3, task_to_row(body.task_id, next_task).to_json))
@@ -1574,6 +1591,7 @@ fn reg_task_view_indexes(
   tasks = tasks_table()
   p_idx = tasks_by_project_index()
   s_idx = tasks_by_status_index()
+  ps_idx = tasks_by_project_status_index()
   c1 = Views.with_view_range_index(
     cat,
     vname,
@@ -1618,12 +1636,49 @@ fn reg_task_view_indexes(
       Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
     end
   )
-  Views.with_view_eq_index(
+  c3 = Views.with_view_eq_index(
     c2,
     vname,
     "status",
     fn(store, jv)
       rows = try Table.lookup(store, tasks, s_idx, json_text_key(jv)).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+  c4 = Views.with_view_composite_eq_index(
+    c3,
+    vname,
+    "project_status",
+    ["project_id", "status"],
+    fn(store, vals)
+      pid = json_text_key(vals.get(0) or Json.Null)
+      st_label = json_text_key(vals.get(1) or Json.Null)
+      rows = try Table.lookup(store, tasks, ps_idx, (pid, st_label)).map_error(fn(e) e.to_text end)
+      Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
+    end
+  )
+  Views.with_view_ordered_index(
+    c4,
+    vname,
+    "id",
+    fn(store, lo_opt, hi_opt, lo_inc, hi_inc, lim)
+      lo_k = case lo_opt
+        Some(jv):
+          case Json.Object({"v": jv}).int_at("v")
+            Some(iv): Some(if lo_inc: iv else: iv + 1)
+            None: None
+          end
+        None: None
+      end
+      hi_k = case hi_opt
+        Some(jv):
+          case Json.Object({"v": jv}).int_at("v")
+            Some(iv): Some(if hi_inc: iv + 1 else: iv)
+            None: None
+          end
+        None: None
+      end
+      rows = try Table.scan(store, tasks, lo_k, hi_k, lim).map_error(fn(e) e.to_text end)
       Ok(rows.map(fn(pair) map_fn(pair.0, pair.1) end))
     end
   )
@@ -2263,10 +2318,7 @@ fn get_world_metrics(rf: ReadFiles) : Result(World.LandingMetrics, WorkbenchErro
   )
 end
 
-fn get_world_telemetry(rf: ReadFiles, clock: Clock) : Result(
-  WorldTelemetryResponse,
-  WorkbenchError
-)
+fn get_world_telemetry(rf: ReadFiles, clock: Clock) : Result(WorldTelemetryResponse, WorkbenchError)
   now = clock.now
   Ledger.read_locked(
     rf,
@@ -2289,13 +2341,10 @@ fn get_world_telemetry(rf: ReadFiles, clock: Clock) : Result(
   )
 end
 
-fn post_world_child(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: ChildWorldOpenInput
-) : Result(World.WorldRecord, WorkbenchError)
+fn post_world_child(caller: Caller, files: Files, clock: Clock, id: Text, body: ChildWorldOpenInput) : Result(
+  World.WorldRecord,
+  WorkbenchError
+)
   _ = caller
   return Error(InvalidInput(reason: "ttl_seconds must be > 0")) if body.ttl_seconds <= 0
   now = clock.now
@@ -3073,12 +3122,44 @@ fn post_view_query(caller: Caller, files: Files, clock: Clock, body: ReadProgram
   )
 end
 
-fn post_view_explain(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  body: ReadProgramRequest
-) : Result(Json, WorkbenchError)
+fn post_view_query_paged(caller: Caller, files: Files, clock: Clock, body: PagedReadProgramRequest) : Result(
+  Views.PagedReadResult,
+  WorkbenchError
+)
+  is_admin? = caller.role is Admin
+  now = clock.now
+  base_cat = workbench_view_catalog()
+  ps = body.page_size or 50
+  Ledger.locked(
+    files,
+    db_path(),
+    workbench_schema(),
+    now,
+    map_ledger_error,
+    fn(db)
+      st = Ledger.store(db)
+      live_cat = try Proposals.materialize_catalog(st, base_cat).map_error(map_proposal_error)
+      (_next, paged, _log) = try Views.execute_read_program_paged_recorded(
+        db,
+        live_cat,
+        body.program,
+        body.after_cursor,
+        ps,
+        caller.principal,
+        body.grant_id,
+        is_admin?,
+        Views.default_limits(),
+        now
+      ).map_error(map_views_error)
+      Ok(paged)
+    end
+  )
+end
+
+fn post_view_explain(caller: Caller, files: Files, clock: Clock, body: ReadProgramRequest) : Result(
+  Json,
+  WorkbenchError
+)
   is_admin? = caller.role is Admin
   now = clock.now
   base_cat = workbench_view_catalog()
@@ -3093,11 +3174,15 @@ fn post_view_explain(
       narrows = Views.view_narrows_map(live_cat)
       _g = case body.grant_id
         Some(gid): Some(
-          try Grants.verify_view(st, gid, body.program.view, narrows, now).map_error(map_grant_error)
+          try Grants.verify_view(st, gid, body.program.view, narrows, now).map_error(
+            map_grant_error
+          )
         )
         None:
           if not is_admin?
-            return Error(Forbidden(required: "Admin role or valid scoped Grant required for View explain"))
+            return Error(
+              Forbidden(required: "Admin role or valid scoped Grant required for View explain")
+            )
           end
           None
       end
@@ -3176,10 +3261,7 @@ fn ensure_default_matviews_files(files: Files) : Result(List(Matview.MatViewMeta
   )
 end
 
-fn get_matviews(files: Files) : Result(
-  List(Matview.MatViewMeta),
-  WorkbenchError
-)
+fn get_matviews(files: Files) : Result(List(Matview.MatViewMeta), WorkbenchError)
   ensure_default_matviews_files(files)
 end
 
@@ -3208,11 +3290,10 @@ fn post_matview_refresh(caller: Caller, files: Files, name: Text) : Result(
   )
 end
 
-fn get_matview_query(
-  files: Files,
-  name: Text,
-  min_k: Option(Int)
-) : Result(Matview.MatQueryResult, WorkbenchError)
+fn get_matview_query(files: Files, name: Text, min_k: Option(Int)) : Result(
+  Matview.MatQueryResult,
+  WorkbenchError
+)
   _ = try ensure_default_matviews_files(files)
   Modb.with_shared_lock(
     files.read_only,
@@ -3253,6 +3334,63 @@ fn http_post_sync_peer(caller: Caller, files: Files, clock: Clock, body: SyncIni
   )
 end
 
+fn resolve_workbench_sync_key(env: Env) : Result(Bytes, WorkbenchError)
+  raw_hex = case env.get("MODB_BACKUP_KEY_HEX")
+    Some(h) if not h.trim.empty?: h.trim
+    Some(_) | None: return Error(
+      InvalidInput(reason: "encrypted sync export requested but MODB_BACKUP_KEY_HEX is not set")
+    )
+  end
+  if raw_hex.byte_count != 64
+    return Error(InvalidInput(reason: "MODB_BACKUP_KEY_HEX must be 64 hex characters"))
+  end
+  kb = try Bytes.from_hex(raw_hex).or_fail(
+    InvalidInput(reason: "invalid hex in MODB_BACKUP_KEY_HEX")
+  )
+  if kb.size != 32
+    return Error(InvalidInput(reason: "decoded MODB_BACKUP_KEY_HEX must be 32 bytes"))
+  end
+  Ok(kb)
+end
+
+fn resolve_workbench_key_id(env: Env, key_id: Option(Text)) : Text
+  case key_id
+    Some(k) if not k.trim.empty?: k.trim
+    Some(_) | None:
+      case env.get("MODB_BACKUP_KEY_ID")
+        Some(ek) if not ek.trim.empty?: ek.trim
+        Some(_) | None: "default"
+      end
+  end
+end
+
+fn http_post_sync_snapshot(
+  caller: Caller,
+  files: Files,
+  env: Env,
+  clock: Clock,
+  srng: SecureRandom,
+  id: Text,
+  encrypt: Option(Bool),
+  key_id: Option(Text),
+  aad: Option(Text)
+) : Result(Api.Response, WorkbenchError)
+  try require_admin(caller)
+  snap = try Sync.export_peer_base_snapshot_locked(files.read_only, db_path(), id, clock.now)
+    .map_error(map_sync_error)
+  payload = if encrypt == Some(true)
+    bkey = try resolve_workbench_sync_key(env)
+    kid = resolve_workbench_key_id(env, key_id)
+    senv = try Sync.seal_snapshot(srng, bkey, kid, aad or "", snap, clock.now).map_error(
+      map_sync_error
+    )
+    Sync.encode_sealed_json(senv)
+  else
+    Export.encode_snapshot_json(snap)
+  end
+  Ok(Api.response(200, [("content-type", "application/json")], payload.bytes))
+end
+
 fn post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
   Sync.SyncDelta,
   WorkbenchError
@@ -3261,16 +3399,29 @@ fn post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) : Resu
   Sync.export_delta_locked(files, db_path(), id, clock.now).map_error(map_sync_error)
 end
 
-fn http_post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
-  Api.Response,
-  WorkbenchError
-)
+fn http_post_sync_export(
+  caller: Caller,
+  files: Files,
+  env: Env,
+  clock: Clock,
+  srng: SecureRandom,
+  id: Text,
+  encrypt: Option(Bool),
+  key_id: Option(Text),
+  aad: Option(Text)
+) : Result(Api.Response, WorkbenchError)
   delta = try post_sync_export(caller, files, clock, id)
-  resp = Api.response(
-    200,
-    [("content-type", "application/json")],
-    Sync.encode_delta_json(delta).bytes
-  )
+  payload = if encrypt == Some(true)
+    bkey = try resolve_workbench_sync_key(env)
+    kid = resolve_workbench_key_id(env, key_id)
+    senv = try Sync.seal_delta(srng, bkey, kid, aad or "", delta, clock.now).map_error(
+      map_sync_error
+    )
+    Sync.encode_sealed_json(senv)
+  else
+    Sync.encode_delta_json(delta)
+  end
+  resp = Api.response(200, [("content-type", "application/json")], payload.bytes)
   Ok(
     Api.with_sse_publish_json(
       resp,
@@ -3280,32 +3431,27 @@ fn http_post_sync_export(caller: Caller, files: Files, clock: Clock, id: Text) :
         "peer_id": Json.String(delta.peer_id),
         "seq": Json.int(delta.seq),
         "delta_hash": Json.String(delta.delta_hash),
-        "op_count": Json.int(delta.op_count)
+        "op_count": Json.int(delta.op_count),
+        "encrypted": Json.Boolean(encrypt == Some(true))
       })
     )
   )
 end
 
-fn post_sync_ack(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: SyncAckInput
-) : Result(Sync.SyncPeer, WorkbenchError)
+fn post_sync_ack(caller: Caller, files: Files, clock: Clock, id: Text, body: SyncAckInput) : Result(
+  Sync.SyncPeer,
+  WorkbenchError
+)
   try require_admin(caller)
   Sync.ack_peer_locked(files, db_path(), id, body.seq, body.delta_hash, clock.now).map_error(
     map_sync_error
   )
 end
 
-fn http_post_sync_ack(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: SyncAckInput
-) : Result(Api.Response, WorkbenchError)
+fn http_post_sync_ack(caller: Caller, files: Files, clock: Clock, id: Text, body: SyncAckInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
   peer = try post_sync_ack(caller, files, clock, id, body)
   Ok(
     Api.with_sse_publish_json(
@@ -3389,7 +3535,9 @@ end
 ## ---------------------------------------------------------------------------
 fn parse_sensitivity_arg(raw: Text) : Result(Policy.Sensitivity, WorkbenchError)
   Policy.sensitivity_from_text(raw).or_fail(
-    InvalidInput(reason: "invalid sensitivity '#{raw}' (expected public|internal|confidential|secret)")
+    InvalidInput(
+      reason: "invalid sensitivity '#{raw}' (expected public|internal|confidential|secret)"
+    )
   )
 end
 
@@ -3699,9 +3847,8 @@ fn post_gov_feed(caller: Caller, files: Files, clock: Clock, body: FeedSubscribe
     include_internal: body.include_internal or false,
     from_beginning: body.from_beginning or false
   )
-  Feeds.subscribe_locked(files, db_path(), workbench_schema(), spec, eff_reason, clock.now).map_error(
-    map_feed_error
-  )
+  Feeds.subscribe_locked(files, db_path(), workbench_schema(), spec, eff_reason, clock.now)
+    .map_error(map_feed_error)
 end
 
 fn get_gov_feed_poll(caller: Caller, rf: ReadFiles, clock: Clock, id: Text, limit: Option(Int)) : Result(
@@ -3846,9 +3993,15 @@ end
 ## Milestone 14: Cross-Worker Real-Time SSE Push (`SseBroker`)
 ## ---------------------------------------------------------------------------
 fn current_txid_quiet(rf: ReadFiles) : Int
-  case Ledger.read_locked(rf, db_path(), workbench_schema(), map_ledger_error, fn(db)
-    Ok(Ledger.txid(db))
-  end)
+  case Ledger.read_locked(
+    rf,
+    db_path(),
+    workbench_schema(),
+    map_ledger_error,
+    fn(db)
+      Ok(Ledger.txid(db))
+    end
+  )
     Ok(n): n
     Error(_): 0
   end
@@ -3888,13 +4041,8 @@ fn json_ok_response(val: T) : Api.Response where T: Json
   Api.response(200, [("content-type", "application/json")], Json.encode(val).bytes)
 end
 
-fn json_sse(
-  val: T,
-  rf: ReadFiles,
-  event: Text,
-  action: Text,
-  buckets: List(Text)
-) : Api.Response where T: Json
+fn json_sse(val: T, rf: ReadFiles, event: Text, action: Text, buckets: List(Text)) : Api.Response
+  where T: Json
   publish_workbench_commit(json_ok_response(val), rf, event, action, buckets, None)
 end
 
@@ -3908,14 +4056,7 @@ end
 fn get_events_stream(rf: ReadFiles, req: Api.Request) : Result(Api.Response, WorkbenchError)
   h = try get_health(rf)
   last_id = req_last_event_id(req)
-  Ok(
-    Api.sse_stream_with(
-      ["workbench"],
-      last_id,
-      Some(2000),
-      [(Some("health"), Json.encode(h))]
-    )
-  )
+  Ok(Api.sse_stream_with(["workbench"], last_id, Some(2000), [(Some("health"), Json.encode(h))]))
 end
 
 fn get_gov_feed_stream(
@@ -3946,12 +4087,7 @@ fn get_gov_feed_stream(
   topics = Feeds.feed_subscribe_topics(sub)
   last_id = req_last_event_id(req)
   Ok(
-    Api.sse_stream_with(
-      topics,
-      last_id,
-      Some(2000),
-      [(Some("feed.snapshot"), Json.encode(batch))]
-    )
+    Api.sse_stream_with(topics, last_id, Some(2000), [(Some("feed.snapshot"), Json.encode(batch))])
   )
 end
 
@@ -3998,13 +4134,10 @@ fn http_post_grant(caller: Caller, files: Files, clock: Clock, body: GrantInput)
   Ok(json_sse(g, files.read_only, "grant.issued", "issue_grant", [Grants.grants_bucket]))
 end
 
-fn http_post_delegate_grant(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: GrantInput
-) : Result(Api.Response, WorkbenchError)
+fn http_post_delegate_grant(caller: Caller, files: Files, clock: Clock, id: Text, body: GrantInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
   g = try post_delegate_grant(caller, files, clock, id, body)
   Ok(json_sse(g, files.read_only, "grant.delegated", "delegate_grant", [Grants.grants_bucket]))
 end
@@ -4071,13 +4204,10 @@ fn http_post_world_child(
   )
 end
 
-fn http_post_world_call(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: WorldCallInput
-) : Result(Api.Response, WorkbenchError)
+fn http_post_world_call(caller: Caller, files: Files, clock: Clock, id: Text, body: WorldCallInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
   r = try post_world_call(caller, files, clock, id, body)
   Ok(json_sse(r, files.read_only, "world.called", "world_call", [World.worlds_bucket]))
 end
@@ -4093,7 +4223,14 @@ fn http_post_world_land(caller: Caller, files: Files, clock: Clock, id: Text) : 
       files.read_only,
       "world.landed",
       "land_world",
-      ["tasks", "projects", "artifacts", World.worlds_bucket, Grants.grants_bucket, Claims.claims_bucket]
+      [
+        "tasks",
+        "projects",
+        "artifacts",
+        World.worlds_bucket,
+        Grants.grants_bucket,
+        Claims.claims_bucket
+      ]
     )
   )
 end
@@ -4142,7 +4279,9 @@ fn http_post_world_priority(
   body: PriorityClaimInput
 ) : Result(Api.Response, WorkbenchError)
   t = try post_world_priority(caller, files, clock, id, body)
-  Ok(json_sse(t, files.read_only, "world.priority", "claim_priority", [World.world_fairness_bucket]))
+  Ok(
+    json_sse(t, files.read_only, "world.priority", "claim_priority", [World.world_fairness_bucket])
+  )
 end
 
 fn http_delete_world(caller: Caller, files: Files, clock: Clock, id: Text) : Result(
@@ -4172,17 +4311,22 @@ fn http_post_admin_demo(caller: Caller, files: Files, clock: Clock) : Result(
       files.read_only,
       "admin.demo",
       "seed_demo",
-      ["projects", "tasks", "artifacts", Grants.grants_bucket, Claims.claims_bucket, World.worlds_bucket]
+      [
+        "projects",
+        "tasks",
+        "artifacts",
+        Grants.grants_bucket,
+        Claims.claims_bucket,
+        World.worlds_bucket
+      ]
     )
   )
 end
 
-fn http_post_replay_simulate(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  body: ReplaySimulateInput
-) : Result(Api.Response, WorkbenchError)
+fn http_post_replay_simulate(caller: Caller, files: Files, clock: Clock, body: ReplaySimulateInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
   p = try post_replay_simulate(caller, files, clock, body)
   Ok(
     json_sse(
@@ -4316,13 +4460,10 @@ fn http_post_gov_feed(caller: Caller, files: Files, clock: Clock, body: FeedSubs
   )
 end
 
-fn http_post_gov_feed_ack(
-  caller: Caller,
-  files: Files,
-  clock: Clock,
-  id: Text,
-  body: FeedAckInput
-) : Result(Api.Response, WorkbenchError)
+fn http_post_gov_feed_ack(caller: Caller, files: Files, clock: Clock, id: Text, body: FeedAckInput) : Result(
+  Api.Response,
+  WorkbenchError
+)
   sub = try post_gov_feed_ack(caller, files, clock, id, body)
   Ok(
     publish_workbench_commit(
@@ -4397,9 +4538,7 @@ fn http_post_taint_clear(caller: Caller, files: Files, clock: Clock, id: Text) :
   WorkbenchError
 )
   s = try post_taint_clear(caller, files, clock, id)
-  Ok(
-    json_sse(s, files.read_only, "taint.cleared", "clear_taint", [Taint.taint_sessions_bucket])
-  )
+  Ok(json_sse(s, files.read_only, "taint.cleared", "clear_taint", [Taint.taint_sessions_bucket]))
 end
 
 fn feed_extra_topic(args: Json, evt: Text) : Option((Text, Text))
@@ -4416,7 +4555,14 @@ fn mcp_tool_sse_spec(name: Text, args: Json) : Option((Text, List(Text), Option(
     "modb_init": Some(("admin.init", ["projects"], None))
     "modb_seed_demo": Some((
       "admin.demo",
-      ["projects", "tasks", "artifacts", Grants.grants_bucket, Claims.claims_bucket, World.worlds_bucket],
+      [
+        "projects",
+        "tasks",
+        "artifacts",
+        Grants.grants_bucket,
+        Claims.claims_bucket,
+        World.worlds_bucket
+      ],
       None
     ))
     "modb_create_project": Some(("project.created", ["projects"], None))
@@ -4431,7 +4577,14 @@ fn mcp_tool_sse_spec(name: Text, args: Json) : Option((Text, List(Text), Option(
     "modb_world_call": Some(("world.called", [World.worlds_bucket], None))
     "modb_world_land": Some((
       "world.landed",
-      ["tasks", "projects", "artifacts", World.worlds_bucket, Grants.grants_bucket, Claims.claims_bucket],
+      [
+        "tasks",
+        "projects",
+        "artifacts",
+        World.worlds_bucket,
+        Grants.grants_bucket,
+        Claims.claims_bucket
+      ],
       None
     ))
     "modb_world_abort": Some(("world.aborted", [World.worlds_bucket], None))
@@ -4466,15 +4619,21 @@ fn mcp_tool_sse_spec(name: Text, args: Json) : Option((Text, List(Text), Option(
       None
     ))
     "modb_proposal_reject": Some(("proposal.rejected", [Proposals.proposals_bucket], None))
-    "modb_feed_subscribe": Some(
-      ("feed.subscribed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.subscribed"))
-    )
-    "modb_feed_consume": Some(
-      ("feed.consumed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.consumed"))
-    )
-    "modb_feed_unsubscribe": Some(
-      ("feed.unsubscribed", [Feeds.feeds_bucket], feed_extra_topic(args, "feed.unsubscribed"))
-    )
+    "modb_feed_subscribe": Some((
+      "feed.subscribed",
+      [Feeds.feeds_bucket],
+      feed_extra_topic(args, "feed.subscribed")
+    ))
+    "modb_feed_consume": Some((
+      "feed.consumed",
+      [Feeds.feeds_bucket],
+      feed_extra_topic(args, "feed.consumed")
+    ))
+    "modb_feed_unsubscribe": Some((
+      "feed.unsubscribed",
+      [Feeds.feeds_bucket],
+      feed_extra_topic(args, "feed.unsubscribed")
+    ))
     "modb_taint_record_untrusted": Some(("taint.untrusted", [Taint.taint_sessions_bucket], None))
     "modb_taint_clear": Some(("taint.cleared", [Taint.taint_sessions_bucket], None))
     _: None
@@ -4490,14 +4649,7 @@ fn mcp_publish_if_mutation(
 ) : Api.Response
   return http_res if tool_res.get("isError") == Some(Json.Boolean(true))
   case mcp_tool_sse_spec(name, args)
-    Some((evt, buckets, extra)): publish_workbench_commit(
-      http_res,
-      rf,
-      evt,
-      name,
-      buckets,
-      extra
-    )
+    Some((evt, buckets, extra)): publish_workbench_commit(http_res, rf, evt, name, buckets, extra)
     None: http_res
   end
 end
@@ -4818,8 +4970,14 @@ fn mcp_tools_list() : Json
           {
             "parent_world_id": mcp_prop("string", "Open Parent World ID"),
             "id": mcp_prop("string", "New Child World ID"),
-            "grant_id": mcp_prop("string", "Descendant or same Grant ID (cannot widen parent Grant)"),
-            "ttl_seconds": mcp_prop("integer", "Child World TTL in seconds (capped at parent expiry)")
+            "grant_id": mcp_prop(
+              "string",
+              "Descendant or same Grant ID (cannot widen parent Grant)"
+            ),
+            "ttl_seconds": mcp_prop(
+              "integer",
+              "Child World TTL in seconds (capped at parent expiry)"
+            )
           },
           ["parent_world_id", "id", "grant_id", "ttl_seconds"]
         )
@@ -4827,10 +4985,7 @@ fn mcp_tools_list() : Json
       mcp_tool_def(
         "modb_world_list_children",
         "List all Nested Child Worlds forked from a Parent World.",
-        mcp_schema(
-          {"parent_world_id": mcp_prop("string", "Parent World ID")},
-          ["parent_world_id"]
-        )
+        mcp_schema({"parent_world_id": mcp_prop("string", "Parent World ID")}, ["parent_world_id"])
       ),
       mcp_tool_def(
         "modb_world_land_child",
@@ -5037,7 +5192,10 @@ fn mcp_tools_list() : Json
             "target_clearance": mcp_prop("string", "For kind=clearance: target sensitivity"),
             "invariant_name": mcp_prop("string", "For kind=invariant: invariant name"),
             "bucket": mcp_prop("string", "For kind=invariant: target user bucket"),
-            "rule_kind": mcp_prop("string", "For kind=invariant: non_empty | int_range | allowed_values"),
+            "rule_kind": mcp_prop(
+              "string",
+              "For kind=invariant: non_empty | int_range | allowed_values"
+            ),
             "field": mcp_prop("string", "For kind=invariant: JSON field name"),
             "reason": reason_p
           },
@@ -5048,7 +5206,12 @@ fn mcp_tools_list() : Json
         "modb_proposals_list",
         "List human-reviewed Governance Proposals and their CapabilityDiffs (optional status filter).",
         mcp_schema(
-          {"status": mcp_prop("string", "Optional filter: pending | approved | rejected | withdrawn")},
+          {
+            "status": mcp_prop(
+              "string",
+              "Optional filter: pending | approved | rejected | withdrawn"
+            )
+          },
           []
         )
       ),
@@ -5203,7 +5366,10 @@ fn mcp_tools_list() : Json
         mcp_schema(
           {
             "peer_id": mcp_prop("string", "Unique sync peer ID ([A-Za-z0-9._-])"),
-            "include_internal": mcp_prop("boolean", "Include internal _modb_* buckets (default false)"),
+            "include_internal": mcp_prop(
+              "boolean",
+              "Include internal _modb_* buckets (default false)"
+            ),
             "from_empty": mcp_prop("boolean", "Start next export from empty root 0 (default false)"),
             "reason": reason_p
           },
@@ -5504,7 +5670,9 @@ fn mcp_call_tool(caller: Caller, files: Files, clock: Clock, name: Text, args: J
       end
     "modb_feed_consume":
       case mcp_req_text(args, "feed_id")
-        Ok(fid): mcp_encode_result(post_gov_feed_consume(eff, files, clock, fid, args.int_at("limit")))
+        Ok(fid): mcp_encode_result(
+          post_gov_feed_consume(eff, files, clock, fid, args.int_at("limit"))
+        )
         Error(e): mcp_tool_result(Json.encode(e), true)
       end
     "modb_feed_unsubscribe":
@@ -5640,7 +5808,7 @@ fn post_mcp(caller: Caller, files: Files, clock: Clock, body: Json) : Result(
             "capabilities": Json.Object({"tools": Json.Object({})}),
             "serverInfo": Json.Object({
               "name": Json.String("modb-agent-workbench"),
-              "version": Json.String("0.8.1")
+              "version": Json.String("0.9.0")
             })
           })
         )
@@ -6257,7 +6425,12 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     assert ApiTest.send(
       AgentWorkbench,
       Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "seed-pay").with_json(
-        CreateTaskInput(id: tid, project_id: "payments", title: "Task ##{tid}", base_cost_cents: 1000)
+        CreateTaskInput(
+          id: tid,
+          project_id: "payments",
+          title: "Task ##{tid}",
+          base_cost_cents: 1000
+        )
       ),
       files,
       ro,
@@ -6270,7 +6443,12 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     assert ApiTest.send(
       AgentWorkbench,
       Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "seed-sub").with_json(
-        CreateTaskInput(id: tid, project_id: "subproj", title: "Subtask ##{tid}", base_cost_cents: 2000)
+        CreateTaskInput(
+          id: tid,
+          project_id: "subproj",
+          title: "Subtask ##{tid}",
+          base_cost_cents: 2000
+        )
       ),
       files,
       ro,
@@ -6397,19 +6575,21 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     200
   assert ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-range-skip/call").with_bearer("tok-work").with_header("X-Reason", "skip-call")
-      .with_json(
-        WorldCallInput(
-          action: "complete_task",
-          args: CompleteTaskInput(
-            task_id: 405,
-            assignee: "agent:lead",
-            artifact_id: None,
-            artifact_summary: None,
-            artifact_sha256: None
-          ).to_json
-        )
-      ),
+    Api.post("/worlds/w-range-skip/call").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "skip-call"
+    ).with_json(
+      WorldCallInput(
+        action: "complete_task",
+        args: CompleteTaskInput(
+          task_id: 405,
+          assignee: "agent:lead",
+          artifact_id: None,
+          artifact_summary: None,
+          artifact_sha256: None
+        ).to_json
+      )
+    ),
     files,
     ro,
     clock,
@@ -6420,16 +6600,18 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
   ## Mutate disjoint task #404 on main line -> both get_task(401) and scan_tasks_range [402, 404) skip!
   assert ApiTest.send(
     AgentWorkbench,
-    Api.post("/tasks/404/complete").with_bearer("tok-work").with_header("X-Agent-Id", "agent:direct")
-      .with_header("X-Reason", "disjoint-404").with_json(
-        CompleteTaskInput(
-          task_id: 404,
-          assignee: "agent:direct",
-          artifact_id: None,
-          artifact_summary: None,
-          artifact_sha256: None
-        )
-      ),
+    Api.post("/tasks/404/complete").with_bearer("tok-work").with_header(
+      "X-Agent-Id",
+      "agent:direct"
+    ).with_header("X-Reason", "disjoint-404").with_json(
+      CompleteTaskInput(
+        task_id: 404,
+        assignee: "agent:direct",
+        artifact_id: None,
+        artifact_summary: None,
+        artifact_sha256: None
+      )
+    ),
     files,
     ro,
     clock,
@@ -6438,7 +6620,10 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     200
   land1 = ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-range-skip/land").with_bearer("tok-work").with_header("X-Reason", "land-skip"),
+    Api.post("/worlds/w-range-skip/land").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "land-skip"
+    ),
     files,
     ro,
     clock,
@@ -6475,37 +6660,21 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     200
   assert ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-range-stale/call").with_bearer("tok-work").with_header("X-Reason", "stale-call")
-      .with_json(
-        WorldCallInput(
-          action: "complete_task",
-          args: CompleteTaskInput(
-            task_id: 403,
-            assignee: "agent:w1",
-            artifact_id: None,
-            artifact_summary: None,
-            artifact_sha256: None
-          ).to_json
-        )
-      ),
-    files,
-    ro,
-    clock,
-    env
-  ).status ==
-    200
-  assert ApiTest.send(
-    AgentWorkbench,
-    Api.post("/tasks/402/complete").with_bearer("tok-work").with_header("X-Agent-Id", "agent:direct")
-      .with_header("X-Reason", "overlap-402").with_json(
-        CompleteTaskInput(
-          task_id: 402,
-          assignee: "agent:direct",
+    Api.post("/worlds/w-range-stale/call").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "stale-call"
+    ).with_json(
+      WorldCallInput(
+        action: "complete_task",
+        args: CompleteTaskInput(
+          task_id: 403,
+          assignee: "agent:w1",
           artifact_id: None,
           artifact_summary: None,
           artifact_sha256: None
-        )
-      ),
+        ).to_json
+      )
+    ),
     files,
     ro,
     clock,
@@ -6514,7 +6683,30 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     200
   assert ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-range-stale/land").with_bearer("tok-work").with_header("X-Reason", "land-stale"),
+    Api.post("/tasks/402/complete").with_bearer("tok-work").with_header(
+      "X-Agent-Id",
+      "agent:direct"
+    ).with_header("X-Reason", "overlap-402").with_json(
+      CompleteTaskInput(
+        task_id: 402,
+        assignee: "agent:direct",
+        artifact_id: None,
+        artifact_summary: None,
+        artifact_sha256: None
+      )
+    ),
+    files,
+    ro,
+    clock,
+    env
+  ).status ==
+    200
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/worlds/w-range-stale/land").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "land-stale"
+    ),
     files,
     ro,
     clock,
@@ -6536,19 +6728,21 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
     200
   assert ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-starved/call").with_bearer("tok-work").with_header("X-Reason", "starved-call")
-      .with_json(
-        WorldCallInput(
-          action: "complete_task",
-          args: CompleteTaskInput(
-            task_id: 403,
-            assignee: "agent:w1",
-            artifact_id: None,
-            artifact_summary: None,
-            artifact_sha256: None
-          ).to_json
-        )
-      ),
+    Api.post("/worlds/w-starved/call").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "starved-call"
+    ).with_json(
+      WorldCallInput(
+        action: "complete_task",
+        args: CompleteTaskInput(
+          task_id: 403,
+          assignee: "agent:w1",
+          artifact_id: None,
+          artifact_summary: None,
+          artifact_sha256: None
+        ).to_json
+      )
+    ),
     files,
     ro,
     clock,
@@ -6590,7 +6784,11 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
   assert ApiTest.send(
     AgentWorkbench,
     Api.post("/worlds/w-starved/priority").with_bearer("tok-work").with_json(
-      PriorityClaimInput(buckets: ["tasks", "projects"], min_stale_threshold: Some(1), hold_seconds: 15)
+      PriorityClaimInput(
+        buckets: ["tasks", "projects"],
+        min_stale_threshold: Some(1),
+        hold_seconds: 15
+      )
     ),
     files,
     ro,
@@ -6609,7 +6807,10 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
   assert comp_defer.status == 200 and comp_defer.text.contains?("deferred_by_fairness")
   starved_ok = ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-starved/land-fair").with_bearer("tok-work").with_header("X-Reason", "rescue-me"),
+    Api.post("/worlds/w-starved/land-fair").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "rescue-me"
+    ),
     files,
     ro,
     clock,
@@ -6618,7 +6819,10 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
   assert starved_ok.status == 200 and starved_ok.text.contains?("landed_ok")
   comp_ok = ApiTest.send(
     AgentWorkbench,
-    Api.post("/worlds/w-comp/land-fair").with_bearer("tok-work").with_header("X-Reason", "comp-retry"),
+    Api.post("/worlds/w-comp/land-fair").with_bearer("tok-work").with_header(
+      "X-Reason",
+      "comp-retry"
+    ),
     files,
     ro,
     clock,
@@ -6800,19 +7004,21 @@ test "AgentWorkbench Milestone 10: Key/Range O(diff) skipping, Fairness Tickets,
 
   sim_child = ApiTest.send(
     AgentWorkbench,
-    Api.post("/admin/replay/simulate").with_bearer("tok-admin").with_header("X-Reason", "excise-child")
-      .with_json(
-        ReplaySimulateInput(
-          proposal_id: "prop-excise-child",
-          description: "Excise attributed child grant g-child",
-          exclude_principal: None,
-          exclude_grant: Some("g-child"),
-          exclude_world: None,
-          exclude_seqs: None,
-          stop_before_seq: None,
-          overhead_pct_override: None
-        )
-      ),
+    Api.post("/admin/replay/simulate").with_bearer("tok-admin").with_header(
+      "X-Reason",
+      "excise-child"
+    ).with_json(
+      ReplaySimulateInput(
+        proposal_id: "prop-excise-child",
+        description: "Excise attributed child grant g-child",
+        exclude_principal: None,
+        exclude_grant: Some("g-child"),
+        exclude_world: None,
+        exclude_seqs: None,
+        stop_before_seq: None,
+        overhead_pct_override: None
+      )
+    ),
     files,
     ro,
     clock,
@@ -7028,8 +7234,7 @@ test "AgentWorkbench Milestone 12: Sensitivity Policy, Governance Proposals, and
     clock,
     env
   )
-  assert poll_f.status == 200 and
-    Json.decode_strict[Feeds.FeedBatch](poll_f.text) is Ok(fb0)
+  assert poll_f.status == 200 and Json.decode_strict[Feeds.FeedBatch](poll_f.text) is Ok(fb0)
   assert fb0.events.size == 1 and fb0.clearance is Policy.Confidential
 
   cons_f = ApiTest.send(
@@ -7040,8 +7245,7 @@ test "AgentWorkbench Milestone 12: Sensitivity Policy, Governance Proposals, and
     clock,
     env
   )
-  assert cons_f.status == 200 and
-    Json.decode_strict[FeedConsumeResponse](cons_f.text) is Ok(fcr)
+  assert cons_f.status == 200 and Json.decode_strict[FeedConsumeResponse](cons_f.text) is Ok(fcr)
   assert fcr.subscription.events_delivered == 1
 
   ## Subsequent idle poll reads 0 pages and emits 0 events
@@ -7227,7 +7431,12 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
   t_r = ApiTest.send(
     AgentWorkbench,
     Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "sse task").with_json(
-      CreateTaskInput(id: 951, project_id: "infra", title: "Live SSE delta task", base_cost_cents: 1200)
+      CreateTaskInput(
+        id: 951,
+        project_id: "infra",
+        title: "Live SSE delta task",
+        base_cost_cents: 1200
+      )
     ),
     files,
     ro,
@@ -7250,7 +7459,8 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
   )
   assert s1.status == 200
   assert Api.sse_subscribe_topics(s1) == ["bucket:tasks", "feed:sse-tasks"]
-  assert s1.text.contains?("event: feed.snapshot") and s1.text.contains?("\"feed_id\":\"sse-tasks\"")
+  assert s1.text.contains?("event: feed.snapshot") and
+    s1.text.contains?("\"feed_id\":\"sse-tasks\"")
 
   s2 = ApiTest.send(
     AgentWorkbench,
@@ -7336,7 +7546,8 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
     clock,
     env
   )
-  assert q_idx.status == 200 and q_idx.text.contains?("\"rows_scanned\":1") and
+  assert q_idx.status == 200 and
+    q_idx.text.contains?("\"rows_scanned\":1") and
     q_idx.text.contains?("951")
 
   mv_l = ApiTest.send(
@@ -7347,7 +7558,8 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
     clock,
     env
   )
-  assert mv_l.status == 200 and mv_l.text.contains?("tasks_by_status") and
+  assert mv_l.status == 200 and
+    mv_l.text.contains?("tasks_by_status") and
     mv_l.text.contains?("tasks_by_project")
 
   mv_q = ApiTest.send(
@@ -7364,7 +7576,11 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
   sy_init = ApiTest.send(
     AgentWorkbench,
     Api.post("/sync/peers").with_bearer("tok-admin").with_json(
-      SyncInitPeerInput(peer_id: "wb-mirror", include_internal: Some(false), from_empty: Some(false))
+      SyncInitPeerInput(
+        peer_id: "wb-mirror",
+        include_internal: Some(false),
+        from_empty: Some(false)
+      )
     ),
     files,
     ro,
@@ -7406,4 +7622,153 @@ test "AgentWorkbench Milestone 14: SSE /events/stream, /feeds/:id/stream & cross
     env
   )
   assert sy_del.status == 200 and sy_del.text.contains?("\"ok\":true")
+
+  # Milestone 17: /sync/peers/:id/snapshot (plain + encrypted), composite /views/explain, and /views/query/paged
+  enc_env = Env.of({
+    "WB_ADMIN_TOKEN": "tok-admin",
+    "WB_PLANNER_TOKEN": "tok-plan",
+    "WB_WORKER_TOKEN": "tok-work",
+    "MODB_BACKUP_KEY_HEX": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "MODB_BACKUP_KEY_ID": "wb-k1"
+  })
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers").with_bearer("tok-admin").with_json(
+      SyncInitPeerInput(
+        peer_id: "wb-snap-peer",
+        include_internal: Some(false),
+        from_empty: Some(false)
+      )
+    ),
+    files,
+    ro,
+    clock,
+    enc_env
+  ).status ==
+    200
+
+  snap_plain = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers/wb-snap-peer/snapshot").with_bearer("tok-admin"),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert snap_plain.status == 200
+  assert Json.decode[Export.PortableSnapshot](snap_plain.text.bytes) is Ok(_)
+
+  snap_enc = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers/wb-snap-peer/snapshot?encrypt=true&key_id=wb-k1&aad=wb-aad").with_bearer(
+      "tok-admin"
+    ),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert snap_enc.status == 200
+  assert Json.decode[Sync.SealedEnvelope](snap_enc.text.bytes) is Ok(sealed_s) and
+    sealed_s.key_id == "wb-k1"
+
+  # Composite ViewIndex explain on tasks_public (project_id + status)
+  comp_req = ReadProgramRequest(
+    grant_id: None,
+    program: Views.ReadProgram(
+      view: "tasks_public",
+      where_clause: Some(
+        Views.And(
+          preds: [
+            Views.Eq(field: "project_id", value: Json.String("infra")),
+            Views.Eq(field: "status", value: Json.String("done"))
+          ]
+        )
+      ),
+      select: None,
+      group_by: None,
+      aggregates: None,
+      order_by: Some(Views.SortSpec(field: "id", desc: false)),
+      limit: None
+    )
+  )
+  ex_comp = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/explain").with_bearer("tok-admin").with_json(comp_req),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert ex_comp.status == 200 and ex_comp.text.contains?("\"strategy\":\"composite_eq\"")
+
+  # Paged read program over tasks_public ordered by id ascending (create task 952 -> 2 tasks, page_size=1)
+  assert ApiTest.send(
+    AgentWorkbench,
+    Api.post("/tasks").with_bearer("tok-plan").with_header("X-Reason", "m17 paged task").with_json(
+      CreateTaskInput(id: 952, project_id: "infra", title: "M17 Paged Task", base_cost_cents: 800)
+    ),
+    files,
+    ro,
+    clock,
+    enc_env
+  ).status ==
+    200
+
+  del_enc = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/sync/peers/wb-snap-peer/export?encrypt=true&key_id=wb-k1&aad=wb-aad").with_bearer(
+      "tok-admin"
+    ),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert del_enc.status == 200
+  assert Json.decode[Sync.SealedEnvelope](del_enc.text.bytes) is Ok(sealed_d) and
+    sealed_d.key_id == "wb-k1"
+
+  pg_req1 = PagedReadProgramRequest(
+    grant_id: None,
+    program: Views.ReadProgram(
+      view: "tasks_public",
+      where_clause: None,
+      select: Some(["id", "title"]),
+      group_by: None,
+      aggregates: None,
+      order_by: Some(Views.SortSpec(field: "id", desc: false)),
+      limit: None
+    ),
+    after_cursor: None,
+    page_size: Some(1)
+  )
+  pg_res1 = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/query/paged").with_bearer("tok-admin").with_json(pg_req1),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert pg_res1.status == 200 and pg_res1.text.contains?("\"has_more\":true")
+  assert Json.decode[Views.PagedReadResult](pg_res1.text.bytes) is Ok(pr1) and
+    pr1.result.result_count == 1
+  pg_req2 = PagedReadProgramRequest(
+    grant_id: None,
+    program: pg_req1.program,
+    after_cursor: pr1.next_cursor,
+    page_size: Some(1)
+  )
+  pg_res2 = ApiTest.send(
+    AgentWorkbench,
+    Api.post("/views/query/paged").with_bearer("tok-admin").with_json(pg_req2),
+    files,
+    ro,
+    clock,
+    enc_env
+  )
+  assert pg_res2.status == 200 and
+    Json.decode[Views.PagedReadResult](pg_res2.text.bytes) is Ok(pr2) and
+    pr2.result.result_count == 1 and (not pr2.has_more)
 end

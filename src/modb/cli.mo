@@ -2,9 +2,8 @@
 ## `policy`, `proposals`, `feeds`, `matviews`, `taint`, `erasures`, `sync`, `backup`, `export`, `restore`, `compact`, `diff`). Works on any
 ## `.modb` database file safely using advisory `flock` coordination and read-only `ReadFiles`.
 module Modb.Cli
-expose run_cli,
-run_cli_with,
-main
+expose run_cli, run_cli_with, run_cli_full, main
+use Http
 use Json
 use Modb{Store}
 use Modb.Claims
@@ -19,6 +18,7 @@ use Modb.Matview
 use Modb.Pager{from_file}
 use Modb.Policy
 use Modb.Proposals
+use Modb.Pull
 use Modb.Sync{SealedEnvelope, SyncDelta}
 use Modb.Table
 use Modb.Taint
@@ -54,7 +54,8 @@ fn print_usage(console: Console) : Unit
       "  modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex> [--json]",
       "  modb sync <db.modb> apply <delta.json> [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>] [--json]",
       "  modb sync <db.modb> remove-peer <peer_id>",
-      "  modb sync <dst.modb> restore --base <snap.json> [<delta1.json> ...] [--decrypt] [--key-file <p>|--key-env <V>] [--aad <t>] [--json]",
+      "  modb sync <dst.modb> restore --base <snap.json> [<delta1.json> ...] [--decrypt] [--key-file <p>|--key-env <V>|--keyring-file <p>|--keyring-env <V>] [--aad <t>] [--json]",
+      "  modb sync <replica.modb> pull --url <endpoint> --peer <id> [--token-env <VAR>] [--decrypt] [--key-file <p>|--key-env <V>|--keyring-file <p>|--keyring-env <V>] [--key-id <id>] [--aad <t>] [--once|--interval <secs> [--max-cycles N]] [--json]",
       "  modb backup <src.modb> <dst.modb> [--include-internal]",
       "  modb export <src.modb> <out.json> [--include-internal]",
       "  modb restore <in.json> <dst.modb>",
@@ -91,6 +92,12 @@ struct ParsedFlags
   base_opt: Option(Text)
   seq_opt: Option(Int)
   hash_opt: Option(Text)
+  url_opt: Option(Text)
+  peer_opt: Option(Text)
+  token_env_opt: Option(Text)
+  once?: Bool
+  interval_opt: Option(Int)
+  max_cycles_opt: Option(Int)
 end
 
 fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
@@ -119,6 +126,12 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
   var base_opt = None
   var seq_opt = None
   var hash_opt = None
+  var url_opt = None
+  var peer_opt = None
+  var token_env_opt = None
+  var once? = false
+  var interval_opt = None
+  var max_cycles_opt = None
   var i = 0
   while i < rest.size
     tok = rest.get(i) or ""
@@ -136,6 +149,9 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       i += 1
     else if tok == "--from-empty"
       from_empty? = true
+      i += 1
+    else if tok == "--once"
+      once? = true
       i += 1
     else if tok == "--fast"
       fast? = true
@@ -220,6 +236,28 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       val = try rest.get(i + 1).or_fail("--hash requires a value")
       hash_opt = Some(val)
       i += 2
+    else if tok == "--url"
+      val = try rest.get(i + 1).or_fail("--url requires a value")
+      url_opt = Some(val)
+      i += 2
+    else if tok == "--peer"
+      val = try rest.get(i + 1).or_fail("--peer requires a value")
+      peer_opt = Some(val)
+      i += 2
+    else if tok == "--token-env"
+      val = try rest.get(i + 1).or_fail("--token-env requires a value")
+      token_env_opt = Some(val)
+      i += 2
+    else if tok == "--interval"
+      val = try rest.get(i + 1).or_fail("--interval requires a value")
+      n = try val.to_int.or_fail("invalid --interval integer: #{val}")
+      interval_opt = Some(n)
+      i += 2
+    else if tok == "--max-cycles"
+      val = try rest.get(i + 1).or_fail("--max-cycles requires a value")
+      n = try val.to_int.or_fail("invalid --max-cycles integer: #{val}")
+      max_cycles_opt = Some(n)
+      i += 2
     else if tok.starts_with?("--")
       return Error("unknown flag: #{tok}")
     else
@@ -253,7 +291,13 @@ fn parse_flags(rest: List(Text)) : Result(ParsedFlags, Text)
       from_empty?: from_empty?,
       base_opt: base_opt,
       seq_opt: seq_opt,
-      hash_opt: hash_opt
+      hash_opt: hash_opt,
+      url_opt: url_opt,
+      peer_opt: peer_opt,
+      token_env_opt: token_env_opt,
+      once?: once?,
+      interval_opt: interval_opt,
+      max_cycles_opt: max_cycles_opt
     )
   )
 end
@@ -294,11 +338,10 @@ fn fail_msg(console: Console, msg: Text) : Int
   1
 end
 
-fn build_repacked_store(
-  files: Files,
-  dst_path: Text,
-  snap: PortableSnapshot
-) : Result((Store, Int), Text)
+fn build_repacked_store(files: Files, dst_path: Text, snap: PortableSnapshot) : Result(
+  (Store, Int),
+  Text
+)
   decoded0 = try Export.decode_snapshot_buckets(snap).map_error(fn(e) Export.to_text(e) end)
   has_meta? = decoded0.any?(fn(p) p.0 == meta_bucket end)
   decoded = if not snap.include_internal and snap.schema_version > 0 and not has_meta?
@@ -509,8 +552,8 @@ fn cmd_verify(console: Console, files: Files, f: ParsedFlags) : Int
       else
         console.print(
           "MoDB verify ok=true mode=#{mode} txid=#{srep.txid} schema=v#{arep.schema_version} pages=#{srep
-            .page_count} free=#{free_cnt} buckets=#{srep.bucket_count} audit=#{arep
-            .entry_count} tail=#{arep.last_hash}"
+            .page_count} free=#{free_cnt} buckets=#{srep.bucket_count} audit=#{arep.entry_count} tail=#{arep
+            .last_hash}"
         )
       end
       0
@@ -642,9 +685,8 @@ fn cmd_worlds(console: Console, files: Files, clock: Clock, f: ParsedFlags) : In
       tks = try World.list_priority_tickets(store, now).map_error(fn(e) World.to_text(e) end)
       var links = {}
       for w in ws
-        if (try World.get_world_link(store, w.id).map_error(fn(e) World.to_text(e) end)) is Some(
-          lnk
-        )
+        if (try World.get_world_link(store, w.id).map_error(fn(e) World.to_text(e) end)) is
+          Some(lnk)
           links = links.set(w.id, lnk)
         end
       end
@@ -907,13 +949,7 @@ fn diff_sorted_kv(a_rows: List((Bytes, Bytes)), b_rows: List((Bytes, Bytes))) : 
   (added, removed, modified)
 end
 
-fn cmd_diff_pin(
-  console: Console,
-  files: Files,
-  f: ParsedFlags,
-  path: Text,
-  pin_id: Text
-) : Int
+fn cmd_diff_pin(console: Console, files: Files, f: ParsedFlags, path: Text, pin_id: Text) : Int
   res = Modb.with_shared_lock(
     files.read_only,
     path,
@@ -963,11 +999,10 @@ fn cmd_diff_pin(
   end
 end
 
-fn load_bucket_map_ro(
-  files: Files,
-  path: Text,
-  include_internal?: Bool
-) : Result((Int, Map(Text, List((Bytes, Bytes)))), Text)
+fn load_bucket_map_ro(files: Files, path: Text, include_internal?: Bool) : Result(
+  (Int, Map(Text, List((Bytes, Bytes)))),
+  Text
+)
   Modb.with_shared_lock(
     files.read_only,
     path,
@@ -1000,10 +1035,7 @@ fn cmd_diff(console: Console, files: Files, f: ParsedFlags) : Int
     None: Unit
   end
   if f.positional.size < 2
-    return fail_msg(
-      console,
-      "usage: modb diff <a.modb> <b.modb> [--include-internal] [--json]"
-    )
+    return fail_msg(console, "usage: modb diff <a.modb> <b.modb> [--include-internal] [--json]")
   end
   path_a = (f.positional.get(0) or "").trim
   path_b = (f.positional.get(1) or "").trim
@@ -1030,9 +1062,7 @@ fn cmd_diff(console: Console, files: Files, f: ParsedFlags) : Int
     if not seen.has?(b)
       rb = map_b.get(b) or []
       if not rb.empty?
-        items = items.append(
-          BucketDiffCount(bucket: b, added: rb.size, removed: 0, modified: 0)
-        )
+        items = items.append(BucketDiffCount(bucket: b, added: rb.size, removed: 0, modified: 0))
       end
     end
   end
@@ -1161,9 +1191,8 @@ fn cmd_fts(console: Console, files: Files, f: ParsedFlags) : Int
         console.print("fts prefix=#{pfx} query=\"#{query}\" hits=#{hits.size}")
         for (i, h) in hits.enumerate
           console.print(
-            "  [#{i + 1}] #{h.doc_id} (scope=#{h.scope}) score=#{h.score} terms=#{h.matched_terms.join(
-              ","
-            )} fields=#{h.matched_fields.join(",")}"
+            "  [#{i + 1}] #{h.doc_id} (scope=#{h.scope}) score=#{h.score} terms=#{h.matched_terms
+              .join(",")} fields=#{h.matched_fields.join(",")}"
           )
         end
       end
@@ -1253,8 +1282,8 @@ fn cmd_policy(console: Console, files: Files, f: ParsedFlags) : Int
         console.print(Json.encode(out))
       else
         console.print(
-          "clearances=#{clearances.size} dynamic_views=#{dviews.size} dynamic_releases=#{drels
-            .size} dynamic_invariants=#{dinvs.size}"
+          "clearances=#{clearances.size} dynamic_views=#{dviews.size} dynamic_releases=#{drels.size} dynamic_invariants=#{dinvs
+            .size}"
         )
         for c in clearances
           console.print(
@@ -1263,7 +1292,9 @@ fn cmd_policy(console: Console, files: Files, f: ParsedFlags) : Int
           )
         end
         for dv in dviews
-          console.print("  dynamic_view=#{dv.name} narrows=#{dv.base_view} fields=#{dv.fields.join(",")}")
+          console.print(
+            "  dynamic_view=#{dv.name} narrows=#{dv.base_view} fields=#{dv.fields.join(",")}"
+          )
         end
         for dr in drels
           console.print(
@@ -1351,10 +1382,7 @@ fn cmd_feeds(console: Console, files: Files, clock: Clock, f: ParsedFlags) : Int
   if f.positional.size >= 2
     sub = (f.positional.get(1) or "").trim
     if sub != "poll" or f.positional.size < 3
-      return fail_msg(
-        console,
-        "usage: modb feeds <db.modb> poll <feed_id> [--limit N] [--json]"
-      )
+      return fail_msg(console, "usage: modb feeds <db.modb> poll <feed_id> [--limit N] [--json]")
     end
     feed_id = (f.positional.get(2) or "").trim
     lim = f.limit_opt or 100
@@ -1547,10 +1575,7 @@ fn cmd_matviews(console: Console, files: Files, f: ParsedFlags) : Int
         0
     end
   end
-  fail_msg(
-    console,
-    "unknown matviews subcommand '#{sub}' (use list | refresh | rebuild | query)"
-  )
+  fail_msg(console, "unknown matviews subcommand '#{sub}' (use list | refresh | rebuild | query)")
 end
 
 fn cmd_erasures(console: Console, files: Files, f: ParsedFlags) : Int
@@ -1627,7 +1652,9 @@ fn load_sync_key(rf: ReadFiles, env_opt: Option(Env), f: ParsedFlags) : Result(B
 end
 
 fn has_key_flag?(f: ParsedFlags) : Bool
-  f.key_file_opt is Some(_) or f.key_env_opt is Some(_) or f.keyring_file_opt is Some(_) or
+  f.key_file_opt is Some(_) or
+    f.key_env_opt is Some(_) or
+    f.keyring_file_opt is Some(_) or
     f.keyring_env_opt is Some(_)
 end
 
@@ -1698,12 +1725,106 @@ fn load_sync_keyring_opt(rf: ReadFiles, env_opt: Option(Env), f: ParsedFlags) : 
   end
 end
 
+fn cmd_sync_pull(
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env_opt: Option(Env),
+  net_opt: Option(Network),
+  f: ParsedFlags,
+  replica_path: Text
+) : Int
+  net = case net_opt
+    Some(n): n
+    None: return fail_msg(console, "no Network capability available for sync pull")
+  end
+  base_url = case f.url_opt
+    Some(u) if not u.trim.empty?: u.trim
+    Some(_) | None: return fail_msg(
+      console,
+      "usage: modb sync <replica.modb> pull --url <endpoint> --peer <id> [--token-env <VAR>] [--decrypt] [--key-file <p>|--key-env <V>|--keyring-file <p>|--keyring-env <V>] [--key-id <id>] [--aad <t>] [--once|--interval <secs>]"
+    )
+  end
+  peer_id = case f.peer_opt
+    Some(pid) if not pid.trim.empty?: pid.trim
+    Some(_) | None: return fail_msg(console, "--peer <id> is required for sync pull")
+  end
+  token_opt = case f.token_env_opt
+    Some(var_name):
+      clean_var = var_name.trim
+      if clean_var.empty?
+        return fail_msg(console, "--token-env requires a non-empty variable name")
+      end
+      env = case env_opt
+        Some(e): e
+        None: return fail_msg(console, "no Env capability available to read --token-env")
+      end
+      case env.get(clean_var)
+        Some(t) if not t.trim.empty?: Some(t.trim)
+        Some(_) | None: return fail_msg(console, "token env var '#{clean_var}' is not set")
+      end
+    None: None
+  end
+  use_dec? = f.decrypt? or has_key_flag?(f)
+  (dec_key_opt, dec_kr_opt) = if use_dec?
+    kr_opt = case load_sync_keyring_opt(files.read_only, env_opt, f)
+      Ok(k): k
+      Error(msg): return fail_msg(console, msg)
+    end
+    case kr_opt
+      Some(kr): (None, Some(kr))
+      None:
+        key = case load_sync_key(files.read_only, env_opt, f)
+          Ok(k): k
+          Error(msg): return fail_msg(console, msg)
+        end
+        (Some(key), None)
+    end
+  else
+    (None, None)
+  end
+  cfg = Pull.PullConfig(
+    base_url: base_url,
+    peer_id: peer_id,
+    replica_path: replica_path,
+    bearer_token: token_opt,
+    decrypt?: use_dec?,
+    key: dec_key_opt,
+    keyring: dec_kr_opt,
+    key_id: f.key_id_opt,
+    aad: f.aad_opt or "",
+    timeout_seconds: 30
+  )
+  case f.interval_opt
+    Some(secs) if not f.once?:
+      if secs <= 0
+        return fail_msg(console, "--interval must be > 0 seconds")
+      end
+      Pull.pull_loop(files, net, clock, console, cfg, secs, f.max_cycles_opt, f.json?)
+    Some(_) | None:
+      case Pull.pull_once(files, net, clock, cfg)
+        Error(pe): fail_msg(console, Pull.to_text(pe))
+        Ok(rep):
+          if f.json?
+            console.print(Json.encode(rep.to_json))
+          else
+            console.print(
+              "MoDB sync pull ok peer=#{rep.peer_id} boot=#{rep.bootstrapped?} seq=#{rep.delta_seq} puts=#{rep
+                .puts_applied} dels=#{rep.deletes_applied} tx=#{rep.after_txid} acked=#{rep.acked?}"
+            )
+          end
+          0
+      end
+  end
+end
+
 fn cmd_sync(
   console: Console,
   files: Files,
   clock: Clock,
   env_opt: Option(Env),
   srng_opt: Option(SecureRandom),
+  net_opt: Option(Network),
   f: ParsedFlags
 ) : Int
   p0 = (f.positional.get(0) or "").trim
@@ -1750,7 +1871,14 @@ fn cmd_sync(
       end
       case kr_opt
         Some(kr):
-          case Sync.restore_sealed_chain_with_keyring(files, dst_path, sealed_base, sealed_deltas, kr, aad)
+          case Sync.restore_sealed_chain_with_keyring(
+            files,
+            dst_path,
+            sealed_base,
+            sealed_deltas,
+            kr,
+            aad
+          )
             Ok(r): r
             Error(se): return fail_msg(console, Sync.to_text(se))
           end
@@ -1790,9 +1918,9 @@ fn cmd_sync(
       console.print(Json.encode(rep.to_json))
     else
       console.print(
-        "MoDB sync restore ok dst=#{rep.dst_path} base_tx=#{rep.base_txid} final_tx=#{rep
-          .final_txid} deltas=#{rep.deltas_applied} puts=#{rep.puts_applied} dels=#{rep
-          .deletes_applied} pages=#{rep.page_count}"
+        "MoDB sync restore ok dst=#{rep.dst_path} base_tx=#{rep.base_txid} final_tx=#{rep.final_txid} deltas=#{rep
+          .deltas_applied} puts=#{rep.puts_applied} dels=#{rep.deletes_applied} pages=#{rep
+          .page_count}"
       )
     end
     return 0
@@ -1803,6 +1931,9 @@ fn cmd_sync(
       console,
       "usage: modb sync <db.modb> <init-peer|peers|base-snapshot|export|ack|apply|remove-peer|restore> ..."
     )
+  end
+  if p1 == "pull"
+    return cmd_sync_pull(console, files, clock, env_opt, net_opt, f, p0)
   end
   now = clock.now
   if p1 == "peers"
@@ -1966,7 +2097,10 @@ fn cmd_sync(
     peer_id = (f.positional.get(2) or "").trim
     seq = case f.seq_opt
       Some(n): n
-      None: return fail_msg(console, "usage: modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex>")
+      None: return fail_msg(
+        console,
+        "usage: modb sync <db.modb> ack <peer_id> --seq <N> --hash <hex>"
+      )
     end
     dhash = case f.hash_opt
       Some(h) if not h.trim.empty?: h.trim
@@ -2060,18 +2194,19 @@ fn cmd_sync(
   end
   fail_msg(
     console,
-    "unknown sync subcommand '#{p1}' (use init-peer|peers|base-snapshot|export|ack|apply|remove-peer|restore)"
+    "unknown sync subcommand '#{p1}' (use init-peer|peers|base-snapshot|export|ack|apply|remove-peer|restore|pull)"
   )
 end
 
-## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, `Clock`, `Env`, and `SecureRandom`.
+## Runs the standalone `modb` CLI with optional `Env`, `SecureRandom`, and `Network`.
 fn run_cli_with_opts(
   argv: List(Text),
   console: Console,
   files: Files,
   clock: Clock,
   env_opt: Option(Env),
-  srng_opt: Option(SecureRandom)
+  srng_opt: Option(SecureRandom),
+  net_opt: Option(Network)
 ) : Int
   head = (argv.first or "").trim
   if head.empty? or head == "help" or head == "--help" or head == "-h"
@@ -2095,7 +2230,7 @@ fn run_cli_with_opts(
   return cmd_matviews(console, files, f) if head == "matviews"
   return cmd_taint(console, files, f) if head == "taint"
   return cmd_erasures(console, files, f) if head == "erasures"
-  return cmd_sync(console, files, clock, env_opt, srng_opt, f) if head == "sync"
+  return cmd_sync(console, files, clock, env_opt, srng_opt, net_opt, f) if head == "sync"
   return cmd_backup(console, files, clock, f) if head == "backup"
   return cmd_export(console, files, clock, f) if head == "export"
   return cmd_restore(console, files, f) if head == "restore"
@@ -2104,6 +2239,19 @@ fn run_cli_with_opts(
   console.error("unknown command: #{head}")
   print_usage(console)
   2
+end
+
+## Runs the standalone `modb` CLI with all host capabilities (`Env`, `SecureRandom`, `Network`).
+fn run_cli_full(
+  argv: List(Text),
+  console: Console,
+  files: Files,
+  clock: Clock,
+  env: Env,
+  srng: SecureRandom,
+  network: Network
+) : Int
+  run_cli_with_opts(argv, console, files, clock, Some(env), Some(srng), Some(network))
 end
 
 ## Runs the standalone `modb` CLI with explicit `argv`, `Console`, `Files`, `Clock`, `Env`, and `SecureRandom`.
@@ -2115,12 +2263,12 @@ fn run_cli_with(
   env: Env,
   srng: SecureRandom
 ) : Int
-  run_cli_with_opts(argv, console, files, clock, Some(env), Some(srng))
+  run_cli_with_opts(argv, console, files, clock, Some(env), Some(srng), None)
 end
 
-## Runs the standalone `modb` CLI without `Env`/`SecureRandom` (non-encrypted subcommands).
+## Runs the standalone `modb` CLI without `Env`/`SecureRandom`/`Network`.
 fn run_cli(argv: List(Text), console: Console, files: Files, clock: Clock) : Int
-  run_cli_with_opts(argv, console, files, clock, None, None)
+  run_cli_with_opts(argv, console, files, clock, None, None, None)
 end
 
 fn main(
@@ -2129,9 +2277,10 @@ fn main(
   files: Files,
   clock: Clock,
   env: Env,
-  srng: SecureRandom
+  srng: SecureRandom,
+  network: Network
 ) : Int
-  run_cli_with(args.list, console, files, clock, env, srng)
+  run_cli_full(args.list, console, files, clock, env, srng, network)
 end
 
 struct NoteRec
@@ -2148,15 +2297,27 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   )
   assert Ledger.open(files, "app.modb", sc, t0) is Ok(db0)
   meta = Ledger.WriteMeta(principal: "user:ada", action: "save", reason: "add beta", at: t0)
-  assert Ledger.write(db0, meta, "put n2", Json.Null, fn(tx)
-    Table.put(tx, tbl, "n2", NoteRec(body: "beta"))
-  end) is
+  assert Ledger.write(
+    db0,
+    meta,
+    "put n2",
+    Json.Null,
+    fn(tx)
+      Table.put(tx, tbl, "n2", NoteRec(body: "beta"))
+    end
+  ) is
     Ok(db1)
   assert Modb.pin_root(Ledger.store(db1), "snap-v1") is Ok((st2, _pin))
   db2 = Ledger.update_store(db1, st2)
-  assert Ledger.write(db2, meta, "put n3", Json.Null, fn(tx)
-    Table.put(tx, tbl, "n3", NoteRec(body: "gamma"))
-  end) is
+  assert Ledger.write(
+    db2,
+    meta,
+    "put n3",
+    Json.Null,
+    fn(tx)
+      Table.put(tx, tbl, "n3", NoteRec(body: "gamma"))
+    end
+  ) is
     Ok(db3)
   assert Ledger.record_verify_checkpoint(db3, t0) is Ok((_db4, _cp))
 
@@ -2240,7 +2401,12 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   assert c_fts_ls.printed.join("\n").contains?("prefix=notes docs=1")
 
   c_fts_q = Console.fake()
-  assert run_cli(["fts", "app.modb", "notes", "failov", "--prefix", "--scope", "ops"], c_fts_q, files, clock) ==
+  assert run_cli(
+    ["fts", "app.modb", "notes", "failov", "--prefix", "--scope", "ops"],
+    c_fts_q,
+    files,
+    clock
+  ) ==
     0
   assert c_fts_q.printed.join("\n").contains?("n1")
 
@@ -2298,9 +2464,15 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
     t0
   ) is
     Ok((db_g4, _))
-  assert Ledger.write(db_g4, meta, "put n4", Json.Null, fn(tx)
-    Table.put(tx, tbl, "n4", NoteRec(body: "delta"))
-  end) is
+  assert Ledger.write(
+    db_g4,
+    meta,
+    "put n4",
+    Json.Null,
+    fn(tx)
+      Table.put(tx, tbl, "n4", NoteRec(body: "delta"))
+    end
+  ) is
     Ok(_)
 
   c_pol = Console.fake()
@@ -2387,7 +2559,12 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   assert c_mvl.printed.join("\n").contains?("notes_by_body")
 
   c_mvr = Console.fake()
-  assert run_cli(["matviews", "app.modb", "refresh", "notes_by_body", "--json"], c_mvr, files, clock) ==
+  assert run_cli(
+    ["matviews", "app.modb", "refresh", "notes_by_body", "--json"],
+    c_mvr,
+    files,
+    clock
+  ) ==
     0
   assert c_mvr.printed.join("\n").contains?("notes_by_body")
 
@@ -2403,7 +2580,14 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
   srng = SecureRandom.seeded(42)
 
   c_si = Console.fake()
-  assert run_cli_with(["sync", "app.modb", "init-peer", "cli-bak", "--include-internal", "--json"], c_si, files, clock, env_key, srng) ==
+  assert run_cli_with(
+    ["sync", "app.modb", "init-peer", "cli-bak", "--include-internal", "--json"],
+    c_si,
+    files,
+    clock,
+    env_key,
+    srng
+  ) ==
     0
   assert c_si.printed.join("\n").contains?("\"peer_id\":\"cli-bak\"")
 
@@ -2432,13 +2616,20 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
     clock,
     env_key,
     srng
-  ) == 0
+  ) ==
+    0
   assert c_sb.printed.join("\n").contains?("\"encrypted\":true")
 
   assert Ledger.open(files, "app.modb", sc, t0) is Ok(db_s1)
-  assert Ledger.write(db_s1, meta, "put n5", Json.Null, fn(tx)
-    Table.put(tx, tbl, "n5", NoteRec(body: "epsilon"))
-  end) is
+  assert Ledger.write(
+    db_s1,
+    meta,
+    "put n5",
+    Json.Null,
+    fn(tx)
+      Table.put(tx, tbl, "n5", NoteRec(body: "epsilon"))
+    end
+  ) is
     Ok(_)
 
   c_se = Console.fake()
@@ -2461,7 +2652,8 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
     clock,
     env_key,
     srng
-  ) == 0
+  ) ==
+    0
   se_txt = c_se.printed.join("\n")
   assert Json.decode[Json](se_txt) is Ok(se_json)
   dhash = se_json.text_at("delta_hash") or ""
@@ -2475,7 +2667,8 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
     clock,
     env_key,
     srng
-  ) == 0
+  ) ==
+    0
   assert c_sa.printed.join("\n").contains?("\"acked_seq\":1")
 
   c_sr = Console.fake()
@@ -2499,10 +2692,87 @@ test "Modb.Cli: inspect, verify --fast, dump, audit, worlds, backup, export/rest
     clock,
     env_key,
     srng
-  ) == 0
+  ) ==
+    0
   assert c_sr.printed.join("\n").contains?("\"deltas_applied\":1")
   assert run_cli(["verify", "app-sync-restored.modb"], Console.fake(), files, clock) == 0
 
-  assert run_cli_with(["sync", "app.modb", "remove-peer", "cli-bak"], Console.fake(), files, clock, env_key, srng) ==
+  assert run_cli_with(
+    ["sync", "app.modb", "remove-peer", "cli-bak"],
+    Console.fake(),
+    files,
+    clock,
+    env_key,
+    srng
+  ) ==
     0
+
+  ## Milestone 17 CLI: `modb sync <replica.modb> pull --url ... --peer ... --once --json`
+  assert run_cli_with(
+    ["sync", "app.modb", "init-peer", "cli-pull", "--json"],
+    Console.fake(),
+    files,
+    clock,
+    env_key,
+    srng
+  ) ==
+    0
+  assert Ledger.open(files, "app.modb", sc, t0) is Ok(db_pull_0)
+  assert Sync.export_peer_base_snapshot(Ledger.store(db_pull_0), "cli-pull", t0) is Ok(pull_snap)
+  assert Ledger.write(
+    db_pull_0,
+    meta,
+    "put n6",
+    Json.Null,
+    fn(tx)
+      Table.put(tx, tbl, "n6", NoteRec(body: "zeta"))
+    end
+  ) is
+    Ok(db_pull_1)
+  assert Sync.export_delta(Ledger.store(db_pull_1), "cli-pull", t0) is Ok((_st_p, pull_d1))
+
+  pull_net = Network.fake_scripted([
+    (
+      "POST",
+      "http://127.0.0.1:8098/sync/peers/cli-pull/snapshot",
+      [Network.Respond(response: Http.reply(200, Export.encode_snapshot_json(pull_snap)))]
+    ),
+    (
+      "POST",
+      "http://127.0.0.1:8098/sync/peers/cli-pull/export",
+      [Network.Respond(response: Http.reply(200, Sync.encode_delta_json(pull_d1)))]
+    ),
+    (
+      "POST",
+      "http://127.0.0.1:8098/sync/peers/cli-pull/ack",
+      [Network.Respond(response: Http.reply(200, "{\"ok\":true}"))]
+    )
+  ])
+  env_pull = Env.of({"PULL_TOK": "secret-pull-token"})
+  c_pull = Console.fake()
+  assert run_cli_full(
+    [
+      "sync",
+      "pulled.modb",
+      "pull",
+      "--url",
+      "http://127.0.0.1:8098/sync/peers",
+      "--peer",
+      "cli-pull",
+      "--token-env",
+      "PULL_TOK",
+      "--once",
+      "--json"
+    ],
+    c_pull,
+    files,
+    clock,
+    env_pull,
+    srng,
+    pull_net
+  ) ==
+    0
+  pull_out = c_pull.printed.join("\n")
+  assert pull_out.contains?("\"bootstrapped?\":true") and pull_out.contains?("\"acked?\":true")
+  assert run_cli(["verify", "pulled.modb"], Console.fake(), files, clock) == 0
 end

@@ -58,7 +58,10 @@ export_delta_locked,
 ack_peer_locked,
 apply_delta_locked,
 apply_delta_tracked_locked,
-remove_peer_locked
+remove_peer_locked,
+get_replica_cursor,
+get_replica_cursor_locked,
+seed_replica_cursor_locked
 use Crypto
 use Json
 use Modb{Store, pins_bucket}
@@ -85,7 +88,12 @@ enum SyncError
   PinMissing(pin_id: Text)
   AckMismatch(reason: Text)
   InvalidDelta(reason: Text)
-  ChainMismatch(expected_seq: Int, actual_seq: Int, expected_prev_hash: Text, actual_prev_hash: Text)
+  ChainMismatch(
+    expected_seq: Int,
+    actual_seq: Int,
+    expected_prev_hash: Text,
+    actual_prev_hash: Text
+  )
   InvalidKeyLength(expected: Int, got: Int)
   InvalidEnvelope(reason: Text)
   KeyNotFound(key_id: Text)
@@ -105,12 +113,7 @@ fn to_text(err: SyncError) : Text
     PinMissing(pin_id: p): "missing persistent sync pin '#{p}'"
     AckMismatch(reason: r): "sync ack mismatch: #{r}"
     InvalidDelta(reason: r): "invalid sync delta: #{r}"
-    ChainMismatch(
-      expected_seq: es,
-      actual_seq: acs,
-      expected_prev_hash: eh,
-      actual_prev_hash: ah
-    ): "sync hash-chain mismatch: expected seq=#{es} prev=#{eh}, got seq=#{acs} prev=#{ah}"
+    ChainMismatch(expected_seq: es, actual_seq: acs, expected_prev_hash: eh, actual_prev_hash: ah): "sync hash-chain mismatch: expected seq=#{es} prev=#{eh}, got seq=#{acs} prev=#{ah}"
     InvalidKeyLength(expected: exp, got: g): "invalid encryption key length: expected #{exp} bytes, got #{g}"
     InvalidEnvelope(reason: r): "invalid sealed envelope: #{r}"
     KeyNotFound(key_id: kid): "backup keyring has no key for key_id '#{kid}'"
@@ -229,14 +232,18 @@ fn replica_cursor_key(pid: Text) : Text
 end
 
 fn valid_peer_char?(c: Char) : Bool
-  (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '.' or
-    c == '_' or c == '-'
+  (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or
+    c == '.' or
+    c == '_' or
+    c == '-'
 end
 
 fn validate_peer_id(raw: Text) : Result(Text, SyncError)
   clean = raw.trim
   cs = clean.chars
-  if cs.empty? or cs.size > 64 or clean.starts_with?("replica:") or
+  if cs.empty? or
+    cs.size > 64 or
+    clean.starts_with?("replica:") or
     not cs.all?(fn(c) valid_peer_char?(c) end)
     return Error(InvalidPeerId(peer_id: raw))
   end
@@ -244,8 +251,8 @@ fn validate_peer_id(raw: Text) : Result(Text, SyncError)
 end
 
 fn is_sync_internal_excluded?(bname: Text, include_internal?: Bool) : Bool
-  bname == pins_bucket or bname == sync_peers_bucket or
-    (not include_internal? and bname.starts_with?("_modb_"))
+  bname == pins_bucket or
+    bname == sync_peers_bucket or (not include_internal? and bname.starts_with?("_modb_"))
 end
 
 fn len_prefixed(b: Bytes) : Bytes
@@ -257,8 +264,9 @@ fn compute_payload_hash(buckets: List(SyncBucketDelta)) : Text
   for b in buckets
     parts = parts.append(len_prefixed(b.bucket.bytes)).append(Bytes.from_u32_be(b.ops.size))
     for o in b.ops
-      parts = parts.append(len_prefixed(o.op.bytes)).append(len_prefixed(o.key_hex.bytes))
-        .append(len_prefixed(o.value_hex.bytes))
+      parts = parts.append(len_prefixed(o.op.bytes)).append(len_prefixed(o.key_hex.bytes)).append(
+        len_prefixed(o.value_hex.bytes)
+      )
     end
   end
   Crypto.sha256(Bytes.join(parts)).to_hex
@@ -335,13 +343,10 @@ fn list_peers(store: Store) : Result(List(SyncPeer), SyncError)
 end
 
 ## Initializes a persistent sync peer baseline at the current committed root (`sync:<peer_id>`).
-fn init_peer(
-  store: Store,
-  peer_id: Text,
-  include_internal?: Bool,
-  from_empty?: Bool,
-  now: Time
-) : Result((Store, SyncPeer), SyncError)
+fn init_peer(store: Store, peer_id: Text, include_internal?: Bool, from_empty?: Bool, now: Time) : Result(
+  (Store, SyncPeer),
+  SyncError
+)
   pid = try validate_peer_id(peer_id)
   case try get_peer(store, pid)
     Some(_): return Error(PeerAlreadyExists(peer_id: pid))
@@ -430,12 +435,15 @@ fn diff_changes_to_ops(changes: List(KeyDiff)) : List(SyncOp)
   var ops = []
   for kd in changes
     case kd
-      Added(key: k, value: v):
-        ops = ops.append(SyncOp(op: "put", key_hex: k.to_hex, value_hex: v.to_hex))
-      Removed(key: k, value: _):
-        ops = ops.append(SyncOp(op: "del", key_hex: k.to_hex, value_hex: ""))
-      Modified(key: k, old_value: _, new_value: nv):
-        ops = ops.append(SyncOp(op: "put", key_hex: k.to_hex, value_hex: nv.to_hex))
+      Added(key: k, value: v): ops = ops.append(
+        SyncOp(op: "put", key_hex: k.to_hex, value_hex: v.to_hex)
+      )
+      Removed(key: k, value: _): ops = ops.append(
+        SyncOp(op: "del", key_hex: k.to_hex, value_hex: "")
+      )
+      Modified(key: k, old_value: _, new_value: nv): ops = ops.append(
+        SyncOp(op: "put", key_hex: k.to_hex, value_hex: nv.to_hex)
+      )
     end
   end
   ops
@@ -595,9 +603,7 @@ fn verify_and_decode_delta(delta: SyncDelta) : Result(
   end
   if delta.bucket_count != delta.buckets.size
     return Error(
-      InvalidDelta(
-        reason: "bucket_count #{delta.bucket_count} != actual #{delta.buckets.size}"
-      )
+      InvalidDelta(reason: "bucket_count #{delta.bucket_count} != actual #{delta.buckets.size}")
     )
   end
   exp_payload = compute_payload_hash(delta.buckets)
@@ -684,9 +690,7 @@ fn verify_and_decode_delta(delta: SyncDelta) : Result(
     decoded_buckets = decoded_buckets.append((b.bucket, ops))
   end
   if delta.op_count != total_ops
-    return Error(
-      InvalidDelta(reason: "op_count #{delta.op_count} != actual #{total_ops}")
-    )
+    return Error(InvalidDelta(reason: "op_count #{delta.op_count} != actual #{total_ops}"))
   end
   Ok((decoded_buckets, puts, dels))
 end
@@ -733,29 +737,25 @@ fn apply_delta(
   for (bname, ops) in decoded_buckets
     for dop in ops
       case dop
-        PutOp(key: k, value: v):
-          tx = try wrap_modb(Modb.tx_put(tx, bname, k, v))
-        DelOp(key: k):
-          tx = try wrap_modb(Modb.tx_delete(tx, bname, k))
+        PutOp(key: k, value: v): tx = try wrap_modb(Modb.tx_put(tx, bname, k, v))
+        DelOp(key: k): tx = try wrap_modb(Modb.tx_delete(tx, bname, k))
       end
     end
   end
   next_store = try wrap_modb(Modb.commit_at_least(tx, delta.target_txid))
   after_txid = Modb.txid(next_store)
-  Ok(
-    (
-      next_store,
-      SyncApplyReport(
-        peer_id: delta.peer_id,
-        seq: delta.seq,
-        puts_applied: puts,
-        deletes_applied: dels,
-        before_txid: before_txid,
-        after_txid: after_txid,
-        delta_hash: delta.delta_hash
-      )
+  Ok((
+    next_store,
+    SyncApplyReport(
+      peer_id: delta.peer_id,
+      seq: delta.seq,
+      puts_applied: puts,
+      deletes_applied: dels,
+      before_txid: before_txid,
+      after_txid: after_txid,
+      delta_hash: delta.delta_hash
     )
-  )
+  ))
 end
 
 ## Stateful replica apply tracking `replica:<peer_id>` in `_modb_sync_peers`, rejecting sequence
@@ -778,10 +778,8 @@ fn apply_delta_tracked(store: Store, delta: SyncDelta, now: Time) : Result(
   for (bname, ops) in decoded_buckets
     for dop in ops
       case dop
-        PutOp(key: k, value: v):
-          tx = try wrap_modb(Modb.tx_put(tx, bname, k, v))
-        DelOp(key: k):
-          tx = try wrap_modb(Modb.tx_delete(tx, bname, k))
+        PutOp(key: k, value: v): tx = try wrap_modb(Modb.tx_put(tx, bname, k, v))
+        DelOp(key: k): tx = try wrap_modb(Modb.tx_delete(tx, bname, k))
       end
     end
   end
@@ -800,20 +798,18 @@ fn apply_delta_tracked(store: Store, delta: SyncDelta, now: Time) : Result(
   )
   tx_cur = try wrap_table(Table.put(tx, peers_table(), rkey, next_cursor))
   next_store = try wrap_modb(Modb.commit_at_least(tx_cur, delta.target_txid))
-  Ok(
-    (
-      next_store,
-      SyncApplyReport(
-        peer_id: pid,
-        seq: delta.seq,
-        puts_applied: puts,
-        deletes_applied: dels,
-        before_txid: before_txid,
-        after_txid: Modb.txid(next_store),
-        delta_hash: delta.delta_hash
-      )
+  Ok((
+    next_store,
+    SyncApplyReport(
+      peer_id: pid,
+      seq: delta.seq,
+      puts_applied: puts,
+      deletes_applied: dels,
+      before_txid: before_txid,
+      after_txid: Modb.txid(next_store),
+      delta_hash: delta.delta_hash
     )
-  )
+  ))
 end
 
 fn envelope_aad_bytes(fmt: Int, kind: Text, alg: Text, key_id: Text, aad: Text) : Bytes
@@ -868,18 +864,14 @@ fn seal_bytes(
 end
 
 ## Verifies and decrypts `env` using `key`, `expected_kind`, and `expected_aad`.
-fn open_bytes(
-  key: Bytes,
-  expected_kind: Text,
-  expected_aad: Text,
-  env: SealedEnvelope
-) : Result(Bytes, SyncError)
+fn open_bytes(key: Bytes, expected_kind: Text, expected_aad: Text, env: SealedEnvelope) : Result(
+  Bytes,
+  SyncError
+)
   k = try validate_key_32(key)
   if env.format_version != sealed_format_version
     return Error(
-      InvalidEnvelope(
-        reason: "unsupported envelope format_version=#{env.format_version}"
-      )
+      InvalidEnvelope(reason: "unsupported envelope format_version=#{env.format_version}")
     )
   end
   if env.alg != "AES-256-GCM"
@@ -910,14 +902,10 @@ fn open_bytes(
 end
 
 ## Encrypts a `SyncDelta` into a `SealedEnvelope(kind: "delta")` using AES-256-GCM.
-fn seal_delta(
-  srng: SecureRandom,
-  key: Bytes,
-  key_id: Text,
-  aad: Text,
-  delta: SyncDelta,
-  now: Time
-) : Result(SealedEnvelope, SyncError)
+fn seal_delta(srng: SecureRandom, key: Bytes, key_id: Text, aad: Text, delta: SyncDelta, now: Time) : Result(
+  SealedEnvelope,
+  SyncError
+)
   _ = try verify_delta(delta)
   raw = encode_delta_json(delta).bytes
   seal_bytes(srng, key, "delta", key_id, aad, raw, now)
@@ -962,9 +950,7 @@ fn open_snapshot(key: Bytes, expected_aad: Text, env: SealedEnvelope) : Result(
   )
   snap = case Json.decode[Export.PortableSnapshot](raw)
     Ok(s): s
-    Error(je): return Error(
-      InvalidEnvelope(reason: "malformed decrypted snapshot JSON: #{je}")
-    )
+    Error(je): return Error(InvalidEnvelope(reason: "malformed decrypted snapshot JSON: #{je}"))
   end
   _ = try wrap_export(Export.verify_snapshot(snap))
   Ok(snap)
@@ -1046,11 +1032,10 @@ fn open_bytes_with_keyring(
 end
 
 ## Decrypts, decodes, and hash-verifies a `SyncDelta` using `keys[env.key_id]`.
-fn open_delta_with_keyring(
-  keys: Map(Text, Bytes),
-  expected_aad: Text,
-  env: SealedEnvelope
-) : Result(SyncDelta, SyncError)
+fn open_delta_with_keyring(keys: Map(Text, Bytes), expected_aad: Text, env: SealedEnvelope) : Result(
+  SyncDelta,
+  SyncError
+)
   pt = try open_bytes_with_keyring(keys, "delta", expected_aad, env)
   raw = try pt.decode_utf8.or_fail(
     InvalidEnvelope(reason: "decrypted delta payload is not valid UTF-8")
@@ -1064,20 +1049,17 @@ fn open_delta_with_keyring(
 end
 
 ## Decrypts, decodes, and SHA-256-verifies a `PortableSnapshot` using `keys[env.key_id]`.
-fn open_snapshot_with_keyring(
-  keys: Map(Text, Bytes),
-  expected_aad: Text,
-  env: SealedEnvelope
-) : Result(Export.PortableSnapshot, SyncError)
+fn open_snapshot_with_keyring(keys: Map(Text, Bytes), expected_aad: Text, env: SealedEnvelope) : Result(
+  Export.PortableSnapshot,
+  SyncError
+)
   pt = try open_bytes_with_keyring(keys, "snapshot", expected_aad, env)
   raw = try pt.decode_utf8.or_fail(
     InvalidEnvelope(reason: "decrypted snapshot payload is not valid UTF-8")
   )
   snap = case Json.decode[Export.PortableSnapshot](raw)
     Ok(s): s
-    Error(je): return Error(
-      InvalidEnvelope(reason: "malformed decrypted snapshot JSON: #{je}")
-    )
+    Error(je): return Error(InvalidEnvelope(reason: "malformed decrypted snapshot JSON: #{je}"))
   end
   _ = try wrap_export(Export.verify_snapshot(snap))
   Ok(snap)
@@ -1207,24 +1189,17 @@ fn init_peer_locked(
 end
 
 fn get_peer_locked(rf: ReadFiles, path: Text, peer_id: Text) : Result(Option(SyncPeer), SyncError)
-  Modb.with_shared_lock(
-    rf,
-    path,
-    fn(e) StorageFailure(e) end,
-    fn(st) get_peer(st, peer_id) end
-  )
+  Modb.with_shared_lock(rf, path, fn(e) StorageFailure(e) end, fn(st) get_peer(st, peer_id) end)
 end
 
 fn list_peers_locked(rf: ReadFiles, path: Text) : Result(List(SyncPeer), SyncError)
   Modb.with_shared_lock(rf, path, fn(e) StorageFailure(e) end, fn(st) list_peers(st) end)
 end
 
-fn export_peer_base_snapshot_locked(
-  rf: ReadFiles,
-  path: Text,
-  peer_id: Text,
-  now: Time
-) : Result(Export.PortableSnapshot, SyncError)
+fn export_peer_base_snapshot_locked(rf: ReadFiles, path: Text, peer_id: Text, now: Time) : Result(
+  Export.PortableSnapshot,
+  SyncError
+)
   Modb.with_shared_lock(
     rf,
     path,
@@ -1248,14 +1223,10 @@ fn export_delta_locked(files: Files, path: Text, peer_id: Text, now: Time) : Res
   )
 end
 
-fn ack_peer_locked(
-  files: Files,
-  path: Text,
-  peer_id: Text,
-  seq: Int,
-  delta_hash: Text,
-  now: Time
-) : Result(SyncPeer, SyncError)
+fn ack_peer_locked(files: Files, path: Text, peer_id: Text, seq: Int, delta_hash: Text, now: Time) : Result(
+  SyncPeer,
+  SyncError
+)
   Modb.with_exclusive_lock(
     files,
     path,
@@ -1312,6 +1283,77 @@ fn remove_peer_locked(files: Files, path: Text, peer_id: Text) : Result(Unit, Sy
   )
 end
 
+## Reads a tracked replica pull cursor (`replica:<peer_id>`) from `store`.
+fn get_replica_cursor(store: Store, peer_id: Text) : Result(Option(SyncPeer), SyncError)
+  pid = try validate_peer_id(peer_id)
+  wrap_table(Table.get(store, peers_table(), replica_cursor_key(pid)))
+end
+
+## Lock-coordinated read of `replica:<peer_id>` cursor on `path`.
+fn get_replica_cursor_locked(rf: ReadFiles, path: Text, peer_id: Text) : Result(
+  Option(SyncPeer),
+  SyncError
+)
+  Modb.with_shared_lock(
+    rf,
+    path,
+    fn(e) StorageFailure(e) end,
+    fn(st) get_replica_cursor(st, peer_id) end
+  )
+end
+
+## Seeds `replica:<peer_id>` cursor at `(acked_seq, acked_txid, acked_hash)` after bootstrapping
+## a replica from a mid-stream snapshot whose primary peer already has `acked_seq > 0`.
+fn seed_replica_cursor_locked(
+  files: Files,
+  path: Text,
+  peer_id: Text,
+  acked_seq: Int,
+  acked_txid: Int,
+  acked_hash: Text,
+  include_internal?: Bool,
+  from_empty?: Bool,
+  now: Time
+) : Result(SyncPeer, SyncError)
+  pid = try validate_peer_id(peer_id)
+  if acked_seq <= 0
+    return Error(InvalidDelta(reason: "seed_replica_cursor requires acked_seq > 0"))
+  end
+  clean_hash = acked_hash.trim
+  if clean_hash.empty?
+    return Error(InvalidDelta(reason: "seed_replica_cursor requires non-empty acked_hash"))
+  end
+  rkey = replica_cursor_key(pid)
+  Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(e) StorageFailure(e) end,
+    fn(st)
+      if (try wrap_table(Table.get(st, peers_table(), rkey))) is Some(_)
+        return Error(PeerAlreadyExists(peer_id: rkey))
+      end
+      rec = SyncPeer(
+        peer_id: pid,
+        include_internal?: include_internal?,
+        from_empty?: from_empty?,
+        acked_seq: acked_seq,
+        acked_txid: acked_txid,
+        acked_hash: clean_hash,
+        pending_seq: None,
+        pending_txid: None,
+        pending_hash: None,
+        created_at: now,
+        updated_at: now
+      )
+      tx = Modb.begin_write(st)
+      tx1 = try wrap_table(Table.put(tx, peers_table(), rkey, rec))
+      target_tx = if acked_txid > Modb.txid(st): acked_txid else: Modb.txid(st)
+      _committed = try wrap_modb(Modb.commit_at_least(tx1, target_tx))
+      Ok(rec)
+    end
+  )
+end
+
 test "Modb.Sync unit tests: peer pin lifecycle, JSON roundtrip, AEAD tamper checks"
   files = Files.in_memory({})
   now = Time.parse("2026-11-26T22:00:00Z") or stop "time"
@@ -1362,9 +1404,8 @@ test "Modb.Sync unit tests: peer pin lifecycle, JSON roundtrip, AEAD tamper chec
   assert open_delta(key, "modb:prod", env_delta) is Ok(d1_env_dec)
   assert d1_env_dec == d1
   assert open_delta(key, "modb:staging", env_delta) is Error(DecryptionFailed)
-  assert open_delta("short".bytes, "modb:prod", env_delta) is Error(
-    InvalidKeyLength(expected: 32, got: 5)
-  )
+  assert open_delta("short".bytes, "modb:prod", env_delta) is
+    Error(InvalidKeyLength(expected: 32, got: 5))
   assert open_snapshot(key, "modb:prod", env_delta) is Error(InvalidEnvelope(reason: _))
 
   ## Keyring rotation test
