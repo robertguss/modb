@@ -15,7 +15,7 @@ Builds on Milestones 1–16 (`src/`, `examples/`, `tests/`) to directly close re
    - `count_by` and `count_by_multi`: fast exact count scanning only the index bucket (zero primary row fetches / JSON decodes).
    - `PageResult(K, V)` and keyset cursor pagination (`scan_page`, `range_page`, `range_page_multi`) using base64url-encoded raw key cursors and `next_byte_key` resume bounds.
 
-3. **First-class runtime dynamic-schema index engine (`src/modb/dynindex.mo`, `Modb.DynIndex`)**
+3. **First-class runtime dynamic-schema index engine (`src/modb/dynindex.mo`, `Modb.Dynindex`)**
    - Typed tagged `DynVal` (`DynNull`, `DynBool`, `DynInt`, `DynDecimal`, `DynText`, `DynDate`, `DynRef`) with collision-free `(1-byte tag + order-preserving payload)` encoding.
    - Forward entries `[ns, prop_id, enc_val, row_id]` and automatic reverse-relation entries `[target_id, ns, prop_id, row_id]` for `DynRef` links (`default_dyn_index(prefix)` -> `"<prefix>_fwd"` / `"<prefix>_rev"`).
    - Diff-only `tx_update_row`, `tx_delete_row`, and `tx_delete_namespace`.

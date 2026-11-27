@@ -116,7 +116,7 @@ def main() -> int:
             send_rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
             init_resp = read_json_line(proc)
             assert init_resp["result"]["serverInfo"]["name"] == "modb-agent-workbench", init_resp
-            assert init_resp["result"]["serverInfo"]["version"] == "0.8.1", init_resp
+            assert init_resp["result"]["serverInfo"]["version"] == "0.9.0", init_resp
             assert init_resp["result"]["protocolVersion"] == "2025-03-26", init_resp
 
             send_rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
