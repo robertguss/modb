@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (defaults to github.ref_name)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+
+  homebrew:
+    name: Update Homebrew Tap
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Homebrew tap token
+        id: check_token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not set; skipping automatic formula bump. Update robertguss/homebrew-tap Formula/modb.rb manually or add HOMEBREW_TAP_TOKEN (Contents: Read & Write on robertguss/homebrew-tap)."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update robertguss/homebrew-tap Formula/modb.rb
+        if: steps.check_token.outputs.enabled == 'true'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          SRC_URL="https://github.com/robertguss/modb/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL "$SRC_URL" -o src.tar.gz
+          SRC_SHA=$(sha256sum src.tar.gz | awk '{print $1}')
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/robertguss/homebrew-tap.git" tap
+          python3 - "$VERSION" "$TAG" "$SRC_SHA" <<'PY'
+          import pathlib, sys
+
+          version, tag, src_sha = sys.argv[1:4]
+          template = """class Modb < Formula
+            desc "Embedded, single-file, crash-safe pure-Mo CoW B+Tree & multi-agent database"
+            homepage "https://github.com/robertguss/modb"
+            url "https://github.com/robertguss/modb/archive/refs/tags/__TAG__.tar.gz"
+            sha256 "__SRC_SHA__"
+            version "__VERSION__"
+
+            head "https://github.com/robertguss/modb.git", branch: "main"
+
+            depends_on "robertguss/tap/mo"
+
+            def install
+              libexec.install "mo.toml", "src", "tools", "examples"
+              doc.install "README.md"
+
+              (bin/"modb").write <<~SH
+                #!/bin/sh
+                exec "#{Formula["mo"].opt_bin}/mo" run "#{libexec}/src/modb/cli.mo" "$@"
+              SH
+              chmod 0755, bin/"modb"
+
+              (bin/"modb-mcp").write <<~SH
+                #!/bin/sh
+                exec python3 "#{libexec}/tools/modb_mcp_server.py" "$@"
+              SH
+              chmod 0755, bin/"modb-mcp"
+            end
+
+            test do
+              assert_match "modb - pure-Mo CoW B+Tree", shell_output("#{bin}/modb --help")
+
+              (testpath/"mo.toml").write <<~TOML
+                [package]
+                name = "modb-smoke"
+                version = "0.1.0"
+
+                [dependencies]
+                modb = { path = "#{opt_libexec}" }
+              TOML
+
+              (testpath/"smoke.mo").write <<~MO
+                module Smoke
+                use Modb
+
+                fn main() : Int
+                  0
+                end
+              MO
+
+              system Formula["mo"].opt_bin/"mo", "check", testpath/"smoke.mo"
+            end
+          end
+          """
+          rendered = (
+              template
+              .replace("__VERSION__", version)
+              .replace("__TAG__", tag)
+              .replace("__SRC_SHA__", src_sha)
+          )
+          pathlib.Path("tap/Formula/modb.rb").write_text(rendered, encoding="utf-8")
+          PY
+          if command -v ruby >/dev/null 2>&1; then
+            ruby -c tap/Formula/modb.rb
+          fi
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/modb.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for ${VERSION}."
+            exit 0
+          fi
+          git commit -m "modb ${VERSION}"
+          git push origin main
